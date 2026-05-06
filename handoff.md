@@ -5,14 +5,14 @@
 > question in [`docs/plan.md`](docs/plan.md) §17, or discovers a new risk.
 > If this grows past one page it's wrong — move detail into `docs/`.
 
-**Last updated:** 2026-05-06 — Phase 0 scaffold + first deploy live.
+**Last updated:** 2026-05-06 — Phase 1 step 1 (auth) on `dev-1`.
 
 ## Live URLs
 
 | | |
 | --- | --- |
-| Worker | https://howler-api.atsyg-feedme.workers.dev |
-| Pages  | https://howler-webapp.pages.dev |
+| Worker | https://howler-api.atsyg-feedme.workers.dev (prod) |
+| Pages  | https://howler-webapp.pages.dev (prod) · https://dev-1.howler-webapp.pages.dev (dev-1 preview) |
 | D1     | `howler-db` (id `39b29c7a-28b2-4bdf-93cd-bdb9cb031488`) |
 | R2     | `howler-firmware`, `howler-avatars` |
 | Queue  | `occurrence-fire` (+ DLQ `occurrence-fire-dlq`) |
@@ -22,10 +22,15 @@
 
 ## Current phase + what's next
 
-**Phase 0 — Scaffolding.** Goal: green CI on a monorepo skeleton with
-all bindings declared, the Pages → Worker proxy wired, drizzle-kit
-migrations producing real SQL, and the firmware `domain/application/adapters`
-layout ready to take its first port.
+**Phase 1 step 1 — auth.** PIN + HMAC tokens, transparent accounts,
+device pairing, and login-by-QR all landed on `dev-1`. End-to-end
+chain (pair → quick-setup → device-token → login-token-create →
+login-qr → fresh UserToken) verified against the deployed Worker.
+Replay protection, expired tokens, deviceId mismatch, wrong PIN —
+all rejected as expected.
+
+Next: Phase 1 step 2 — Schedule + Occurrence repos + Cron + Queue
+fan-out (plan §7).
 
 **What's left in Phase 0:**
 
@@ -74,6 +79,17 @@ recommendations; if you disagree, raise it before Phase 1 starts.
   `AUTH_SECRET` set on Worker, `WORKER_ORIGIN` set on Pages.
   End-to-end smoke: `https://howler-webapp.pages.dev/api/health` →
   `{ok:true}` proves the Pages → Functions → Worker → D1 chain.
+- 2026-05-06 — Phase 1 step 1 (auth) on `dev-1`. Migration `0001_auth.sql`
+  applied to local + remote D1 (rebuilt `users` table to add
+  `username` + relax `email/display_name` to nullable; added
+  `pending_pairings`, `login_qr_tokens`, `auth_logs`). Auth primitives
+  (PBKDF2 PIN + HMAC user/device tokens), Hono middleware, and
+  routes for `/api/auth/{setup,login,me,logout,set-pin,quick-setup,
+  login-token-create,login-qr}` + `/api/pair/{start,check,confirm}`.
+  `/api/tasks` no longer accepts `X-User-Id`; Bearer token required.
+  Webapp adds Quick-start / Log in / Sign up tabs and a `?token=&deviceId=`
+  QR-landing path. 13/13 unit tests pass; full pair+QR chain verified
+  against prod Worker.
 
 ## Open questions (synced with plan §17)
 

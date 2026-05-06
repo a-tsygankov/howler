@@ -5,18 +5,12 @@ import { D1UnitOfWork } from "../repos/d1/unit-of-work.ts";
 import { CreateTaskSchema } from "../shared/schemas.ts";
 import { createTask, getTask, listTasks } from "../services/task-service.ts";
 import { asUserId } from "../domain/ids.ts";
+import { requireAuth, requireUser, type AuthVars } from "../middleware/auth.ts";
 
-// Phase 0: auth is stubbed — userId comes from the X-User-Id header.
-// Phase 1 replaces this with the PIN + HMAC token middleware (plan §20.1 C7).
-const requireUser = (c: { req: { header: (k: string) => string | undefined } }) => {
-  const raw = c.req.header("X-User-Id");
-  if (!raw) throw new Error("missing X-User-Id (Phase 0 auth stub)");
-  return asUserId(raw);
-};
-
-export const tasksRouter = new Hono<{ Bindings: Bindings }>()
+export const tasksRouter = new Hono<{ Bindings: Bindings; Variables: AuthVars }>()
+  .use("*", requireAuth(), requireUser())
   .get("/", async (c) => {
-    const userId = requireUser(c);
+    const userId = asUserId(c.get("auth").userId);
     const uow = new D1UnitOfWork(c.env.DB);
     const tasks = await listTasks(uow, userId);
     return c.json({ tasks });
@@ -25,10 +19,14 @@ export const tasksRouter = new Hono<{ Bindings: Bindings }>()
     const uow = new D1UnitOfWork(c.env.DB);
     const result = await getTask(uow, c.req.param("id"));
     if (!result.ok) return c.json({ error: result.error }, 404);
+    // Defence-in-depth: don't leak someone else's task even if its id is guessed.
+    if (result.value.userId !== c.get("auth").userId) {
+      return c.json({ error: "not-found" }, 404);
+    }
     return c.json(result.value);
   })
   .post("/", zValidator("json", CreateTaskSchema), async (c) => {
-    const userId = requireUser(c);
+    const userId = c.get("auth").userId;
     const uow = new D1UnitOfWork(c.env.DB);
     const dto = await createTask(uow, userId, c.req.valid("json"));
     return c.json(dto, 201);
