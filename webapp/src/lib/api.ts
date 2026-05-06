@@ -250,6 +250,29 @@ export const deleteTask = async (id: string): Promise<void> => {
   await callJson("DELETE", `/tasks/${id}`);
 };
 
+// ── Dashboard (urgent / non-urgent groups, server-computed) ────────
+
+const DashboardItemSchema = z.object({
+  task: TaskSchema,
+  rule: ScheduleRuleSchema.nullable(),
+  urgency: z.enum(["URGENT", "NON_URGENT"]),
+  prevDeadline: z.number().int().nullable(),
+  nextDeadline: z.number().int().nullable(),
+  periodSec: z.number().int().nullable(),
+  isMissed: z.boolean(),
+  secondsUntilNext: z.number().int().nullable(),
+});
+export type DashboardItem = z.infer<typeof DashboardItemSchema>;
+
+const DashboardResponseSchema = z.object({
+  now: z.number().int(),
+  tasks: z.array(DashboardItemSchema),
+});
+export type DashboardResponse = z.infer<typeof DashboardResponseSchema>;
+
+export const fetchDashboard = async (): Promise<DashboardResponse> =>
+  DashboardResponseSchema.parse(await callJson("GET", "/dashboard"));
+
 // ── Occurrences ────────────────────────────────────────────────────
 
 const OccurrenceSchema = z.object({

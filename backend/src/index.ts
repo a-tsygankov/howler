@@ -13,6 +13,7 @@ import { scheduleTemplatesRouter } from "./routes/schedule-templates.ts";
 import { avatarsRouter } from "./routes/avatars.ts";
 import { homesRouter } from "./routes/homes.ts";
 import { pushRouter } from "./routes/push.ts";
+import { dashboardRouter } from "./routes/dashboard.ts";
 import type { AuthVars } from "./middleware/auth.ts";
 import { consumeFireQueue, scheduledFanout } from "./services/fanout.ts";
 import { log, reqIdFor } from "./logger.ts";
@@ -52,6 +53,7 @@ app.route("/api/schedule-templates", scheduleTemplatesRouter);
 app.route("/api/avatars", avatarsRouter);
 app.route("/api/homes", homesRouter);
 app.route("/api/push", pushRouter);
+app.route("/api/dashboard", dashboardRouter);
 
 app.notFound((c) => c.json({ error: "not-found" }, 404));
 
