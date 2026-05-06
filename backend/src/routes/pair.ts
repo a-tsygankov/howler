@@ -9,6 +9,7 @@ import {
   PairStartSchema,
 } from "../shared/schemas.ts";
 import { requireAuth, requireUser, type AuthVars } from "../middleware/auth.ts";
+import { rateLimit } from "../middleware/rate-limit.ts";
 
 const PAIR_TTL_SEC = 180;
 const PAIR_CODE_LEN = 6;
@@ -104,6 +105,7 @@ export const pairRouter = new Hono<{ Bindings: Bindings; Variables: AuthVars }>(
 
   .post(
     "/confirm",
+    rateLimit("pair-confirm"),
     requireAuth(),
     requireUser(),
     zValidator("json", PairConfirmSchema),

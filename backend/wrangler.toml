@@ -40,6 +40,15 @@ dead_letter_queue = "occurrence-fire-dlq"
 [triggers]
 crons = ["* * * * *"]
 
+# Rate limiter on auth endpoints — 10 requests per 60 seconds per key.
+# The middleware hashes endpoint+identifier into a stable key so a
+# single hostile IP / login can't spray /api/auth/login.
+[[unsafe.bindings]]
+name = "RATE_LIMITER"
+type = "ratelimit"
+namespace_id = "1001"
+simple = { limit = 10, period = 60 }
+
 [vars]
 ENVIRONMENT = "development"
 # AUTH_SECRET must be set as a secret in production:

@@ -162,10 +162,12 @@ const MeResponse = z.object({
   homeId: Hex32,
   homeDisplayName: z.string(),
   homeLogin: z.string().nullable(),
+  homeAvatarId: z.string().nullable().optional(),
   tz: z.string(),
   hasPin: z.boolean(),
   userId: Hex32,
   userDisplayName: z.string(),
+  userAvatarId: z.string().nullable().optional(),
 });
 export type Me = z.infer<typeof MeResponse>;
 
@@ -193,6 +195,7 @@ export interface CreateTaskInput {
   times?: string[];
   intervalDays?: number;
   deadlineHint?: number;
+  templateId?: string;
   labelId?: string | null;
   resultTypeId?: string | null;
   isPrivate?: boolean;
@@ -298,6 +301,166 @@ export const fetchTaskResults = async (): Promise<TaskResultDef[]> =>
     .object({ taskResults: z.array(TaskResultSchema) })
     .parse(await callJson("GET", "/task-results"))
     .taskResults;
+
+// ── Users (within the caller's home) ────────────────────────────────
+
+const UserSchema = z.object({
+  id: Hex32,
+  homeId: Hex32,
+  displayName: z.string(),
+  login: z.string().nullable(),
+  avatarId: z.string().nullable(),
+  createdAt: z.number().int(),
+  updatedAt: z.number().int(),
+});
+export type User = z.infer<typeof UserSchema>;
+
+export const fetchUsers = async (): Promise<User[]> =>
+  z
+    .object({ users: z.array(UserSchema) })
+    .parse(await callJson("GET", "/users"))
+    .users;
+
+export const createUser = async (input: {
+  displayName: string;
+  login?: string;
+}): Promise<User> => UserSchema.parse(await callJson("POST", "/users", input));
+
+export const renameUser = async (id: string, displayName: string): Promise<void> => {
+  await callJson("PATCH", `/users/${id}`, { displayName });
+};
+
+export const deleteUser = async (
+  id: string,
+): Promise<{ ok: boolean; orphanedTasksTombstoned: number }> =>
+  z
+    .object({ ok: z.boolean(), orphanedTasksTombstoned: z.number().int() })
+    .parse(await callJson("DELETE", `/users/${id}`));
+
+// ── Devices ────────────────────────────────────────────────────────
+
+const DeviceSchema = z.object({
+  id: Hex32,
+  homeId: Hex32,
+  serial: z.string(),
+  fwVersion: z.string().nullable(),
+  hwModel: z.string(),
+  tz: z.string().nullable(),
+  lastSeenAt: z.number().int().nullable(),
+  createdAt: z.number().int(),
+  updatedAt: z.number().int(),
+});
+export type Device = z.infer<typeof DeviceSchema>;
+
+export const fetchDevices = async (): Promise<Device[]> =>
+  z
+    .object({ devices: z.array(DeviceSchema) })
+    .parse(await callJson("GET", "/devices"))
+    .devices;
+
+export const revokeDevice = async (id: string): Promise<void> => {
+  await callJson("DELETE", `/devices/${id}`);
+};
+
+// ── Schedule templates ─────────────────────────────────────────────
+
+const ScheduleRule = z.discriminatedUnion("kind", [
+  z.object({ version: z.literal(1), kind: z.literal("DAILY"), times: z.array(z.string()) }),
+  z.object({ version: z.literal(1), kind: z.literal("PERIODIC"), intervalDays: z.number().int().positive() }),
+  z.object({ version: z.literal(1), kind: z.literal("ONESHOT") }),
+]);
+
+const ScheduleTemplateSchema = z.object({
+  id: Hex32,
+  homeId: z.string().nullable(),
+  displayName: z.string(),
+  description: z.string().nullable(),
+  rule: ScheduleRule,
+  system: z.boolean(),
+  sortOrder: z.number().int(),
+  createdAt: z.number().int(),
+  updatedAt: z.number().int(),
+});
+export type ScheduleTemplate = z.infer<typeof ScheduleTemplateSchema>;
+
+export const fetchScheduleTemplates = async (): Promise<ScheduleTemplate[]> =>
+  z
+    .object({ templates: z.array(ScheduleTemplateSchema) })
+    .parse(await callJson("GET", "/schedule-templates"))
+    .templates;
+
+// ── Avatars ────────────────────────────────────────────────────────
+
+export const uploadAvatar = async (
+  file: File,
+): Promise<{ id: string; url: string }> => {
+  const fd = new FormData();
+  fd.append("file", file);
+  const headers: Record<string, string> = {};
+  const token = getToken();
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+  const res = await fetch("/api/avatars", {
+    method: "POST",
+    headers,
+    credentials: "include",
+    body: fd,
+  });
+  if (!res.ok) {
+    let msg = `HTTP ${res.status}`;
+    try {
+      const body = (await res.json()) as { error?: string };
+      if (body.error) msg = body.error;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(msg);
+  }
+  return (await res.json()) as { id: string; url: string };
+};
+
+export const avatarUrl = (avatarId: string | null | undefined): string | null =>
+  avatarId ? `/api/avatars/${avatarId}` : null;
+
+export const updateHome = async (patch: {
+  displayName?: string;
+  tz?: string;
+  avatarId?: string | null;
+}): Promise<void> => {
+  await callJson("PATCH", "/homes/me", patch);
+};
+
+export const updateUserAvatar = async (
+  userId: string,
+  avatarId: string | null,
+): Promise<void> => {
+  await callJson("PATCH", `/users/${userId}`, { avatarId });
+};
+
+// ── Web push (plumbing only — encryption is Phase 2.6b) ─────────────
+
+export const fetchVapidKey = async (): Promise<string | null> => {
+  try {
+    const r = await callJson("GET", "/push/vapid-public-key");
+    return (r as { key: string }).key;
+  } catch {
+    return null;
+  }
+};
+
+interface SubscribeBody {
+  endpoint: string;
+  p256dh: string;
+  authSecret: string;
+  userAgent?: string;
+}
+
+export const apiPushSubscribe = async (body: SubscribeBody): Promise<void> => {
+  await callJson("POST", "/push/subscribe", body);
+};
+
+export const apiPushUnsubscribe = async (endpoint: string): Promise<void> => {
+  await callJson("DELETE", "/push/subscribe", { endpoint });
+};
 
 // ── Health ─────────────────────────────────────────────────────────
 

@@ -91,7 +91,32 @@ export const tasksRouter = new Hono<{
       .first<{ tz: string }>();
     const homeTz = home?.tz ?? "UTC";
     const uow = new D1UnitOfWork(c.env.DB);
-    const input = c.req.valid("json");
+    let input = c.req.valid("json");
+
+    // Resolve templateId → rule before the service runs. Template
+    // rules already match the ScheduleRule discriminator, so we just
+    // unpack them into times/intervalDays. ONESHOT templates are
+    // unusual but supported.
+    if (input.templateId) {
+      const t = await c.env.DB
+        .prepare("SELECT rule_json, home_id FROM schedule_templates WHERE id = ? AND is_deleted = 0")
+        .bind(input.templateId)
+        .first<{ rule_json: string; home_id: string | null }>();
+      if (!t || (t.home_id && t.home_id !== auth.homeId)) {
+        return c.json({ error: "template not found" }, 404);
+      }
+      const rule = JSON.parse(t.rule_json) as
+        | { kind: "DAILY"; times: string[] }
+        | { kind: "PERIODIC"; intervalDays: number }
+        | { kind: "ONESHOT" };
+      input = {
+        ...input,
+        kind: rule.kind,
+        ...(rule.kind === "DAILY" ? { times: rule.times } : {}),
+        ...(rule.kind === "PERIODIC" ? { intervalDays: rule.intervalDays } : {}),
+      };
+    }
+
     const { dto, taskId } = await createTask(
       uow,
       { homeId: auth.homeId, creatorUserId: auth.userId, homeTz },
