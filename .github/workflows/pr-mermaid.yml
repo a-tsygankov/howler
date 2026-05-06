@@ -1,0 +1,71 @@
+name: PR Mermaid Diagrams
+
+# Posts a Mermaid-diagram summary of the change to every PR via
+# the Anthropic API. Keeps reviewers from having to mentally re-
+# build the architecture impact from a 500-line diff.
+#
+# Required secret:
+#   PR_MERMAID_ANTHROPIC_API_KEY — Anthropic API key. Distinct from
+#   the deploy/build secrets so a leak here can't push code or
+#   touch Cloudflare. Already provisioned on this repo.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+# Only one run per PR at a time; new pushes cancel the previous
+# diagram run before it spends API tokens on outdated code.
+concurrency:
+  group: pr-mermaid-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  diagrams:
+    name: Generate Mermaid diagrams
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history so the action can diff against the base.
+          fetch-depth: 0
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.PR_MERMAID_ANTHROPIC_API_KEY }}
+          prompt: |
+            You are summarising a pull request for reviewers.
+
+            Read the diff between origin/${{ github.event.pull_request.base.ref }}
+            and the PR head. Then post ONE comment on this PR
+            (PR #${{ github.event.pull_request.number }}) containing
+            one or more Mermaid diagrams that capture the most useful
+            high-level views of what changed. Pick the diagrams that
+            actually help — skip anything that's just noise.
+
+            Candidate views (use what fits, omit what doesn't):
+              - flowchart    — new modules / files / data paths
+              - sequenceDiagram — new request flows, especially
+                                  multi-step auth, scheduling,
+                                  or device interactions
+              - erDiagram    — new entities or schema changes
+              - classDiagram — new domain types and their relations
+              - stateDiagram-v2 — new state machines
+              - C4Context / C4Container — only if the PR adds a new
+                subsystem at that level
+
+            Rules:
+              - Use Mermaid v10 syntax fenced with ```mermaid.
+              - Title the comment "## PR overview".
+              - One sentence of plain prose above each diagram naming
+                what it shows.
+              - If the change is purely docs / config / formatting,
+                post a single short comment saying so and skip the
+                diagrams.
+              - Do not review the code, request changes, or comment
+                on individual lines — only post the overview.
+              - Replace the previous overview comment if you've
+                already posted one on this PR (look for the same
+                "## PR overview" header).
