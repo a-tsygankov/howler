@@ -47,7 +47,7 @@ export const TaskDetail = () => {
   }
   if (!taskQ.data) {
     return (
-      <main className="paper-grain mx-auto min-h-screen max-w-md px-5 py-10">
+      <main className="paper-grain mx-auto min-h-screen max-w-md lg:max-w-2xl px-5 py-10">
         <Link to="/" className="cap inline-flex items-center gap-1 text-ink-3">
           <Icon name="chevron-left" size={14} /> Back
         </Link>
@@ -67,7 +67,7 @@ export const TaskDetail = () => {
   return (
     <main
       data-testid="task-detail"
-      className="paper-grain mx-auto min-h-screen max-w-md"
+      className="paper-grain mx-auto min-h-screen max-w-md lg:max-w-2xl"
     >
       <header
         className="px-5 pb-5 pt-6"

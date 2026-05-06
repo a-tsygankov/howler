@@ -5,7 +5,7 @@
 > question in [`docs/plan.md`](docs/plan.md) §17, or discovers a new risk.
 > If this grows past one page it's wrong — move detail into `docs/`.
 
-**Last updated:** 2026-05-06 — Phase 2.8b shipped on `dev-6` (task detail + sparkline, result-types manager, icon Set A barrel, react-router routing). Desktop + visual-regression queued as 2.8c.
+**Last updated:** 2026-05-06 — Phase 2.8c shipped on `dev-7` (desktop sidebar + responsive shell + visual-regression spec wired as opt-in project). Visual baselines pending a one-time seed from a Linux runner.
 
 ## Live URLs
 

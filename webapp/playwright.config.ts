@@ -17,9 +17,25 @@ export default defineConfig({
     trace: "retain-on-failure",
     actionTimeout: 10_000,
   },
+  // Two projects:
+  //   chromium  — behavioural happy-path tests; run on every PR.
+  //   visual    — pixel-fidelity screenshots; opt-in via
+  //               `pnpm test:e2e:visual`. Excluded from default
+  //               `pnpm test:e2e` (and from CI) because baselines
+  //               are OS-sensitive and need to be seeded from a
+  //               single canonical Linux Chromium. Regenerate via
+  //               `pnpm test:e2e:visual --update-snapshots` from
+  //               that environment, commit, then the project goes
+  //               green for everyone.
   projects: [
     {
       name: "chromium",
+      testIgnore: /visual\.spec\.ts/,
+      use: { ...devices["Desktop Chrome"] },
+    },
+    {
+      name: "visual",
+      testMatch: /visual\.spec\.ts/,
       use: { ...devices["Desktop Chrome"] },
     },
   ],
