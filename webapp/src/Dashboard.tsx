@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ackOccurrence,
@@ -207,6 +208,21 @@ export const Dashboard = ({ session, onLogout }: Props) => {
             void qc.invalidateQueries({ queryKey: ["pending"] });
           }}
         />
+      </section>
+
+      <section className="border-t border-line-soft px-5 py-5">
+        <div className="flex items-center justify-between">
+          <h2 className="cap">Result types</h2>
+          <Link
+            to="/settings/result-types"
+            className="cap text-ink-3 hover:text-ink"
+          >
+            Manage →
+          </Link>
+        </div>
+        <p className="mt-1 text-xs text-ink-3">
+          Numeric shapes (Grams, Pushups, Rating) tasks can opt into.
+        </p>
       </section>
 
       <Section title="All tasks">
@@ -923,7 +939,10 @@ const TaskRow = ({
 
   return (
     <div className="task flex items-center justify-between border-t border-line-soft py-2.5">
-      <div className="min-w-0">
+      <Link
+        to={`/tasks/${task.id}`}
+        className="min-w-0 flex-1 hover:opacity-80"
+      >
         <div className="text-[15px] font-medium">{task.title}</div>
         <div className="cap mt-0.5">
           {KIND_LABEL[task.kind]} · pri {task.priority}
@@ -931,7 +950,7 @@ const TaskRow = ({
           {resultName && ` · ${resultName}`}
           {!task.active && " · paused"}
         </div>
-      </div>
+      </Link>
       <div className="flex gap-1">
         <Btn variant="ghost" size="pillSm" onClick={() => setEditing(true)}>
           Edit

@@ -157,6 +157,62 @@ export const tasksRouter = new Hono<{
     return c.json(result.value);
   })
 
+  // Per-task execution history. Append-only `task_executions` rows
+  // (plan §6.5) are the dashboard's data source for sparklines and
+  // aggregates ("avg daily grams over the last 7 days"). Limit
+  // capped server-side; default 30 covers a month of daily acks.
+  .get("/:id/executions", async (c) => {
+    const callerHomeId = c.get("user").homeId;
+    const id = c.req.param("id");
+    const limit = Math.min(
+      parseInt(c.req.query("limit") ?? "30", 10) || 30,
+      365,
+    );
+    const task = await c.env.DB
+      .prepare("SELECT home_id FROM tasks WHERE id = ? AND is_deleted = 0")
+      .bind(id)
+      .first<{ home_id: string }>();
+    if (!task || task.home_id !== callerHomeId) {
+      return c.json({ error: "not-found" }, 404);
+    }
+    const { results } = await c.env.DB
+      .prepare(
+        `SELECT id, task_id, occurrence_id, user_id, label_id,
+           result_type_id, result_value, result_unit, notes, ts
+         FROM task_executions
+         WHERE task_id = ?
+         ORDER BY ts DESC
+         LIMIT ?`,
+      )
+      .bind(id, limit)
+      .all<{
+        id: string;
+        task_id: string;
+        occurrence_id: string | null;
+        user_id: string | null;
+        label_id: string | null;
+        result_type_id: string | null;
+        result_value: number | null;
+        result_unit: string | null;
+        notes: string | null;
+        ts: number;
+      }>();
+    return c.json({
+      executions: results.map((r) => ({
+        id: r.id,
+        taskId: r.task_id,
+        occurrenceId: r.occurrence_id,
+        userId: r.user_id,
+        labelId: r.label_id,
+        resultTypeId: r.result_type_id,
+        resultValue: r.result_value,
+        resultUnit: r.result_unit,
+        notes: r.notes,
+        ts: r.ts,
+      })),
+    });
+  })
+
   .delete("/:id", async (c) => {
     const auth = c.get("user");
     const id = c.req.param("id");

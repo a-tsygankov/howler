@@ -5,7 +5,7 @@
 > question in [`docs/plan.md`](docs/plan.md) §17, or discovers a new risk.
 > If this grows past one page it's wrong — move detail into `docs/`.
 
-**Last updated:** 2026-05-06 — Phase 2.8 design-system port (core) shipped on `dev-5`. Task detail + result-types manager + desktop view deferred to 2.8b.
+**Last updated:** 2026-05-06 — Phase 2.8b shipped on `dev-6` (task detail + sparkline, result-types manager, icon Set A barrel, react-router routing). Desktop + visual-regression queued as 2.8c.
 
 ## Live URLs
 
