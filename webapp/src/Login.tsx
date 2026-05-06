@@ -93,7 +93,7 @@ export const Login = ({ onLoggedIn }: Props) => {
 
   if (selector) {
     return (
-      <main>
+      <main data-testid="user-picker">
         <h1>Howler</h1>
         <p style={{ opacity: 0.7 }}>Pick a user:</p>
         {selector.users.map((u) => (
@@ -132,7 +132,7 @@ export const Login = ({ onLoggedIn }: Props) => {
   }
 
   return (
-    <main>
+    <main data-testid="login-screen">
       <h1>Howler</h1>
       <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
         <Tab active={mode === "quick"} onClick={() => setMode("quick")}>
@@ -197,7 +197,11 @@ export const Login = ({ onLoggedIn }: Props) => {
         </section>
       )}
 
-      {error && <p className="error">{error}</p>}
+      {error && (
+        <p className="error" data-testid="login-error">
+          {error}
+        </p>
+      )}
     </main>
   );
 };

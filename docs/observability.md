@@ -157,12 +157,55 @@ GROUP BY task_id
 ORDER BY avg_grams DESC
 ```
 
-## Phase 3 SLOs to track from these queries
+## Logpush — structured request log to R2
 
-- Cron lag p99 < 90 s.
-- Ack latency p99 < 500 ms.
-- Auth error rate < 5 % per kind on `error_rate` query.
-- Push delivery success rate > 95 % per provider.
+The backend emits one JSON line per request via `src/logger.ts`
+(plus `cron-fanout`, `cron-fanout-failed`, `unhandled` events). The
+shape is:
+
+```json
+{
+  "ts": "2026-05-06T18:00:00.000Z",
+  "level": "info",
+  "msg": "request",
+  "reqId": "<cf-ray>",
+  "method": "POST",
+  "path": "/api/auth/login",
+  "status": 200,
+  "durationMs": 47
+}
+```
+
+Setup (one-time, dashboard):
+
+1. Cloudflare dashboard → Workers & Pages → `howler-api` → Logs → Logpush.
+2. Destination: an R2 bucket (`howler-logs` recommended, separate from
+   `howler-firmware` and `howler-avatars` for ACL clarity).
+3. Filters: include `workers-trace-events` (which contains
+   `console.log` lines as JSON).
+4. Format: NDJSON.
+5. Retention: 30 days; tune from there.
+
+Until Logpush is on, the same JSON lines are visible live via
+`wrangler tail howler-api` and pretty-printed with `--format=pretty`.
+
+## Phase 3 → 4 SLOs
 
 These are the gates plan §18 Phase 3 → 4 references for the 7-day
-demo-ready watch.
+demo-ready watch:
+
+| | Target | Source |
+| --- | --- | --- |
+| Cron lag p99 | < 90 s | Analytics: `index1='fired'` `double1` |
+| Ack latency p99 | < 500 ms | Analytics: `index1='acked'` `double1` |
+| Auth error rate | < 5 % per kind | Analytics: error/total query |
+| Push delivery success | > 95 % per provider | Analytics: `blob1='push'` |
+| 5xx rate | < 0.5 % | Logpush: `level='error' OR status>=500` |
+| Median request latency | < 250 ms | Logpush: `durationMs` percentiles |
+
+The Phase 3 → 4 gate also requires:
+
+1. Playwright happy paths green for 7 consecutive days on `main`.
+2. No P0/P1 bugs open against the web app or API.
+3. Two non-engineer testers complete the quick-setup → create →
+   notification → ack flow on a phone without help.

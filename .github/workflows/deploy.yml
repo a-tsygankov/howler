@@ -113,6 +113,31 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm build
 
+  webapp-e2e:
+    name: Webapp E2E (Playwright)
+    needs: [changes, webapp-build]
+    if: needs.changes.outputs.webapp == 'true'
+    runs-on: ubuntu-latest
+    defaults: { run: { working-directory: webapp } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: 'pnpm' }
+      - run: pnpm install --frozen-lockfile
+        working-directory: .
+      - run: pnpm exec playwright install --with-deps chromium
+      - name: Run E2E against production
+        env:
+          E2E_BASE_URL: https://howler-webapp.pages.dev
+        run: pnpm test:e2e
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: webapp/playwright-report
+          retention-days: 7
+
   webapp-deploy:
     name: Webapp deploy
     needs: [changes, webapp-build]
