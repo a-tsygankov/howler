@@ -25,6 +25,19 @@ function TimePickerModal({ onConfirm, onCancel }: TimePickerModalProps) {
   const fmt2 = (n: number) => String(n).padStart(2, "0");
   const hour = hourIndex % HOURS_PER_SET;
 
+  // Lock body scroll while the modal is open. The backdrop is
+  // `position: fixed` and visually covers the page, but without
+  // this the user can still scroll the dashboard behind it — and
+  // since the backdrop is only 45 % opaque, that scrolling content
+  // shows through and looks like the modal itself is leaking.
+  useEffect(() => {
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, []);
+
   // Scroll the hour column so the active item is centered. The
   // items' offsetParent is the modal-backdrop (the nearest
   // positioned ancestor), not the scroll column itself, so we
