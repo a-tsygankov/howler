@@ -65,6 +65,11 @@ export const CreateTaskSchema = z.object({
   priority: z.number().int().min(0).max(3).default(1),
   kind: TaskKindSchema,
   deadlineHint: z.number().int().nullish(),
+  // For DAILY: times[]; for PERIODIC: intervalDays. Optional — server
+  // picks safe defaults so a minimal client just sends {title,kind}.
+  times: z.array(z.string().regex(/^\d{2}:\d{2}$/)).optional(),
+  intervalDays: z.number().int().positive().optional(),
+  tz: z.string().min(1).max(64).default("UTC"),
 });
 export type CreateTaskInput = z.infer<typeof CreateTaskSchema>;
 
