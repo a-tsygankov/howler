@@ -208,21 +208,27 @@ Notes:
 
 ```mermaid
 erDiagram
-    HOME    ||--o{ USER     : "has"
-    HOME    ||--o{ DEVICE   : "has"
-    HOME    ||--o{ LABEL    : "has"
-    HOME    ||--o{ TASK     : "owns"
-    HOME    ||--o| AVATAR   : "has default"
-    USER    ||--o| AVATAR   : "has default"
-    LABEL   ||--o{ TASK     : "groups"
+    HOME    ||--o{ USER         : "has"
+    HOME    ||--o{ DEVICE       : "has"
+    HOME    ||--o{ LABEL        : "has"
+    HOME    ||--o{ TASK_RESULT  : "has"
+    HOME    ||--o{ TASK         : "owns"
+    HOME    ||--o| AVATAR       : "has default"
+    USER    ||--o| AVATAR       : "has default"
+    LABEL   ||--o{ TASK         : "groups"
     SCHEDULE_TEMPLATE ||--o{ SCHEDULE : "instantiates"
-    TASK    ||--|| SCHEDULE : "has"
-    TASK    ||--o{ OCCURRENCE : "generates"
-    TASK    ||--o| AVATAR   : "has optional"
+    TASK    ||--|| SCHEDULE     : "has"
+    TASK    ||--o{ OCCURRENCE   : "generates"
+    TASK    ||--o| AVATAR       : "has optional"
+    TASK    ||--o| TASK_RESULT  : "tracks (optional)"
     TASK    ||--o{ TASK_ASSIGNMENT : "is assigned via"
+    TASK    ||--o{ TASK_EXECUTION  : "logged as"
     USER    ||--o{ TASK_ASSIGNMENT : "is target of"
-    USER    ||--o{ OCCURRENCE : "acks via PWA"
-    DEVICE  ||--o{ OCCURRENCE : "acks via dial"
+    USER    ||--o{ OCCURRENCE      : "acks via PWA"
+    USER    ||--o{ TASK_EXECUTION  : "executed (optional)"
+    DEVICE  ||--o{ OCCURRENCE      : "acks via dial"
+    DEVICE  ||--o{ TASK_EXECUTION  : "device source (optional)"
+    OCCURRENCE ||--o| TASK_EXECUTION : "ack writes one"
 
     HOME {
         text id PK
@@ -270,6 +276,7 @@ erDiagram
         integer deadline_hint "nullable; oneshot only"
         text avatar_id FK "nullable"
         text label_id FK "nullable; optional grouping"
+        text result_type_id FK "nullable; defines the value collected on ack"
         integer is_private "0/1; if 1, only assignees + creator see"
         integer active "0/1"
         integer created_at
@@ -280,6 +287,36 @@ erDiagram
         text task_id FK "PK part 1"
         text user_id FK "PK part 2"
         integer created_at
+    }
+    TASK_RESULT {
+        text id PK
+        text home_id FK
+        text display_name "Pushups, Cat food, Rating, ..."
+        text unit_name "times, gr, star, min, %"
+        real min_value "nullable; null = no lower bound"
+        real max_value "nullable; null = open"
+        real step "1, 10, 0.1, 5, ..."
+        real default_value "nullable; falls back to last-value when null"
+        integer use_last_value "0/1; pre-fill the form with most-recent execution value"
+        integer system "1 for default-seeded with the home"
+        integer sort_order
+        integer created_at
+        integer updated_at "modifications allowed but rare"
+        integer is_deleted
+    }
+    TASK_EXECUTION {
+        text id PK "32-hex; append-only — never UPDATEd"
+        text home_id FK "denormalized for fast home-scoped scans"
+        text task_id FK
+        text occurrence_id FK "nullable; null for ad-hoc completions"
+        text user_id FK "nullable; who tapped Done"
+        text device_id FK "nullable; which dial"
+        text label_id "denormalized snapshot; survives task re-labelling"
+        text result_type_id FK "nullable; the type that applied at the time"
+        real result_value "nullable; the numeric value entered or null when skipped"
+        text result_unit "denormalized snapshot of the unit at execution time"
+        text notes "nullable free-text"
+        integer ts "epoch seconds; the moment of ack"
     }
     SCHEDULE {
         text id PK
@@ -312,6 +349,7 @@ erDiagram
         text status "PENDING|ACKED|SKIPPED|MISSED"
         text acked_by_user_id FK "nullable; who tapped Done"
         text acked_by_device_id FK "nullable; which dial"
+        text execution_id FK "nullable; the task_execution row written on ack"
         text idempotency_key
         integer created_at
         integer updated_at
@@ -374,6 +412,15 @@ expand-contract:
     is nullable for the small set of system fallback avatars.
 11. Rebuild `schedule_templates`: add `home_id` (null = system preset)
     and `system` flag.
+12. `CREATE TABLE task_results` (the type definitions) and seed each
+    new home with the default set in §6.5.
+13. `CREATE TABLE task_executions` — the append-only log. No UPDATE
+    statements ever touch this table; corrections happen via a new
+    "correction" row in a future phase if the need arises.
+14. Add `tasks.result_type_id` (FK to `task_results.id`, nullable).
+15. Add `occurrences.execution_id` (FK to `task_executions.id`,
+    nullable) so the read-side can hop occurrence → execution
+    without extra joins.
 
 The rebuild is destructive but safe at this point — the prod database
 has 0 home rows and no real users (a few smoke-test transparent users
@@ -452,8 +499,72 @@ has a one-line default I'll go with absent input.
    `Intl` timezone in `/setup`, `/login`, `/quick-setup`; server
    uses it as `home.tz` only if the home has `tz IS NULL`.* Once a
    home has a TZ, the webapp respects the server value.
+9. **Result value on ack — required vs optional** — *default:
+   always optional.* Even when a task has a `result_type_id`, the
+   user can ack without entering a value (skip path; `result_value
+   = NULL` in `task_executions`). This lets dashboards count "task
+   was done" independently of "and the value was X".
+10. **TaskResult type deletion** — *default: soft-delete the type
+    (`is_deleted = 1`); tasks that referenced it keep
+    `result_type_id` pointing at the now-deleted row.* Historical
+    `task_executions` rows still have the snapshot `result_unit`
+    so analytics survive. New executions on those tasks behave as
+    if no result type were set (skip path). The webapp warns
+    before deletion if any task still references the type.
 
-### 6.4. Notes (carried over)
+### 6.4. Default TaskResult types — seeded with every new home
+
+Five generic types cover most everyday use cases. Each one is a
+*template* that a task can opt into; users add more from the SPA.
+
+| display_name | unit_name | min | max | step | default | use_last_value | covers |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Count | times | 0 | *(null)* | 1 | *(null)* | 1 | pushups, glasses of water, pages read, daily steps |
+| Grams | gr | 0 | *(null)* | 10 | *(null)* | 1 | cat food, pet food, cooking ingredients |
+| Minutes | min | 0 | 240 | 5 | *(null)* | 1 | exercise, meditation, meeting duration |
+| Rating | star | 1 | 5 | 1 | *(null)* | 0 | quality, mood, satisfaction |
+| Percent | % | 0 | 100 | 5 | *(null)* | 1 | battery, completion, fullness |
+
+Notes:
+
+- `default = NULL` means "no fixed default — fall back to last value
+  if `use_last_value = 1`, otherwise leave the field empty."
+- `max = NULL` means "no upper bound — UI picks a sensible cap
+  (e.g. last + 50%) just for slider sizing."
+- `Rating` flips `use_last_value = 0` because pre-filling yesterday's
+  3 stars on tonight's "how was the meeting" makes the picker
+  useless; ratings should default to "user picks fresh".
+
+If you want fewer / more / different defaults, say so before I
+write `0002_home.sql`.
+
+### 6.5. Append-only `task_executions`
+
+The lifecycle table (`occurrences`) tracks PENDING → ACKED. The
+analytics table (`task_executions`) is append-only — written once,
+never updated. Discipline:
+
+- `ackOccurrence` UoW writes both: the OCCURRENCE row flips to
+  ACKED *and* a TASK_EXECUTION row is INSERTed in the same `db.batch`.
+- The execution row carries a denormalized snapshot of `label_id`
+  and `result_unit` so historical analytics survive the task being
+  re-labelled or its result type swapped/deleted later.
+- The execution row's `id` is also written into
+  `occurrences.execution_id` for cheap hop-back during the dashboard
+  detail view.
+- Idempotent re-ack returns the same `execution_id` (no second
+  TASK_EXECUTION row written).
+- A user-initiated "I did it" without a pending occurrence creates
+  a TASK_EXECUTION row with `occurrence_id = NULL` and skips the
+  occurrences write entirely.
+
+API change: `POST /api/occurrences/:id/ack` accepts
+`{resultValue?: number, notes?: string, idempotencyKey?: string}`.
+Server validates `resultValue` against the task's
+`result_type` (range + step) when present; null is always allowed
+(user skipped the value).
+
+### 6.6. Notes (carried over)
 
 - Types reflect **D1 / SQLite** semantics: `text`/`integer` only, epoch-seconds timestamps (matches Feedme; epoch-ms only where sub-second matters), JSON in `text` columns.
 - **All UTC at rest.** `home.tz`, `device.tz`, and `schedule.tz` are
@@ -1040,7 +1151,7 @@ The hardest open problem: device-server integration testing. Below we name the l
 | --- | --- | --- |
 | **0 — Scaffolding** ✅ | Repo, CI, Cloudflare bindings | Monorepo (`backend/`, `webapp/`, `firmware/`, `scripts/`) — same shape as Feedme; `wrangler.toml` with D1 + R2 + Queue + Cron bindings; Pages project + `webapp/functions/api/[[path]].ts` proxy (copied from Feedme); baseline drizzle-kit migration; firmware skeleton with `domain/application/adapters` layout; `[env:native]` + `[env:simulator]` (Wokwi) + `[env:crowpanel]` PlatformIO envs; CI green; §20.1 conflicts C1–C7 resolved |
 | **1 — Server + Web MVP** 🟡 | End-to-end web flow over REST | All 3 task shapes; web CRUD (create / list / edit / delete / ack); transparent + PIN accounts; pair flow + login-by-QR; Repository/UoW seam; Cron + Queue scheduling; LWW triplet + idempotency keys on every syncable entity; PIN auth + dual UserToken/DeviceToken; integration tests over real D1 binding |
-| **2 — Server + Web hardening** | Feature-completion + UX polish | **2.0 — home-centric model rework** (per §6.1, ships first since it touches every other Phase 2 item): migration 0002 rebuilds the schema; HOME / LABEL / TASK_ASSIGNMENT entities; per-user attribution on ack; tokens carry `homeId`; user-picker step in login + login-by-QR. Then: schedule templates (preset rules + DB-backed user-defined); web push notifications via PWA service worker; device list + revoke from the web; per-task description / notes; Workers Analytics Engine dashboards for cron lag, ack latency, auth failures; rate-limiting on auth endpoints; **Option B avatars** (round photo + urgency ring) for HOME / USER / TASK |
+| **2 — Server + Web hardening** | Feature-completion + UX polish | **2.0 — home-centric model rework** (per §6.1, ships first since it touches every other Phase 2 item): migration 0002 rebuilds the schema; HOME / USER / LABEL / TASK_ASSIGNMENT / **TASK_RESULT** / **TASK_EXECUTION** entities; per-user attribution on ack; **append-only execution log with optional numeric result + denormalized snapshot**; tokens carry `homeId`; user-picker step in login + login-by-QR. Then: schedule templates (preset rules + DB-backed user-defined); web push notifications via PWA service worker; device list + revoke from the web; per-task description / notes; Workers Analytics Engine dashboards for cron lag, ack latency, auth failures, **plus per-task aggregates over `task_executions` (e.g. avg daily grams)**; rate-limiting on auth endpoints; **Option B avatars** (round photo + urgency ring) for HOME / USER / TASK |
 | **3 — Web stability gate** | Beta-ready | Playwright happy paths covering quick-setup → create task → ack → edit → delete; visual regression on the dashboard; error-budget SLOs documented; CSP locked down on Pages; structured server logs + Logpush to R2; `handoff.md` audit; **gate to Phase 4: server + webapp must be demo-ready and bug-quiet for one week before device work resumes** |
 | — *device work resumes here* — | | |
 | **4 — Device firmware MVP** | Web-stable + first device | Hardware ordered; firmware grows real `WifiNetwork` adapter + token persistence; `/api/pair/start` flow runs on the dial; pending-list polling + long-press ack; HIL-1 (native) + HIL-2 (Wokwi) in CI; HIL-3 (real CrowPanel) on `release/*` only |

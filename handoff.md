@@ -32,12 +32,19 @@ the gate is met.
 **Data model pivot (plan §6, 2026-05-06).** Howler is now home-centric:
 **HOME** is the auth realm and contains multiple **USER**s, **DEVICE**s,
 **LABEL**s, and tasks. Each task can be assigned to one or more users
-(via `task_assignments` join), can be private, and can carry an
-optional label. Migration `0002_home.sql` rebuilds the affected tables
-(no real prod data yet). Token claims grow a `homeId`. Login + QR
-exchange add a user-picker step (`/api/auth/select-user`). See §6.1
-for the migration outline, §6.2 for the new auth flow, §6.3 for the
-8 design defaults I'm ready to commit to unless overridden.
+(via `task_assignments` join), can be private, can carry an optional
+label, and can opt into a numeric **TASK_RESULT** type (Pushups,
+Grams, Rating, …). Acking an occurrence writes a row to the new
+**append-only `task_executions`** log with a denormalized snapshot of
+label + unit, so dashboards can run aggregates (avg daily grams,
+weekly pushups) without joins that break when types or labels change.
+Migration `0002_home.sql` rebuilds the affected tables (no real prod
+data yet) and seeds five default TaskResult types per home. Token
+claims grow a `homeId`. Login + QR exchange add a user-picker step
+(`/api/auth/select-user`). See §6.1 for the migration outline, §6.2
+for the new auth flow, §6.3 for the **10** design defaults I'm ready
+to commit to unless overridden, §6.4 for the seeded TaskResult
+templates, §6.5 for append-only semantics.
 
 **This rework is now Phase 2's first item** — everything else in
 Phase 2 (templates, web push, observability, avatars) builds on the
