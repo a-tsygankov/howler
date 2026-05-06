@@ -155,7 +155,7 @@ export const Dashboard = ({ session, onLogout }: Props) => {
   const doneToday = recentlyAcked.size;
 
   return (
-    <main data-testid="dashboard" className="paper-grain mx-auto min-h-screen max-w-md">
+    <main data-testid="dashboard" className="paper-grain mx-auto min-h-screen max-w-md lg:max-w-2xl">
       <Header
         homeName={me.data?.homeDisplayName ?? "Howler"}
         homeAvatarId={me.data?.homeAvatarId ?? null}

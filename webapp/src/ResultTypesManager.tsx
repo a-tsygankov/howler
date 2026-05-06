@@ -35,7 +35,7 @@ export const ResultTypesManager = () => {
   return (
     <main
       data-testid="result-types-manager"
-      className="paper-grain mx-auto min-h-screen max-w-md px-5 py-6"
+      className="paper-grain mx-auto min-h-screen max-w-md lg:max-w-2xl px-5 py-6"
     >
       <Link
         to="/"

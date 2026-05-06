@@ -9,8 +9,10 @@
     "preview": "vite preview",
     "typecheck": "tsc -b --noEmit",
     "test": "vitest run",
-    "test:e2e": "playwright test",
+    "test:e2e": "playwright test --project=chromium",
     "test:e2e:ui": "playwright test --ui",
+    "test:e2e:visual": "playwright test --project=visual",
+    "test:e2e:visual:update": "playwright test --project=visual --update-snapshots",
     "deploy": "wrangler pages deploy dist --project-name=howler-webapp --branch=main"
   },
   "dependencies": {
