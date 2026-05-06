@@ -482,7 +482,7 @@ const UrgentTaskRow = ({
         <div className="truncate text-[15px] font-medium">{task.title}</div>
         <div className="mt-0.5 flex items-center gap-2 text-xs text-ink-3">
           <span className="font-mono">
-            {fmtDeadline(prevDeadline, secondsUntilNext, isMissed, serverNow)}
+            {fmtDeadline(item, serverNow)}
           </span>
           {label && (
             <span style={{ color: label.color ?? "#7A7060" }}>
@@ -495,29 +495,43 @@ const UrgentTaskRow = ({
   );
 };
 
-// Relative "in 14 m" / "36 m overdue" rendering. Missed tasks show
-// how long ago the previous deadline lapsed; everything else shows
-// the countdown to the next one. Computed against the server's
-// `now` so all clients agree even if device clocks drift.
+// Relative time rendering for the dashboard rows. The unit picked
+// depends on the schedule's period — a 3-days-cycle task shows
+// "1 d overdue", a half-hour cycle shows "12 m overdue" — so the
+// number stays meaningful for the rhythm of the task. Server's
+// `now` drives the math so all clients agree even if device
+// clocks drift. Spec: m-2026-05-06.
 const fmtDeadline = (
-  prevDeadline: number | null,
-  secondsUntilNext: number | null,
-  isMissed: boolean,
+  item: DashboardItem,
   serverNow: number | undefined,
 ): string => {
+  const { isMissed, prevDeadline, secondsUntilNext, periodSec } = item;
   if (isMissed) {
     if (prevDeadline !== null && serverNow !== undefined) {
       const delta = serverNow - prevDeadline;
-      return delta > 0 ? `${formatRelative(delta)} overdue` : "overdue";
+      return delta > 0 ? `${formatForPeriod(delta, periodSec)} overdue` : "overdue";
     }
     return "overdue";
   }
   if (secondsUntilNext === null || secondsUntilNext < 0) return "—";
-  return `in ${formatRelative(secondsUntilNext)}`;
+  return `in ${formatForPeriod(secondsUntilNext, periodSec)}`;
 };
 
-const formatRelative = (sec: number): string => {
-  const abs = Math.max(0, Math.round(sec));
+// Period-driven unit selection. Thresholds match the user's spec:
+// > 1 day → days, > 1 hour → hours, > 1 minute → minutes, else
+// seconds. Fall back to magnitude-based formatting when periodSec
+// isn't available (e.g. malformed rule).
+const formatForPeriod = (
+  deltaSec: number,
+  periodSec: number | null,
+): string => {
+  const abs = Math.max(0, Math.round(deltaSec));
+  if (periodSec !== null && periodSec > 0) {
+    if (periodSec > 86400) return `${Math.max(1, Math.round(abs / 86400))} d`;
+    if (periodSec > 3600) return `${Math.max(1, Math.round(abs / 3600))} h`;
+    if (periodSec > 60) return `${Math.max(1, Math.round(abs / 60))} m`;
+    return `${abs} s`;
+  }
   if (abs < 60) return `${abs} s`;
   if (abs < 3600) return `${Math.round(abs / 60)} m`;
   if (abs < 86400) return `${Math.round(abs / 3600)} h`;
