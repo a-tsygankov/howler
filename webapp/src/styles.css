@@ -1,27 +1,49 @@
-:root {
-  color-scheme: dark light;
-  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+@import url("https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600&family=Inter+Tight:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: light;
+  }
+  html, body {
+    margin: 0;
+    padding: 0;
+  }
+  body {
+    @apply bg-paper text-ink font-sans antialiased;
+  }
 }
-* { box-sizing: border-box; }
-body {
-  margin: 0;
-  background: #0f172a;
-  color: #f8fafc;
-  min-height: 100vh;
+
+@layer components {
+  /* Mono caps eyebrow — used for date strips, "DUE 08:00", "OVERDUE". */
+  .cap {
+    @apply font-mono uppercase tracking-caps text-[11px] text-ink-3;
+  }
+
+  /* Subtle paper grain — single tiny SVG noise, layered behind content. */
+  .paper-grain {
+    position: relative;
+  }
+  .paper-grain::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' seed='4'/><feColorMatrix values='0 0 0 0 0.16  0 0 0 0 0.15  0 0 0 0 0.13  0 0 0 0.06 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+    opacity: 0.6;
+    pointer-events: none;
+    mix-blend-mode: multiply;
+    z-index: 0;
+  }
+  .paper-grain > * {
+    position: relative;
+    z-index: 1;
+  }
+
+  /* Loose error tone for inline messages — keep until 2.8 polish replaces. */
+  .error {
+    @apply text-accent-rose text-sm;
+  }
 }
-main {
-  max-width: 640px;
-  margin: 0 auto;
-  padding: 24px 16px 96px;
-}
-h1 { margin: 0 0 16px; font-size: 24px; font-weight: 700; }
-.task {
-  padding: 12px 14px;
-  border: 1px solid #1e293b;
-  border-radius: 12px;
-  margin-bottom: 8px;
-  background: #111827;
-}
-.task .meta { font-size: 12px; opacity: 0.6; margin-top: 4px; }
-.empty { opacity: 0.6; padding: 24px 0; text-align: center; }
-.error { color: #f87171; }

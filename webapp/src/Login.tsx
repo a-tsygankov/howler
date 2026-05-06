@@ -8,6 +8,7 @@ import {
   type LoginOutcome,
 } from "./lib/api.ts";
 import { setSession, type SessionInfo } from "./lib/session.ts";
+import { Btn } from "./components/Buttons.tsx";
 
 type Mode = "login" | "setup" | "quick" | "qr";
 
@@ -30,7 +31,7 @@ export const Login = ({ onLoggedIn }: Props) => {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  // Auto-finish a `?token=&deviceId=` QR landing.
+  // Auto-finish a `?token=…&deviceId=…` QR landing.
   useEffect(() => {
     const url = new URL(window.location.href);
     const token = url.searchParams.get("token");
@@ -74,10 +75,8 @@ export const Login = ({ onLoggedIn }: Props) => {
     }
   };
 
-  const runLogin = () =>
-    wrap(async () => handleOutcome(await apiLogin(login, pin)));
-  const runSetup = () =>
-    wrap(async () => handleOutcome(await apiSetup(login, pin)));
+  const runLogin = () => wrap(async () => handleOutcome(await apiLogin(login, pin)));
+  const runSetup = () => wrap(async () => handleOutcome(await apiSetup(login, pin)));
   const runQuick = () =>
     wrap(async () =>
       handleOutcome(await apiQuickSetup(pairCode ? { pairCode } : {})),
@@ -93,62 +92,69 @@ export const Login = ({ onLoggedIn }: Props) => {
 
   if (selector) {
     return (
-      <main data-testid="user-picker">
-        <h1>Howler</h1>
-        <p style={{ opacity: 0.7 }}>Pick a user:</p>
-        {selector.users.map((u) => (
-          <button
-            key={u.id}
-            type="button"
-            onClick={() => pickUser(u.id)}
-            disabled={busy}
-            style={{
-              display: "block",
-              width: "100%",
-              padding: 12,
-              borderRadius: 10,
-              border: "1px solid #1e293b",
-              background: "#111827",
-              color: "inherit",
-              cursor: "pointer",
-              marginBottom: 8,
-              textAlign: "left",
-              fontSize: 16,
-            }}
-          >
-            {u.displayName}
-          </button>
-        ))}
-        {error && <p className="error">{error}</p>}
+      <main
+        data-testid="user-picker"
+        className="paper-grain mx-auto min-h-screen max-w-md px-6 py-10"
+      >
+        <h1 className="font-display text-3xl">Howler</h1>
+        <p className="cap mt-2 mb-4">pick a user</p>
+        <div className="flex flex-col gap-2">
+          {selector.users.map((u) => (
+            <button
+              key={u.id}
+              type="button"
+              onClick={() => pickUser(u.id)}
+              disabled={busy}
+              className="rounded-lg border border-line bg-paper-2 p-3 text-left text-base hover:bg-paper-3 disabled:opacity-50"
+            >
+              {u.displayName}
+            </button>
+          ))}
+        </div>
+        {error && (
+          <p className="error mt-3" data-testid="login-error">
+            {error}
+          </p>
+        )}
         <button
           type="button"
           onClick={() => setSelector(null)}
-          style={{ marginTop: 12, background: "transparent", color: "inherit", border: "none", cursor: "pointer", opacity: 0.6 }}
+          className="mt-5 text-sm text-ink-3 hover:text-ink-2"
         >
-          Back
+          ← Back
         </button>
       </main>
     );
   }
 
   return (
-    <main data-testid="login-screen">
-      <h1>Howler</h1>
-      <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
-        <Tab active={mode === "quick"} onClick={() => setMode("quick")}>
-          Quick start
-        </Tab>
-        <Tab active={mode === "login"} onClick={() => setMode("login")}>
-          Log in
-        </Tab>
-        <Tab active={mode === "setup"} onClick={() => setMode("setup")}>
-          Sign up
-        </Tab>
+    <main
+      data-testid="login-screen"
+      className="paper-grain mx-auto min-h-screen max-w-md px-6 py-10"
+    >
+      <h1 className="font-display text-3xl">Howler</h1>
+      <p className="cap mt-2">a household task tracker</p>
+
+      <div className="mt-6 inline-flex rounded-full border border-line bg-paper-2 p-0.5">
+        {(["quick", "login", "setup"] as const).map((m) => (
+          <button
+            key={m}
+            type="button"
+            onClick={() => setMode(m)}
+            className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+              mode === m
+                ? "bg-ink text-paper"
+                : "text-ink-2 hover:text-ink"
+            }`}
+          >
+            {m === "quick" ? "Quick start" : m === "login" ? "Log in" : "Sign up"}
+          </button>
+        ))}
       </div>
 
       {mode === "quick" && (
-        <section>
-          <p style={{ opacity: 0.7 }}>
+        <section className="mt-6">
+          <p className="text-sm text-ink-2">
             Skip choosing a PIN. Optionally enter a pair code from your dial
             to claim the device in one shot.
           </p>
@@ -159,12 +165,20 @@ export const Login = ({ onLoggedIn }: Props) => {
             placeholder="6 digits"
             maxLength={8}
           />
-          <Submit onClick={runQuick} busy={busy} label="Get started" />
+          <Btn
+            variant="primary"
+            size="block"
+            onClick={runQuick}
+            disabled={busy}
+            className="mt-3"
+          >
+            {busy ? "…" : "Get started"}
+          </Btn>
         </section>
       )}
 
       {mode === "login" && (
-        <section>
+        <section className="mt-6">
           <Field label="Login" value={login} onChange={setLogin} autoComplete="username" />
           <Field
             label="PIN"
@@ -173,12 +187,20 @@ export const Login = ({ onLoggedIn }: Props) => {
             autoComplete="current-password"
             type="password"
           />
-          <Submit onClick={runLogin} busy={busy} label="Log in" />
+          <Btn
+            variant="primary"
+            size="block"
+            onClick={runLogin}
+            disabled={busy}
+            className="mt-3"
+          >
+            {busy ? "…" : "Log in"}
+          </Btn>
         </section>
       )}
 
       {mode === "setup" && (
-        <section>
+        <section className="mt-6">
           <Field label="Login" value={login} onChange={setLogin} autoComplete="username" />
           <Field
             label="PIN (4+ chars)"
@@ -187,49 +209,32 @@ export const Login = ({ onLoggedIn }: Props) => {
             autoComplete="new-password"
             type="password"
           />
-          <Submit onClick={runSetup} busy={busy} label="Create account" />
+          <Btn
+            variant="primary"
+            size="block"
+            onClick={runSetup}
+            disabled={busy}
+            className="mt-3"
+          >
+            {busy ? "…" : "Create account"}
+          </Btn>
         </section>
       )}
 
       {mode === "qr" && (
-        <section>
-          <p>Logging in with QR…</p>
+        <section className="mt-6">
+          <p className="font-serif text-base">Logging in with QR…</p>
         </section>
       )}
 
       {error && (
-        <p className="error" data-testid="login-error">
+        <p className="error mt-3" data-testid="login-error">
           {error}
         </p>
       )}
     </main>
   );
 };
-
-const Tab = ({
-  active,
-  onClick,
-  children,
-}: {
-  active: boolean;
-  onClick: () => void;
-  children: React.ReactNode;
-}) => (
-  <button
-    type="button"
-    onClick={onClick}
-    style={{
-      padding: "6px 12px",
-      borderRadius: 8,
-      border: "1px solid #1e293b",
-      background: active ? "#1e293b" : "transparent",
-      color: "inherit",
-      cursor: "pointer",
-    }}
-  >
-    {children}
-  </button>
-);
 
 const Field = ({
   label,
@@ -246,50 +251,14 @@ const Field = ({
   maxLength?: number;
   autoComplete?: string;
 }) => (
-  <label style={{ display: "block", marginBottom: 12 }}>
-    <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 4 }}>{label}</div>
+  <label className="mt-3 block">
+    <span className="cap mb-1 block">{label}</span>
     <input
       type={type}
       value={value}
       onChange={(e) => onChange(e.target.value)}
-      style={{
-        width: "100%",
-        padding: "8px 10px",
-        borderRadius: 8,
-        border: "1px solid #1e293b",
-        background: "#111827",
-        color: "inherit",
-      }}
+      className="w-full rounded-md border border-line bg-paper px-3 py-2 text-sm focus:border-ink focus:outline-none"
       {...rest}
     />
   </label>
-);
-
-const Submit = ({
-  onClick,
-  busy,
-  label,
-}: {
-  onClick: () => void;
-  busy: boolean;
-  label: string;
-}) => (
-  <button
-    type="button"
-    onClick={onClick}
-    disabled={busy}
-    style={{
-      width: "100%",
-      padding: "10px 14px",
-      borderRadius: 10,
-      border: "none",
-      background: "#2563eb",
-      color: "white",
-      fontWeight: 600,
-      cursor: busy ? "default" : "pointer",
-      opacity: busy ? 0.6 : 1,
-    }}
-  >
-    {busy ? "…" : label}
-  </button>
 );
