@@ -198,83 +198,267 @@ Notes:
 
 ## 6. Data Model
 
+> **Reshaped 2026-05-06: home-centric model.** Howler now uses a
+> household-style multi-tenant model: a **HOME** is the top-level
+> container; users, devices, tasks, labels, and avatars all belong
+> to a home. This restores Feedme's auth-realm shape while keeping
+> Howler's per-user attribution. Phase 1's user-centric schema
+> (deployed in migrations 0000 + 0001) gets rebuilt by migration
+> 0002 — see §6.1.
+
 ```mermaid
 erDiagram
-    USER ||--o{ TASK : owns
-    USER ||--o{ DEVICE : registers
+    HOME    ||--o{ USER     : "has"
+    HOME    ||--o{ DEVICE   : "has"
+    HOME    ||--o{ LABEL    : "has"
+    HOME    ||--o{ TASK     : "owns"
+    HOME    ||--o| AVATAR   : "has default"
+    USER    ||--o| AVATAR   : "has default"
+    LABEL   ||--o{ TASK     : "groups"
     SCHEDULE_TEMPLATE ||--o{ SCHEDULE : "instantiates"
-    TASK ||--|| SCHEDULE : has
-    TASK ||--o{ OCCURRENCE : generates
-    TASK ||--o| AVATAR : "has optional"
-    DEVICE ||--o{ OCCURRENCE : "acks/displays"
-    USER ||--o{ OCCURRENCE : "acks via PWA"
+    TASK    ||--|| SCHEDULE : "has"
+    TASK    ||--o{ OCCURRENCE : "generates"
+    TASK    ||--o| AVATAR   : "has optional"
+    TASK    ||--o{ TASK_ASSIGNMENT : "is assigned via"
+    USER    ||--o{ TASK_ASSIGNMENT : "is target of"
+    USER    ||--o{ OCCURRENCE : "acks via PWA"
+    DEVICE  ||--o{ OCCURRENCE : "acks via dial"
 
+    HOME {
+        text id PK
+        text display_name "Home, alice, ..."
+        text login "globally unique, optional for transparent"
+        text pin_salt "optional"
+        text pin_hash "optional"
+        text tz "IANA, e.g. Europe/Madrid"
+        text avatar_id FK
+        integer created_at
+        integer updated_at "LWW key"
+        integer is_deleted
+    }
     USER {
         text id PK
-        text email
-        text display_name
-        integer created_at "epoch ms"
+        text home_id FK
+        text display_name "User 1, User 2, ..."
+        text login "optional, globally unique when set"
+        text pin_salt "optional, per-user"
+        text pin_hash "optional, per-user"
+        text avatar_id FK
+        integer created_at
+        integer updated_at
+        integer is_deleted
+    }
+    LABEL {
+        text id PK
+        text home_id FK
+        text display_name "Pets, Chores, Personal, Work, ..."
+        text color "hex, optional"
+        integer system "1 for default-seeded, 0 for user-created"
+        integer sort_order
+        integer created_at
+        integer updated_at
+        integer is_deleted
     }
     TASK {
-        text id PK "32-hex UUID"
-        text user_id FK
+        text id PK
+        text home_id FK
+        text creator_user_id FK
         text title
         text description
         integer priority "0..3"
         text kind "DAILY|PERIODIC|ONESHOT"
-        integer deadline_hint "nullable - oneshot only"
+        integer deadline_hint "nullable; oneshot only"
         text avatar_id FK "nullable"
+        text label_id FK "nullable; optional grouping"
+        integer is_private "0/1; if 1, only assignees + creator see"
         integer active "0/1"
         integer created_at
-        integer updated_at "LWW key"
-        integer is_deleted "0/1 tombstone"
+        integer updated_at
+        integer is_deleted
+    }
+    TASK_ASSIGNMENT {
+        text task_id FK "PK part 1"
+        text user_id FK "PK part 2"
+        integer created_at
     }
     SCHEDULE {
         text id PK
         text task_id FK
         text template_id FK "nullable"
-        text rule_json "times[], interval_days, etc"
-        text tz
-        integer next_fire_at "denormalized; updated on fire"
+        text rule_json
+        text tz "from home at create time, mutable"
+        integer next_fire_at
+        integer created_at
+        integer updated_at
+        integer is_deleted
     }
     SCHEDULE_TEMPLATE {
         text id PK
-        text name
+        text home_id FK "nullable; null = system preset"
+        text display_name
         text description
         text rule_json
-        integer system "built-in vs user-defined"
+        integer system "1 for built-in"
+        integer created_at
+        integer updated_at
+        integer is_deleted
     }
     OCCURRENCE {
-        text id PK "32-hex UUID"
+        text id PK
         text task_id FK
         integer due_at
-        integer fired_at "nullable"
-        integer acked_at "nullable"
+        integer fired_at
+        integer acked_at
         text status "PENDING|ACKED|SKIPPED|MISSED"
-        text acked_by_device FK "nullable"
-        text idempotency_key "from device on ack"
+        text acked_by_user_id FK "nullable; who tapped Done"
+        text acked_by_device_id FK "nullable; which dial"
+        text idempotency_key
+        integer created_at
+        integer updated_at
+        integer is_deleted
     }
     DEVICE {
         text id PK
-        text user_id FK
+        text home_id FK
         text serial
         text fw_version
-        text hw_model "DIAL"
+        text hw_model
+        text tz "defaults to home.tz; can drift"
         integer last_seen_at
+        integer created_at
+        integer updated_at
+        integer is_deleted
     }
     AVATAR {
         text id PK
-        text user_id FK
-        text original_key "R2 key"
-        text silhouette_key "Option A"
-        text round_key "Option B"
+        text home_id FK "nullable for system-default avatars"
+        text owner_kind "home|user|task; for ACL hints"
+        text original_key "R2 key (uploaded photos)"
+        text round_key "Option B variant"
+        text silhouette_key "Option A variant; later"
         text sizes_json "1x/2x/device-64px"
+        integer is_generated "1 = SVG-with-initials seed"
+        integer created_at
+        integer updated_at
+        integer is_deleted
     }
 ```
 
-Notes:
+### 6.1. Migration 0002 — home-centric rebuild
+
+Migrations `0000_init.sql` + `0001_auth.sql` are deployed but carry
+zero real data (Phase 0 + Phase 1 dev only). Migration `0002_home.sql`
+rebuilds the affected tables in one shot rather than multi-step
+expand-contract:
+
+1. `CREATE TABLE homes` with full set of columns above.
+2. Rebuild `users`: add `home_id`, drop `email`, keep `username` →
+   rename to `login` (still globally unique when set, NULL for
+   transparent users with no PIN).
+3. `CREATE TABLE labels` and seed each newly-created home with
+   four system labels: **Pets**, **Chores**, **Personal**, **Work**.
+4. Rebuild `tasks`: drop `user_id`; add `home_id`, `creator_user_id`,
+   `label_id`, `is_private`.
+5. `CREATE TABLE task_assignments` (composite PK on `(task_id,
+   user_id)`).
+6. Rebuild `occurrences`: rename `acked_by_device` → `acked_by_device_id`;
+   add `acked_by_user_id`.
+7. Rebuild `devices`: drop `user_id`; add `home_id`, `tz`.
+8. Rebuild `pending_pairings` to claim against `home_id` (still keyed
+   by `device_id`).
+9. Rebuild `login_qr_tokens`: payload binds `(home_id, device_id)`;
+   exchange returns the home's user list and a *temporary* selector
+   token — the phone POSTs `/api/auth/select-user` to pick which
+   user the session is for (see §6.2).
+10. `CREATE TABLE avatars` with default-generation flag; `home_id`
+    is nullable for the small set of system fallback avatars.
+11. Rebuild `schedule_templates`: add `home_id` (null = system preset)
+    and `system` flag.
+
+The rebuild is destructive but safe at this point — the prod database
+has 0 home rows and no real users (a few smoke-test transparent users
+that get nuked).
+
+### 6.2. Auth model after the home pivot
+
+| Token | Claims | Where it gets minted |
+| --- | --- | --- |
+| **UserToken** | `{type:"user", homeId, userId, exp}` | `/api/auth/setup` · `/api/auth/login` · `/api/auth/quick-setup` (first user) · `/api/auth/select-user` |
+| **DeviceToken** | `{type:"device", homeId, deviceId, exp}` | `/api/pair/confirm` · `/api/pair/check` (returned once on first confirm) |
+
+Flow changes:
+
+- **`/api/auth/setup`** `{login, pin}` creates a **HOME** + first
+  USER atomically. Defaults: `home.display_name = login` (per the
+  user's spec — "for created accounts default value is login name");
+  `user.display_name = "User 1"`; `home.tz` from request `Time-Zone`
+  header (webapp passes `Intl.DateTimeFormat().resolvedOptions().timeZone`).
+  Default home-level PIN is on the `homes` row; users have no PIN by
+  default. (User-level PINs land in a later phase if we want
+  per-user lock; for now home-level is enough.)
+- **`/api/auth/login`** `{login, pin}` resolves login → home →
+  authenticates with home-level PIN → returns either a UserToken
+  (single user in home) or a `selectorToken` + user list. The
+  webapp shows a user picker when needed; `/api/auth/select-user
+  {selectorToken, userId}` mints the real UserToken.
+- **`/api/auth/quick-setup`** creates a **transparent home**:
+  `home.display_name = "Home"`, `home.login = NULL`,
+  `home.pin_* = NULL`, plus first user `"User 1"` with no PIN.
+  Returns UserToken directly (no PIN to verify).
+- **`/api/pair/confirm`** is unchanged in spirit but now claims the
+  device for the caller's `homeId` (not `userId`).
+- **`/api/auth/login-qr`** `{deviceId, token}` returns a short-lived
+  `selectorToken` + user list; phone POSTs `/api/auth/select-user`.
+  This matches the Feedme observation that *devices are shared,
+  attribution happens at action-time, not session-creation-time*.
+
+Defence-in-depth: every authenticated route checks
+`row.home_id === auth.homeId` before doing anything; a single
+top-level home check + per-row spot-check is the new RBAC pattern.
+
+### 6.3. Open design questions — *please confirm or override*
+
+These are the calls I'm ready to make if you don't push back; each
+has a one-line default I'll go with absent input.
+
+1. **Login identifier scope** — *default: globally unique.* Each
+   `homes.login` and `users.login` is unique across the whole table.
+   Alternative: `(home.login, user.login)` composite, but that means
+   the user types a home identifier *and* a user one — more steps.
+2. **Private-task visibility** — *default: visible to assignees +
+   creator only.* Even other users in the same home can't see private
+   tasks. The owning home admin (= creator of home) sees nothing
+   special.
+3. **User removal** — *default: soft-delete (`is_deleted = 1`),
+   reassign nothing automatically.* Tasks that mention the removed
+   user as assignee keep the row in `task_assignments` (so historical
+   ack rows still resolve) but the user no longer appears in
+   pickers. Private tasks where the only assignee is the removed
+   user get `is_deleted = 1`. The webapp confirms before deleting.
+4. **Tasks per assignee count** — *default: 0..N assignees.* The
+   join table already supports many; UI starts with single-select
+   and grows to multi.
+5. **Labels per task** — *default: at most one* (matching your
+   "Task may have assigned label").
+6. **Default avatars** — *default: server-generated SVG-with-initials
+   on a hash-determined background colour, written to R2 on creation,
+   user can replace.* Same generator for HOME / USER / TASK; differs
+   only in initials source.
+7. **Home-level vs per-user PIN** — *default: home-level only for
+   now.* `users.pin_*` columns exist but stay NULL; we'll layer
+   per-user lock later if needed. The user picker after login is the
+   only "switch user" mechanism.
+8. **TZ on login response** — *default: webapp sends its current
+   `Intl` timezone in `/setup`, `/login`, `/quick-setup`; server
+   uses it as `home.tz` only if the home has `tz IS NULL`.* Once a
+   home has a TZ, the webapp respects the server value.
+
+### 6.4. Notes (carried over)
 
 - Types reflect **D1 / SQLite** semantics: `text`/`integer` only, epoch-seconds timestamps (matches Feedme; epoch-ms only where sub-second matters), JSON in `text` columns.
+- **All UTC at rest.** `home.tz`, `device.tz`, and `schedule.tz` are
+  *display-only* hints; `next_fire_at`, `due_at`, `acked_at` all stay
+  epoch-seconds UTC (or epoch-ms where sub-second matters).
 - **LWW sync triplet** (`created_at`, `updated_at`, `is_deleted`) on every entity that the device may sync — pattern inherited verbatim from Feedme's `migrations/0005_entity_timestamps.sql`. `is_deleted` is the canonical tombstone; no parallel `deleted_at` column.
 - **All PKs are 32-char lowercase-hex UUIDs** from day one. Feedme migration 0008 added these retroactively after `(home, slot_id)` collisions on first multi-device sync; we don't repeat that mistake.
 - **Idempotency keys on writes from device** (e.g. `OCCURRENCE.idempotency_key`). `INSERT OR IGNORE` on a unique index dedupes replays after timeouts. Mirrors Feedme's `events.event_id`.
@@ -856,7 +1040,7 @@ The hardest open problem: device-server integration testing. Below we name the l
 | --- | --- | --- |
 | **0 — Scaffolding** ✅ | Repo, CI, Cloudflare bindings | Monorepo (`backend/`, `webapp/`, `firmware/`, `scripts/`) — same shape as Feedme; `wrangler.toml` with D1 + R2 + Queue + Cron bindings; Pages project + `webapp/functions/api/[[path]].ts` proxy (copied from Feedme); baseline drizzle-kit migration; firmware skeleton with `domain/application/adapters` layout; `[env:native]` + `[env:simulator]` (Wokwi) + `[env:crowpanel]` PlatformIO envs; CI green; §20.1 conflicts C1–C7 resolved |
 | **1 — Server + Web MVP** 🟡 | End-to-end web flow over REST | All 3 task shapes; web CRUD (create / list / edit / delete / ack); transparent + PIN accounts; pair flow + login-by-QR; Repository/UoW seam; Cron + Queue scheduling; LWW triplet + idempotency keys on every syncable entity; PIN auth + dual UserToken/DeviceToken; integration tests over real D1 binding |
-| **2 — Server + Web hardening** | Feature-completion + UX polish | Schedule templates (preset rules + DB-backed user-defined); web push notifications via PWA service worker; device list + revoke from the web; per-task description / notes; Workers Analytics Engine dashboards for cron lag, ack latency, auth failures; rate-limiting on auth endpoints; **Option B avatars** (round photo + urgency ring) — the all-photo path with no AI bg-removal |
+| **2 — Server + Web hardening** | Feature-completion + UX polish | **2.0 — home-centric model rework** (per §6.1, ships first since it touches every other Phase 2 item): migration 0002 rebuilds the schema; HOME / LABEL / TASK_ASSIGNMENT entities; per-user attribution on ack; tokens carry `homeId`; user-picker step in login + login-by-QR. Then: schedule templates (preset rules + DB-backed user-defined); web push notifications via PWA service worker; device list + revoke from the web; per-task description / notes; Workers Analytics Engine dashboards for cron lag, ack latency, auth failures; rate-limiting on auth endpoints; **Option B avatars** (round photo + urgency ring) for HOME / USER / TASK |
 | **3 — Web stability gate** | Beta-ready | Playwright happy paths covering quick-setup → create task → ack → edit → delete; visual regression on the dashboard; error-budget SLOs documented; CSP locked down on Pages; structured server logs + Logpush to R2; `handoff.md` audit; **gate to Phase 4: server + webapp must be demo-ready and bug-quiet for one week before device work resumes** |
 | — *device work resumes here* — | | |
 | **4 — Device firmware MVP** | Web-stable + first device | Hardware ordered; firmware grows real `WifiNetwork` adapter + token persistence; `/api/pair/start` flow runs on the dial; pending-list polling + long-press ack; HIL-1 (native) + HIL-2 (Wokwi) in CI; HIL-3 (real CrowPanel) on `release/*` only |

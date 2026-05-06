@@ -29,6 +29,20 @@ for a week. The firmware skeleton stays in CI so architectural
 breakage gets caught early; no active firmware development until
 the gate is met.
 
+**Data model pivot (plan §6, 2026-05-06).** Howler is now home-centric:
+**HOME** is the auth realm and contains multiple **USER**s, **DEVICE**s,
+**LABEL**s, and tasks. Each task can be assigned to one or more users
+(via `task_assignments` join), can be private, and can carry an
+optional label. Migration `0002_home.sql` rebuilds the affected tables
+(no real prod data yet). Token claims grow a `homeId`. Login + QR
+exchange add a user-picker step (`/api/auth/select-user`). See §6.1
+for the migration outline, §6.2 for the new auth flow, §6.3 for the
+8 design defaults I'm ready to commit to unless overridden.
+
+**This rework is now Phase 2's first item** — everything else in
+Phase 2 (templates, web push, observability, avatars) builds on the
+new schema, so it ships before any of them.
+
 ---
 
 **Phase 1 steps 1 + 2 landed on `dev-1`.**
