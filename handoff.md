@@ -5,7 +5,18 @@
 > question in [`docs/plan.md`](docs/plan.md) §17, or discovers a new risk.
 > If this grows past one page it's wrong — move detail into `docs/`.
 
-**Last updated:** 2026-05-06 — initial Phase 0 scaffold.
+**Last updated:** 2026-05-06 — Phase 0 scaffold + first deploy live.
+
+## Live URLs
+
+| | |
+| --- | --- |
+| Worker | https://howler-api.atsyg-feedme.workers.dev |
+| Pages  | https://howler-webapp.pages.dev |
+| D1     | `howler-db` (id `39b29c7a-28b2-4bdf-93cd-bdb9cb031488`) |
+| R2     | `howler-firmware`, `howler-avatars` |
+| Queue  | `occurrence-fire` (+ DLQ `occurrence-fire-dlq`) |
+| Secrets | `AUTH_SECRET` (Worker), `WORKER_ORIGIN` (Pages) |
 
 ---
 
@@ -18,17 +29,16 @@ layout ready to take its first port.
 
 **What's left in Phase 0:**
 
-1. Provision Cloudflare resources (`wrangler d1 create howler-db`,
-   `wrangler r2 bucket create howler-firmware` and `howler-avatars`,
-   `wrangler queues create occurrence-fire`). Paste IDs into
-   [`backend/wrangler.toml`](backend/wrangler.toml).
-2. Install deps and run a real `pnpm db:migrate:local` to confirm the
-   drizzle-kit pipeline works end-to-end.
-3. Verify Wokwi simulator boots the firmware skeleton and the native
-   env runs the placeholder Unity test.
+1. ~~Provision Cloudflare resources.~~ **Done** — D1, R2, Queues, Worker, Pages all live; see "Live URLs" above.
+2. ~~Migrations applied.~~ **Done** — `0000_init.sql` applied locally and remotely; tables verified.
+3. ~~Verify Wokwi simulator + native tests build.~~ **Done** — `pio test -e native` runs 3 domain tests green; `pio run -e simulator` produces `firmware-merged.bin` (384 KB) at the path `wokwi.toml` references. Pinned LVGL to 9.0.0 + added `scripts/strip_lvgl_simd.py` because PlatformIO's LDF unconditionally compiles LVGL's ARM-SIMD `.S` files on xtensa.
 4. Set GitHub repo secrets `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`
    so [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml)
    goes green on first push.
+5. `AUTH_SECRET` is a 256-bit `openssl rand` value uploaded directly
+   to the Worker secret store; only an 8-char prefix was visible in
+   chat. Fine for dev. Rotate before real users / external sharing
+   via `pnpm dlx wrangler secret put AUTH_SECRET` in `backend/`.
 
 Then **Phase 1 — MVP** per plan §18.
 
@@ -59,6 +69,11 @@ recommendations; if you disagree, raise it before Phase 1 starts.
   migration; Pages Functions `[[path]].ts` proxy; PlatformIO with
   `crowpanel`, `simulator`, `native` envs and a placeholder Unity test;
   CI workflow with path filters mirroring Feedme.
+- 2026-05-06 — First deploy live. D1, R2, Queues provisioned;
+  `0000_init.sql` applied to remote; Worker + Pages deployed;
+  `AUTH_SECRET` set on Worker, `WORKER_ORIGIN` set on Pages.
+  End-to-end smoke: `https://howler-webapp.pages.dev/api/health` →
+  `{ok:true}` proves the Pages → Functions → Worker → D1 chain.
 
 ## Open questions (synced with plan §17)
 
@@ -77,12 +92,7 @@ recommendations; if you disagree, raise it before Phase 1 starts.
 
 ## Anything blocked
 
-- **Cloudflare account provisioning.** Until `wrangler d1 create howler-db`
-  is run and the database id is pasted into `backend/wrangler.toml`,
-  `pnpm dev:backend` will not bind D1. Owner: user.
-- **GitHub Actions secrets.** `CLOUDFLARE_API_TOKEN` and
-  `CLOUDFLARE_ACCOUNT_ID` must be set on the repo before main-branch
-  pushes auto-deploy. Owner: user.
+- _(none — Phase 0 is unblocked.)_
 
 ---
 

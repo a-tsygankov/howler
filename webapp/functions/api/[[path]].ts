@@ -4,7 +4,7 @@
 //
 // Override per environment with the WORKER_ORIGIN Pages env var.
 
-const DEFAULT_WORKER_ORIGIN = "https://howler-api.workers.dev";
+const DEFAULT_WORKER_ORIGIN = "https://howler-api.atsyg-feedme.workers.dev";
 
 interface Env {
   WORKER_ORIGIN?: string;
