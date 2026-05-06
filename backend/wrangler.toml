@@ -12,7 +12,7 @@ compatibility_flags = ["nodejs_compat"]
 [[d1_databases]]
 binding = "DB"
 database_name = "howler-db"
-database_id = "REPLACE_ME_AFTER_D1_CREATE"
+database_id = "39b29c7a-28b2-4bdf-93cd-bdb9cb031488"
 migrations_dir = "migrations"
 
 [[r2_buckets]]
