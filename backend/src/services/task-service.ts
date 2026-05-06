@@ -159,5 +159,62 @@ export const updateTask = async (
       updatedAt: clock().nowMs(),
     };
     await tx.tasks.update(next);
+
+    // Schedule rule edits — only relevant when at least one of the
+    // rule fields is present in the patch. Look up the schedule for
+    // this task, replace rule_json, recompute next_fire_at.
+    const touchesRule =
+      patch.times !== undefined ||
+      patch.intervalDays !== undefined ||
+      patch.deadlineHint !== undefined;
+    if (touchesRule) {
+      const schedules = await tx.schedules.findMany({
+        tag: "ForTask",
+        params: { taskId: t.id },
+      });
+      const schedule = schedules[0];
+      if (schedule) {
+        let rule: Schedule["rule"];
+        switch (next.kind) {
+          case "DAILY":
+            rule = {
+              version: 1,
+              kind: "DAILY",
+              times:
+                patch.times ??
+                (schedule.rule.kind === "DAILY" ? schedule.rule.times : ["09:00"]),
+            };
+            break;
+          case "PERIODIC":
+            rule = {
+              version: 1,
+              kind: "PERIODIC",
+              intervalDays:
+                patch.intervalDays ??
+                (schedule.rule.kind === "PERIODIC"
+                  ? schedule.rule.intervalDays
+                  : 7),
+            };
+            break;
+          case "ONESHOT":
+            rule = { version: 1, kind: "ONESHOT" };
+            break;
+        }
+        const nowMs = clock().nowMs();
+        const nowSec = Math.floor(nowMs / 1000);
+        const deadlineHint =
+          patch.deadlineHint !== undefined
+            ? patch.deadlineHint
+            : next.deadlineHint;
+        const nextFireAt = computeNextFireAt(rule, nowSec, deadlineHint ?? null);
+        await tx.schedules.update({
+          ...schedule,
+          rule,
+          nextFireAt,
+          updatedAt: nowMs,
+        });
+      }
+    }
+
     return ok(toDto(next));
   });
