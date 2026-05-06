@@ -169,6 +169,7 @@ export const Dashboard = ({ session, onLogout }: Props) => {
         userName={me.data?.userDisplayName}
         userIdSlug={session.userId.slice(0, 8)}
         onAvatarChanged={() => qc.invalidateQueries({ queryKey: ["me"] })}
+        onHomeRenamed={() => qc.invalidateQueries({ queryKey: ["me"] })}
         onLogout={handleLogout}
         leftCount={todayPending.length}
       />
@@ -301,6 +302,7 @@ const Header = ({
   userName,
   userIdSlug,
   onAvatarChanged,
+  onHomeRenamed,
   onLogout,
   leftCount,
 }: {
@@ -309,6 +311,7 @@ const Header = ({
   userName: string | undefined;
   userIdSlug: string;
   onAvatarChanged: () => void;
+  onHomeRenamed: () => void;
   onLogout: () => void;
   leftCount: number;
 }) => {
@@ -317,7 +320,7 @@ const Header = ({
     <header className="flex items-start justify-between gap-3 px-5 pb-1.5 pt-5">
       <div className="min-w-0 flex-1">
         <div className="cap mb-1">{fmtDayCaps(today)}</div>
-        <h1 className="font-display text-[26px] leading-tight">{homeName}</h1>
+        <HomeNameField name={homeName} onSaved={onHomeRenamed} />
         <p className="font-serif text-[18px] text-ink-2">
           {leftCount === 0 ? "all clear" : `${leftCount} left today`}
         </p>
@@ -339,6 +342,66 @@ const Header = ({
         </button>
       </div>
     </header>
+  );
+};
+
+// Click-to-rename home display name. Uses the same `["me"]`
+// invalidation chain as avatar uploads so the heading reflects the
+// new value immediately after save.
+const HomeNameField = ({
+  name,
+  onSaved,
+}: {
+  name: string;
+  onSaved: () => void;
+}) => {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(name);
+  const m = useMutation({
+    mutationFn: (next: string) => updateHome({ displayName: next }),
+    onSuccess: () => {
+      setEditing(false);
+      onSaved();
+    },
+  });
+  const start = () => {
+    setDraft(name);
+    setEditing(true);
+  };
+  const commit = () => {
+    const next = draft.trim();
+    if (!next || next === name) {
+      setEditing(false);
+      return;
+    }
+    m.mutate(next);
+  };
+  if (editing) {
+    return (
+      <input
+        autoFocus
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") commit();
+          if (e.key === "Escape") setEditing(false);
+        }}
+        disabled={m.isPending}
+        className="w-full rounded-md border border-line bg-paper px-2 py-1 font-display text-[26px] leading-tight focus:border-ink focus:outline-none"
+        aria-label="Home name"
+      />
+    );
+  }
+  return (
+    <button
+      type="button"
+      onClick={start}
+      title="Rename home"
+      className="text-left font-display text-[26px] leading-tight hover:opacity-80"
+    >
+      {name}
+    </button>
   );
 };
 
@@ -856,6 +919,24 @@ const SelectInline = ({
 
 // ── Task row (All tasks list) ─────────────────────────────────────
 
+// Schedule summary rendered under each task title. UTC times from the
+// embedded rule are converted to the viewer's local TZ so the user
+// sees the same wall-clock times they entered.
+const describeSchedule = (task: Task): string => {
+  if (!task.rule) return KIND_LABEL[task.kind];
+  if (task.rule.kind === "DAILY") {
+    if (task.rule.times.length === 0) return "daily";
+    const local = task.rule.times
+      .map((t) => utcToLocal(t))
+      .filter((t): t is string => !!t);
+    return `daily ${local.join(", ")}`;
+  }
+  if (task.rule.kind === "PERIODIC") {
+    return `every ${task.rule.intervalDays} day${task.rule.intervalDays === 1 ? "" : "s"}`;
+  }
+  return "one-time";
+};
+
 const TaskRow = ({
   task,
   labels,
@@ -881,6 +962,7 @@ const TaskRow = ({
   const [localTimes, setLocalTimes] = useState<string[] | null>(null);
   const [intervalDays, setIntervalDays] = useState<number | null>(null);
 
+  const qc = useQueryClient();
   // Lazy-load the schedule when the user enters edit mode.
   const scheduleQ = useQuery({
     queryKey: ["task-schedule", task.id],
@@ -930,11 +1012,17 @@ const TaskRow = ({
       setEditing(false);
       setLocalTimes(null);
       setIntervalDays(null);
+      // The schedule's rule_json + cached single-task fetch are now
+      // stale — refetch so a re-open of edit mode shows the new rule
+      // and any other open detail view picks up the change.
+      void qc.invalidateQueries({ queryKey: ["task-schedule", task.id] });
+      void qc.invalidateQueries({ queryKey: ["task", task.id] });
       onSaved();
     },
   });
   const labelName = labels.find((l) => l.id === task.labelId)?.displayName;
   const resultName = taskResults.find((r) => r.id === task.resultTypeId)?.displayName;
+  const scheduleSummary = describeSchedule(task);
 
   if (editing) {
     return (
@@ -1035,7 +1123,7 @@ const TaskRow = ({
       >
         <div className="text-[15px] font-medium">{task.title}</div>
         <div className="cap mt-0.5">
-          {KIND_LABEL[task.kind]} · pri {task.priority}
+          {scheduleSummary} · pri {task.priority}
           {labelName && ` · ${labelName}`}
           {resultName && ` · ${resultName}`}
           {!task.active && " · paused"}
@@ -1069,6 +1157,7 @@ const UsersBlock = ({
   sessionUserId: string;
   onChanged: () => void;
 }) => {
+  const qc = useQueryClient();
   const [adding, setAdding] = useState(false);
   const [name, setName] = useState("");
   const add = useMutation({
@@ -1082,7 +1171,14 @@ const UsersBlock = ({
   const rename = useMutation({
     mutationFn: (args: { id: string; displayName: string }) =>
       renameUser(args.id, args.displayName),
-    onSuccess: onChanged,
+    onSuccess: (_data, vars) => {
+      onChanged();
+      // If the user renamed themselves, the session-scoped /auth/me
+      // payload (header greeting) is now stale.
+      if (vars.id === sessionUserId) {
+        void qc.invalidateQueries({ queryKey: ["me"] });
+      }
+    },
   });
   const remove = useMutation({
     mutationFn: deleteUser,

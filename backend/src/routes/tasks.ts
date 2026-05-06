@@ -62,7 +62,33 @@ export const tasksRouter = new Hono<{
     const homeId = asHomeId(c.get("user").homeId);
     const uow = new D1UnitOfWork(c.env.DB);
     const tasks = await listTasks(uow, homeId);
-    return c.json({ tasks });
+    if (tasks.length === 0) return c.json({ tasks });
+    // Hydrate the schedule rule per task in one batch read so the
+    // SPA can render times without an N+1 fetch. Rule is parsed
+    // here (cheap) so the wire stays a structured shape.
+    const placeholders = tasks.map(() => "?").join(",");
+    const ids = tasks.map((t) => t.id);
+    const { results } = await c.env.DB
+      .prepare(
+        `SELECT task_id, rule_json FROM schedules
+         WHERE task_id IN (${placeholders}) AND is_deleted = 0`,
+      )
+      .bind(...ids)
+      .all<{ task_id: string; rule_json: string }>();
+    const ruleByTask = new Map<string, unknown>();
+    for (const r of results) {
+      try {
+        ruleByTask.set(r.task_id, JSON.parse(r.rule_json));
+      } catch {
+        /* ignore malformed row */
+      }
+    }
+    return c.json({
+      tasks: tasks.map((t) => ({
+        ...t,
+        rule: ruleByTask.get(t.id) ?? null,
+      })),
+    });
   })
 
   .get("/:id", async (c) => {
@@ -73,14 +99,30 @@ export const tasksRouter = new Hono<{
     if (result.value.homeId !== callerHomeId) {
       return c.json({ error: "not-found" }, 404);
     }
-    // Hydrate assignees.
-    const { results } = await c.env.DB
-      .prepare("SELECT user_id FROM task_assignments WHERE task_id = ?")
-      .bind(result.value.id)
-      .all<{ user_id: string }>();
+    const [{ results: assignees }, scheduleRow] = await Promise.all([
+      c.env.DB
+        .prepare("SELECT user_id FROM task_assignments WHERE task_id = ?")
+        .bind(result.value.id)
+        .all<{ user_id: string }>(),
+      c.env.DB
+        .prepare(
+          "SELECT rule_json FROM schedules WHERE task_id = ? AND is_deleted = 0",
+        )
+        .bind(result.value.id)
+        .first<{ rule_json: string }>(),
+    ]);
+    let rule: unknown = null;
+    if (scheduleRow) {
+      try {
+        rule = JSON.parse(scheduleRow.rule_json);
+      } catch {
+        /* ignore */
+      }
+    }
     return c.json({
       ...result.value,
-      assignees: results.map((r) => r.user_id),
+      assignees: assignees.map((r) => r.user_id),
+      rule,
     });
   })
 
