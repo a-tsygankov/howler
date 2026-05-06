@@ -1,11 +1,10 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ackOccurrence,
   apiLogout,
   apiMe,
   apiPairConfirm,
-  avatarUrl,
   createTask,
   createUser,
   deleteTask,
@@ -38,22 +37,31 @@ import {
   subscribePush,
   unsubscribePush,
 } from "./lib/push.ts";
+import { HowlerAvatar } from "./components/HowlerAvatar.tsx";
+import { ProgressBar } from "./components/ProgressBar.tsx";
+import { SegBtn } from "./components/SegBtn.tsx";
+import { Sheet } from "./components/Sheet.tsx";
+import { Btn } from "./components/Buttons.tsx";
+import { DayRibbonRow } from "./components/DayRibbonRow.tsx";
+import { ResultSlider } from "./components/ResultSlider.tsx";
 
-const fmtDue = (dueAt: number): string => {
-  const ms = dueAt * 1000;
-  const delta = ms - Date.now();
-  const abs = Math.abs(delta);
-  const m = Math.round(abs / 60_000);
-  if (m < 1) return delta >= 0 ? "now" : "just now";
-  if (m < 60) return delta >= 0 ? `in ${m} min` : `${m} min ago`;
-  const h = Math.round(m / 60);
-  if (h < 24) return delta >= 0 ? `in ${h} h` : `${h} h ago`;
-  const d = Math.round(h / 24);
-  return delta >= 0 ? `in ${d} d` : `${d} d ago`;
+type GroupBy = "time" | "label";
+
+const GROUPBY_KEY = "howler.home.groupBy";
+
+const loadGroupBy = (): GroupBy => {
+  if (typeof localStorage === "undefined") return "time";
+  return localStorage.getItem(GROUPBY_KEY) === "label" ? "label" : "time";
 };
 
-const kindLabel = (k: TaskKind) =>
-  k === "DAILY" ? "daily" : k === "PERIODIC" ? "every N days" : "one-time";
+const fmtDayCaps = (d: Date): string =>
+  d
+    .toLocaleDateString(undefined, {
+      weekday: "long",
+      month: "long",
+      day: "numeric",
+    })
+    .replace(",", " ·");
 
 interface Props {
   session: SessionInfo;
@@ -70,23 +78,52 @@ export const Dashboard = ({ session, onLogout }: Props) => {
     refetchInterval: 15_000,
   });
   const labels = useQuery({ queryKey: ["labels"], queryFn: fetchLabels });
-  const taskResults = useQuery({ queryKey: ["taskResults"], queryFn: fetchTaskResults });
+  const taskResults = useQuery({
+    queryKey: ["taskResults"],
+    queryFn: fetchTaskResults,
+  });
   const users = useQuery({ queryKey: ["users"], queryFn: fetchUsers });
   const devices = useQuery({ queryKey: ["devices"], queryFn: fetchDevices });
-  const templates = useQuery({ queryKey: ["templates"], queryFn: fetchScheduleTemplates });
+  const templates = useQuery({
+    queryKey: ["templates"],
+    queryFn: fetchScheduleTemplates,
+  });
+
+  const [groupBy, setGroupByState] = useState<GroupBy>(loadGroupBy);
+  const setGroupBy = (g: GroupBy) => {
+    setGroupByState(g);
+    try {
+      localStorage.setItem(GROUPBY_KEY, g);
+    } catch {
+      /* ignore */
+    }
+  };
 
   const [ackTarget, setAckTarget] = useState<Occurrence | null>(null);
+  const [recentlyAcked, setRecentlyAcked] = useState<Set<string>>(new Set());
 
   const ack = useMutation({
-    mutationFn: (args: { id: string; resultValue?: number | null; notes?: string | null }) => {
+    mutationFn: (args: {
+      id: string;
+      resultValue?: number | null;
+      notes?: string | null;
+    }) => {
       const body: { resultValue?: number | null; notes?: string | null } = {};
       if (args.resultValue !== undefined) body.resultValue = args.resultValue;
       if (args.notes !== undefined) body.notes = args.notes;
       return ackOccurrence(args.id, body);
     },
-    onSuccess: () => {
+    onSuccess: (_data, vars) => {
       setAckTarget(null);
-      void qc.invalidateQueries({ queryKey: ["pending"] });
+      setRecentlyAcked((s) => new Set(s).add(vars.id));
+      setTimeout(() => {
+        void qc.invalidateQueries({ queryKey: ["pending"] });
+        setRecentlyAcked((s) => {
+          const next = new Set(s);
+          next.delete(vars.id);
+          return next;
+        });
+      }, 350);
     },
   });
 
@@ -108,75 +145,58 @@ export const Dashboard = ({ session, onLogout }: Props) => {
 
   const handleAckClick = (occ: Occurrence) => {
     const task = (tasks.data ?? []).find((t) => t.id === occ.taskId);
-    // If the task has a result type, open the modal so the user can
-    // enter the value. Otherwise just ack.
     if (task?.resultTypeId) setAckTarget(occ);
     else ack.mutate({ id: occ.id });
   };
 
+  const todayPending = pending.data ?? [];
+  const totalToday = todayPending.length + recentlyAcked.size;
+  const doneToday = recentlyAcked.size;
+
   return (
-    <main data-testid="dashboard">
-      <header
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          marginBottom: 8,
-        }}
-      >
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <HomeAvatar
-            avatarId={me.data?.homeAvatarId ?? null}
-            onChanged={() => qc.invalidateQueries({ queryKey: ["me"] })}
-          />
-          <h1 style={{ margin: 0 }}>{me.data?.homeDisplayName ?? "Howler"}</h1>
-        </div>
-        <div style={{ fontSize: 13, opacity: 0.7 }}>
-          {me.data?.userDisplayName ?? session.userId.slice(0, 8) + "…"}
-          <button
-            type="button"
-            onClick={handleLogout}
-            style={{
-              marginLeft: 12,
-              background: "transparent",
-              border: "1px solid #1e293b",
-              color: "inherit",
-              borderRadius: 6,
-              padding: "4px 8px",
-              cursor: "pointer",
-            }}
-          >
-            Log out
-          </button>
-        </div>
-      </header>
+    <main data-testid="dashboard" className="paper-grain mx-auto min-h-screen max-w-md">
+      <Header
+        homeName={me.data?.homeDisplayName ?? "Howler"}
+        homeAvatarId={me.data?.homeAvatarId ?? null}
+        userName={me.data?.userDisplayName}
+        userIdSlug={session.userId.slice(0, 8)}
+        onAvatarChanged={() => qc.invalidateQueries({ queryKey: ["me"] })}
+        onLogout={handleLogout}
+        leftCount={todayPending.length}
+      />
 
-      <PushToggle />
-
-
-      <section style={{ marginTop: 8 }}>
-        <h2 style={{ fontSize: 16, margin: "0 0 8px" }}>Pending</h2>
-        {pending.isLoading && <div className="empty">Loading…</div>}
-        {pending.isError && (
-          <div className="error">{(pending.error as Error).message}</div>
-        )}
-        {!pending.isLoading && pending.data?.length === 0 && (
-          <div className="empty">Nothing due.</div>
-        )}
-        {pending.data?.map((o) => (
-          <PendingCard
-            key={o.id}
-            occurrence={o}
-            task={(tasks.data ?? []).find((t) => t.id === o.taskId)}
-            labels={labels.data ?? []}
-            onAck={() => handleAckClick(o)}
-            busy={ack.isPending && ack.variables?.id === o.id}
-          />
-        ))}
+      <section className="px-5 pb-3 pt-1">
+        <ProgressBar done={doneToday} total={Math.max(totalToday, 1)} />
       </section>
 
-      <section style={{ marginTop: 24 }}>
-        <h2 style={{ fontSize: 16, margin: "0 0 8px" }}>New task</h2>
+      <section className="flex items-center justify-between px-5 pb-2">
+        <SegBtn
+          options={[
+            { value: "time" as const, label: "By time" },
+            { value: "label" as const, label: "By label" },
+          ]}
+          value={groupBy}
+          onChange={setGroupBy}
+        />
+        <PushPill />
+      </section>
+
+      <PendingGroups
+        groupBy={groupBy}
+        pending={todayPending}
+        tasks={tasks.data ?? []}
+        labels={labels.data ?? []}
+        recentlyAcked={recentlyAcked}
+        onAckClick={handleAckClick}
+        ackBusyId={ack.isPending ? ack.variables?.id ?? null : null}
+      />
+      {pending.isLoading && <Empty>Loading…</Empty>}
+      {!pending.isLoading && todayPending.length === 0 && (
+        <Empty>Nothing due. Quiet day.</Empty>
+      )}
+
+      <section className="px-5 py-6">
+        <h2 className="cap mb-2">New task</h2>
         <CreateTaskForm
           labels={labels.data ?? []}
           taskResults={taskResults.data ?? []}
@@ -189,10 +209,9 @@ export const Dashboard = ({ session, onLogout }: Props) => {
         />
       </section>
 
-      <section style={{ marginTop: 24 }}>
-        <h2 style={{ fontSize: 16, margin: "0 0 8px" }}>All tasks</h2>
-        {tasks.isLoading && <div className="empty">Loading…</div>}
-        {tasks.data?.length === 0 && <div className="empty">No tasks yet.</div>}
+      <Section title="All tasks">
+        {tasks.isLoading && <Empty>Loading…</Empty>}
+        {tasks.data?.length === 0 && <Empty>No tasks yet.</Empty>}
         {tasks.data?.map((t) => (
           <TaskRow
             key={t.id}
@@ -206,31 +225,40 @@ export const Dashboard = ({ session, onLogout }: Props) => {
             onSaved={() => qc.invalidateQueries({ queryKey: ["tasks"] })}
           />
         ))}
-      </section>
+      </Section>
 
-      <UsersSection
-        users={users.data ?? []}
-        sessionUserId={session.userId}
-        onChanged={() => qc.invalidateQueries({ queryKey: ["users"] })}
-      />
+      <Section title="Users">
+        <UsersBlock
+          users={users.data ?? []}
+          sessionUserId={session.userId}
+          onChanged={() => qc.invalidateQueries({ queryKey: ["users"] })}
+        />
+      </Section>
 
-      <DevicesSection
-        devices={devices.data ?? []}
-        onChanged={() => qc.invalidateQueries({ queryKey: ["devices"] })}
-      />
-
-      <PairDevice
-        onPaired={() => qc.invalidateQueries({ queryKey: ["devices"] })}
-      />
+      <Section title="Devices">
+        <DevicesBlock
+          devices={devices.data ?? []}
+          onChanged={() => qc.invalidateQueries({ queryKey: ["devices"] })}
+        />
+        <PairTile
+          onPaired={() => qc.invalidateQueries({ queryKey: ["devices"] })}
+        />
+      </Section>
 
       {ackTarget && (
-        <AckModal
+        <AckSheet
           occurrence={ackTarget}
-          task={(tasks.data ?? []).find((t) => t.id === ackTarget.taskId)!}
+          task={
+            (tasks.data ?? []).find((t) => t.id === ackTarget.taskId)!
+          }
           taskResults={taskResults.data ?? []}
           onCancel={() => setAckTarget(null)}
           onSubmit={(value, notes) => {
-            const args: { id: string; resultValue?: number | null; notes?: string | null } = { id: ackTarget.id };
+            const args: {
+              id: string;
+              resultValue?: number | null;
+              notes?: string | null;
+            } = { id: ackTarget.id };
             if (value !== undefined) args.resultValue = value;
             if (notes !== undefined) args.notes = notes;
             ack.mutate(args);
@@ -242,174 +270,282 @@ export const Dashboard = ({ session, onLogout }: Props) => {
   );
 };
 
-const TaskRow = ({
-  task,
-  labels,
-  taskResults,
-  onDelete,
-  deleting,
-  onSaved,
+// ── Header ────────────────────────────────────────────────────────
+
+const Header = ({
+  homeName,
+  homeAvatarId,
+  userName,
+  userIdSlug,
+  onAvatarChanged,
+  onLogout,
+  leftCount,
 }: {
-  task: Task;
-  labels: Label[];
-  taskResults: TaskResultDef[];
-  onDelete: () => void;
-  deleting: boolean;
-  onSaved: () => void;
+  homeName: string;
+  homeAvatarId: string | null;
+  userName: string | undefined;
+  userIdSlug: string;
+  onAvatarChanged: () => void;
+  onLogout: () => void;
+  leftCount: number;
 }) => {
-  const [editing, setEditing] = useState(false);
-  const [title, setTitle] = useState(task.title);
-  const [priority, setPriority] = useState(task.priority);
-  const [labelId, setLabelId] = useState<string | null>(task.labelId);
-  const [resultTypeId, setResultTypeId] = useState<string | null>(task.resultTypeId);
-
-  const m = useMutation({
-    mutationFn: () =>
-      updateTask(task.id, {
-        title: title.trim(),
-        priority,
-        labelId,
-        resultTypeId,
-      }),
-    onSuccess: () => {
-      setEditing(false);
-      onSaved();
-    },
-  });
-
-  const labelName = labels.find((l) => l.id === task.labelId)?.displayName;
-  const resultName = taskResults.find((r) => r.id === task.resultTypeId)?.displayName;
-
-  if (editing) {
-    return (
-      <div className="task" style={{ display: "grid", gap: 6 }}>
-        <input
-          value={title}
-          onChange={(e) => setTitle(e.target.value)}
-          style={inputStyle}
-        />
-        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-          <Select
-            value={labelId ?? ""}
-            onChange={(v) => setLabelId(v || null)}
-            options={[{ value: "", label: "— no label —" }, ...labels.map((l) => ({ value: l.id, label: l.displayName }))]}
-          />
-          <Select
-            value={resultTypeId ?? ""}
-            onChange={(v) => setResultTypeId(v || null)}
-            options={[{ value: "", label: "— no result —" }, ...taskResults.map((r) => ({ value: r.id, label: `${r.displayName} (${r.unitName})` }))]}
-          />
-          <span className="meta">priority</span>
-          <select
-            value={priority}
-            onChange={(e) => setPriority(parseInt(e.target.value, 10))}
-            style={selectStyle}
-          >
-            {[0, 1, 2, 3].map((p) => (
-              <option key={p} value={p}>{p}</option>
-            ))}
-          </select>
-        </div>
-        <div style={{ display: "flex", gap: 8 }}>
-          <button type="button" onClick={() => setEditing(false)} style={iconBtn}>
-            Cancel
-          </button>
-          <button
-            type="button"
-            onClick={() => m.mutate()}
-            disabled={m.isPending}
-            style={{ ...iconBtn, color: "#22c55e", borderColor: "#15803d" }}
-          >
-            {m.isPending ? "…" : "Save"}
-          </button>
-        </div>
+  const today = new Date();
+  return (
+    <header className="flex items-start justify-between gap-3 px-5 pb-1.5 pt-5">
+      <div className="min-w-0 flex-1">
+        <div className="cap mb-1">{fmtDayCaps(today)}</div>
+        <h1 className="font-display text-[26px] leading-tight">{homeName}</h1>
+        <p className="font-serif text-[18px] text-ink-2">
+          {leftCount === 0 ? "all clear" : `${leftCount} left today`}
+        </p>
       </div>
+      <div className="flex items-center gap-2">
+        <HomeAvatarTile
+          avatarId={homeAvatarId}
+          onChanged={onAvatarChanged}
+          seed={homeName}
+        />
+        <button
+          type="button"
+          onClick={onLogout}
+          className="ml-1 rounded-full border border-line px-2 py-1 text-[11px] text-ink-3 hover:bg-paper-2"
+          title={`Log out ${userName ?? userIdSlug}`}
+          aria-label="Log out"
+        >
+          ⏻
+        </button>
+      </div>
+    </header>
+  );
+};
+
+const HomeAvatarTile = ({
+  avatarId,
+  onChanged,
+  seed,
+}: {
+  avatarId: string | null;
+  onChanged: () => void;
+  seed: string;
+}) => {
+  const [busy, setBusy] = useState(false);
+  const onPick = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setBusy(true);
+    try {
+      const { id } = await uploadAvatar(file);
+      await updateHome({ avatarId: id });
+      onChanged();
+    } catch (err) {
+      console.warn(err);
+    } finally {
+      setBusy(false);
+      e.target.value = "";
+    }
+  };
+  return (
+    <label
+      className={`cursor-pointer ${busy ? "opacity-60" : ""}`}
+      title="Change home avatar"
+    >
+      <input
+        type="file"
+        accept="image/jpeg,image/png,image/webp"
+        onChange={onPick}
+        disabled={busy}
+        className="hidden"
+      />
+      <HowlerAvatar
+        avatarId={avatarId}
+        seed={seed}
+        initials={seed.slice(0, 2).toUpperCase()}
+        size={42}
+      />
+    </label>
+  );
+};
+
+// ── PushPill ──────────────────────────────────────────────────────
+
+const PushPill = () => {
+  const [perm, setPerm] = useState(currentPermission());
+  const [busy, setBusy] = useState(false);
+  if (!isPushSupported()) return null;
+  if (perm === "denied") return null;
+  if (perm === "granted") {
+    return (
+      <button
+        type="button"
+        onClick={async () => {
+          await unsubscribePush();
+          setPerm(currentPermission());
+        }}
+        className="cap rounded-full border border-line px-3 py-1 hover:bg-paper-2"
+      >
+        🔔 on
+      </button>
+    );
+  }
+  return (
+    <button
+      type="button"
+      onClick={async () => {
+        setBusy(true);
+        await subscribePush();
+        setPerm(currentPermission());
+        setBusy(false);
+      }}
+      disabled={busy}
+      className="cap rounded-full border border-line px-3 py-1 hover:bg-paper-2 disabled:opacity-50"
+    >
+      Notify me
+    </button>
+  );
+};
+
+// ── Pending grouped ────────────────────────────────────────────────
+
+const TIME_GROUPS = [
+  { id: "morning",   label: "Morning",   hours: [0, 11] as const,  caps: "07:00–11:00" },
+  { id: "afternoon", label: "Afternoon", hours: [12, 16] as const, caps: "12:00–17:00" },
+  { id: "evening",   label: "Evening",   hours: [17, 23] as const, caps: "17:00–22:00" },
+] as const;
+
+const PendingGroups = ({
+  groupBy,
+  pending,
+  tasks,
+  labels,
+  recentlyAcked,
+  onAckClick,
+  ackBusyId,
+}: {
+  groupBy: GroupBy;
+  pending: Occurrence[];
+  tasks: Task[];
+  labels: Label[];
+  recentlyAcked: Set<string>;
+  onAckClick: (o: Occurrence) => void;
+  ackBusyId: string | null;
+}) => {
+  const taskById = useMemo(
+    () => new Map(tasks.map((t) => [t.id, t])),
+    [tasks],
+  );
+  const labelById = useMemo(
+    () => new Map(labels.map((l) => [l.id, l])),
+    [labels],
+  );
+
+  if (groupBy === "time") {
+    const groups = TIME_GROUPS.map((g) => ({
+      ...g,
+      items: pending.filter((o) => {
+        const h = new Date(o.dueAt * 1000).getHours();
+        return h >= g.hours[0] && h <= g.hours[1];
+      }),
+    })).filter((g) => g.items.length > 0);
+
+    return (
+      <>
+        {groups.map((g) => (
+          <section key={g.id} className="mt-4">
+            <header className="flex items-baseline justify-between px-5 pb-1">
+              <h3 className="font-serif text-base">{g.label}</h3>
+              <span className="cap">{g.caps}</span>
+              <span className="font-mono text-xs text-ink-3 tabular-nums">
+                {g.items.length}
+              </span>
+            </header>
+            {g.items.map((o) => (
+              <DayRibbonRow
+                key={o.id}
+                occurrence={o}
+                task={taskById.get(o.taskId)}
+                label={labelById.get(taskById.get(o.taskId)?.labelId ?? "")}
+                acked={recentlyAcked.has(o.id)}
+                busy={ackBusyId === o.id}
+                onAck={() => onAckClick(o)}
+              />
+            ))}
+          </section>
+        ))}
+      </>
     );
   }
 
+  const byLabel = new Map<string | null, Occurrence[]>();
+  for (const o of pending) {
+    const t = taskById.get(o.taskId);
+    const k = t?.labelId ?? null;
+    const arr = byLabel.get(k) ?? [];
+    arr.push(o);
+    byLabel.set(k, arr);
+  }
+
   return (
-    <div
-      className="task"
-      style={{
-        display: "flex",
-        justifyContent: "space-between",
-        alignItems: "center",
-      }}
-    >
-      <div>
-        <div>{task.title}</div>
-        <div className="meta">
-          {kindLabel(task.kind)} · priority {task.priority}
-          {labelName && ` · ${labelName}`}
-          {resultName && ` · ${resultName}`}
-          {!task.active && " · paused"}
-        </div>
-      </div>
-      <div style={{ display: "flex", gap: 6 }}>
-        <button type="button" onClick={() => setEditing(true)} style={iconBtn}>
-          Edit
-        </button>
-        <button
-          type="button"
-          onClick={onDelete}
-          disabled={deleting}
-          style={{ ...iconBtn, color: "#f87171" }}
-        >
-          Delete
-        </button>
-      </div>
-    </div>
+    <>
+      {[...byLabel.entries()].map(([labelId, items]) => {
+        const label = labelId ? labelById.get(labelId) : undefined;
+        const swatchColor = label?.color ?? "#7A7060";
+        return (
+          <section key={labelId ?? "unlabeled"} className="mt-4">
+            <header className="flex items-center justify-between px-5 pb-1">
+              <div className="flex items-center gap-2">
+                <span
+                  className="inline-block h-2 w-2 rounded-full"
+                  style={{ background: swatchColor }}
+                  aria-hidden
+                />
+                <h3 className="font-serif text-base">
+                  {label?.displayName ?? "No label"}
+                </h3>
+              </div>
+              <span className="font-mono text-xs text-ink-3 tabular-nums">
+                {items.length}
+              </span>
+            </header>
+            {items.map((o) => (
+              <DayRibbonRow
+                key={o.id}
+                occurrence={o}
+                task={taskById.get(o.taskId)}
+                label={label}
+                acked={recentlyAcked.has(o.id)}
+                busy={ackBusyId === o.id}
+                onAck={() => onAckClick(o)}
+              />
+            ))}
+          </section>
+        );
+      })}
+    </>
   );
 };
 
-const PendingCard = ({
-  occurrence,
-  task,
-  labels,
-  onAck,
-  busy,
+const Empty = ({ children }: { children: React.ReactNode }) => (
+  <div className="px-5 py-10 text-center text-sm italic text-ink-3">
+    {children}
+  </div>
+);
+
+const Section = ({
+  title,
+  children,
 }: {
-  occurrence: Occurrence;
-  task: Task | undefined;
-  labels: Label[];
-  onAck: () => void;
-  busy: boolean;
-}) => {
-  const labelName = labels.find((l) => l.id === task?.labelId)?.displayName;
-  return (
-    <div
-      className="task"
-      style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}
-    >
-      <div>
-        <div>{task?.title ?? "(unknown task)"}</div>
-        <div className="meta">
-          due {fmtDue(occurrence.dueAt)}
-          {labelName && ` · ${labelName}`}
-        </div>
-      </div>
-      <button
-        type="button"
-        onClick={onAck}
-        disabled={busy}
-        style={{
-          padding: "8px 14px",
-          borderRadius: 8,
-          border: "none",
-          background: "#16a34a",
-          color: "white",
-          fontWeight: 600,
-          cursor: busy ? "default" : "pointer",
-          opacity: busy ? 0.6 : 1,
-        }}
-      >
-        {busy ? "…" : "Done"}
-      </button>
-    </div>
-  );
-};
+  title: string;
+  children: React.ReactNode;
+}) => (
+  <section className="border-t border-line-soft px-5 py-5">
+    <h2 className="cap mb-2">{title}</h2>
+    {children}
+  </section>
+);
 
-const AckModal = ({
+// ── Ack sheet (Slider variant B) ──────────────────────────────────
+
+const AckSheet = ({
   occurrence,
   task,
   taskResults,
@@ -425,94 +561,67 @@ const AckModal = ({
   busy: boolean;
 }) => {
   const rt = taskResults.find((r) => r.id === task.resultTypeId);
-  const [value, setValue] = useState<string>("");
+  const [value, setValue] = useState<number | null>(null);
   const [notes, setNotes] = useState("");
-  void occurrence;
+  const fmtDue = new Date(occurrence.dueAt * 1000).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
 
   return (
-    <div
-      style={{
-        position: "fixed",
-        inset: 0,
-        background: "rgba(0,0,0,0.6)",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        padding: 16,
-        zIndex: 100,
-      }}
-    >
-      <div
-        style={{
-          background: "#0f172a",
-          border: "1px solid #1e293b",
-          borderRadius: 12,
-          padding: 20,
-          maxWidth: 400,
-          width: "100%",
-        }}
-      >
-        <h3 style={{ margin: "0 0 8px" }}>{task.title}</h3>
-        {rt && (
-          <label style={{ display: "block", marginBottom: 12 }}>
-            <div className="meta" style={{ marginBottom: 4 }}>
-              {rt.displayName} ({rt.unitName})
-              {rt.minValue !== null && rt.maxValue !== null
-                ? ` — ${rt.minValue}…${rt.maxValue}`
-                : rt.minValue !== null
-                  ? ` — min ${rt.minValue}`
-                  : ""}
-            </div>
-            <input
-              type="number"
-              value={value}
-              onChange={(e) => setValue(e.target.value)}
-              step={rt.step}
-              min={rt.minValue ?? undefined}
-              max={rt.maxValue ?? undefined}
-              placeholder="(skip)"
-              style={inputStyle}
-            />
-          </label>
-        )}
-        <label style={{ display: "block", marginBottom: 12 }}>
-          <div className="meta" style={{ marginBottom: 4 }}>
-            Notes (optional)
-          </div>
-          <input
-            value={notes}
-            onChange={(e) => setNotes(e.target.value)}
-            style={inputStyle}
-          />
-        </label>
-        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-          <button type="button" onClick={onCancel} style={iconBtn} disabled={busy}>
-            Cancel
-          </button>
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => {
-              const num = value.trim() === "" ? undefined : Number(value);
-              onSubmit(num, notes.trim() || undefined);
-            }}
-            style={{
-              padding: "8px 14px",
-              borderRadius: 8,
-              border: "none",
-              background: "#16a34a",
-              color: "white",
-              fontWeight: 600,
-              cursor: busy ? "default" : "pointer",
-              opacity: busy ? 0.6 : 1,
-            }}
-          >
-            {busy ? "…" : "Done"}
-          </button>
+    <Sheet open onClose={onCancel} ariaLabel={`Mark "${task.title}" done`}>
+      <div className="flex items-center gap-3">
+        <HowlerAvatar
+          avatarId={task.avatarId}
+          seed={task.id}
+          initials={task.title.slice(0, 2).toUpperCase()}
+          size={44}
+        />
+        <div className="min-w-0 flex-1">
+          <div className="cap">due {fmtDue}</div>
+          <div className="font-serif text-lg leading-tight">{task.title}</div>
         </div>
       </div>
-    </div>
+
+      {rt && (
+        <div className="mt-5">
+          <ResultSlider result={rt} onChange={setValue} />
+        </div>
+      )}
+
+      <label className="mt-4 block">
+        <div className="cap mb-1">Notes (optional)</div>
+        <input
+          value={notes}
+          onChange={(e) => setNotes(e.target.value)}
+          className="w-full rounded-md border border-line bg-paper-2 px-3 py-2 text-sm focus:border-ink focus:outline-none"
+        />
+      </label>
+
+      <div className="mt-5 flex gap-2">
+        <Btn variant="outline" onClick={onCancel} disabled={busy}>
+          Skip value
+        </Btn>
+        <Btn
+          variant="primary"
+          onClick={() => onSubmit(value ?? undefined, notes.trim() || undefined)}
+          disabled={busy}
+          className="flex-1"
+        >
+          {busy ? "…" : "Mark done"}
+        </Btn>
+      </div>
+    </Sheet>
   );
+};
+
+// ── Create task form ──────────────────────────────────────────────
+
+const KIND_LABEL: Record<TaskKind, string> = {
+  DAILY: "daily",
+  PERIODIC: "every N days",
+  ONESHOT: "one-time",
 };
 
 const CreateTaskForm = ({
@@ -560,7 +669,6 @@ const CreateTaskForm = ({
       ...(assigneeId ? { assignees: [assigneeId] } : {}),
     };
     if (templateId) {
-      // Template overrides kind + rule fields server-side.
       create.mutate({ ...common, kind, templateId });
       return;
     }
@@ -576,44 +684,31 @@ const CreateTaskForm = ({
   };
 
   return (
-    <div
-      style={{
-        padding: 12,
-        border: "1px solid #1e293b",
-        borderRadius: 12,
-        background: "#111827",
-      }}
-    >
+    <div className="rounded-lg border border-line bg-paper-2 p-3">
       <input
         value={title}
         onChange={(e) => setTitle(e.target.value)}
         placeholder="What do you want to remember?"
-        style={inputStyle}
+        className="w-full rounded-md border border-line bg-paper px-3 py-2 text-sm focus:border-ink focus:outline-none"
       />
-      <div style={{ display: "flex", gap: 6, margin: "8px 0" }}>
+      <div className="mt-2 flex gap-1.5">
         {(["DAILY", "PERIODIC", "ONESHOT"] as const).map((k) => (
           <button
             key={k}
             type="button"
             onClick={() => setKind(k)}
-            style={{
-              flex: 1,
-              padding: "6px 8px",
-              borderRadius: 8,
-              border: "1px solid #1e293b",
-              background: kind === k ? "#1e293b" : "transparent",
-              color: "inherit",
-              cursor: "pointer",
-              fontSize: 13,
-            }}
+            className={`flex-1 rounded-md px-2 py-1.5 text-xs ${
+              kind === k
+                ? "bg-ink text-paper"
+                : "border border-line bg-transparent text-ink-2 hover:text-ink"
+            }`}
           >
-            {kindLabel(k)}
+            {KIND_LABEL[k]}
           </button>
         ))}
       </div>
-
-      <div style={{ display: "flex", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
-        <Select
+      <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
+        <SelectInline
           value={labelId}
           onChange={setLabelId}
           options={[
@@ -621,7 +716,7 @@ const CreateTaskForm = ({
             ...labels.map((l) => ({ value: l.id, label: l.displayName })),
           ]}
         />
-        <Select
+        <SelectInline
           value={resultTypeId}
           onChange={setResultTypeId}
           options={[
@@ -632,8 +727,16 @@ const CreateTaskForm = ({
             })),
           ]}
         />
+        <SelectInline
+          value={templateId}
+          onChange={setTemplateId}
+          options={[
+            { value: "", label: "— custom schedule —" },
+            ...templates.map((t) => ({ value: t.id, label: t.displayName })),
+          ]}
+        />
         {users.length > 1 && (
-          <Select
+          <SelectInline
             value={assigneeId}
             onChange={setAssigneeId}
             options={[
@@ -642,16 +745,43 @@ const CreateTaskForm = ({
             ]}
           />
         )}
-        <Select
-          value={templateId}
-          onChange={setTemplateId}
-          options={[
-            { value: "", label: "— custom schedule —" },
-            ...templates.map((t) => ({ value: t.id, label: t.displayName })),
-          ]}
-        />
       </div>
-      <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, opacity: 0.8, marginBottom: 6 }}>
+      {!templateId && kind === "DAILY" && (
+        <label className="mt-2 block text-xs">
+          <span className="cap mb-1 block">Times (UTC HH:MM, comma-separated)</span>
+          <input
+            value={times}
+            onChange={(e) => setTimes(e.target.value)}
+            placeholder="08:00, 14:00, 22:00"
+            className="w-full rounded-md border border-line bg-paper px-3 py-2 text-sm focus:border-ink focus:outline-none"
+          />
+        </label>
+      )}
+      {!templateId && kind === "PERIODIC" && (
+        <label className="mt-2 block text-xs">
+          <span className="cap mb-1 block">Every N days</span>
+          <input
+            type="number"
+            min={1}
+            value={intervalDays}
+            onChange={(e) => setIntervalDays(parseInt(e.target.value, 10) || 1)}
+            className="w-24 rounded-md border border-line bg-paper px-3 py-2 text-sm focus:border-ink focus:outline-none"
+          />
+        </label>
+      )}
+      {!templateId && kind === "ONESHOT" && (
+        <label className="mt-2 block text-xs">
+          <span className="cap mb-1 block">Remind in (minutes)</span>
+          <input
+            type="number"
+            min={1}
+            value={deadlineMins}
+            onChange={(e) => setDeadlineMins(parseInt(e.target.value, 10) || 1)}
+            className="w-24 rounded-md border border-line bg-paper px-3 py-2 text-sm focus:border-ink focus:outline-none"
+          />
+        </label>
+      )}
+      <label className="mt-2 flex items-center gap-2 text-xs text-ink-2">
         <input
           type="checkbox"
           checked={isPrivate}
@@ -659,70 +789,169 @@ const CreateTaskForm = ({
         />
         Private (only assignees + creator see)
       </label>
-
-      {!templateId && kind === "DAILY" && (
-        <div className="meta" style={{ marginBottom: 6 }}>
-          Times (UTC HH:MM, comma-separated)
-          <input
-            value={times}
-            onChange={(e) => setTimes(e.target.value)}
-            style={inputStyle}
-            placeholder="08:00, 14:00, 22:00"
-          />
-        </div>
-      )}
-      {!templateId && kind === "PERIODIC" && (
-        <div className="meta" style={{ marginBottom: 6 }}>
-          Every
-          <input
-            type="number"
-            min={1}
-            value={intervalDays}
-            onChange={(e) => setIntervalDays(parseInt(e.target.value, 10) || 1)}
-            style={{ ...inputStyle, width: 80, display: "inline-block", marginLeft: 8 }}
-          />
-          days
-        </div>
-      )}
-      {!templateId && kind === "ONESHOT" && (
-        <div className="meta" style={{ marginBottom: 6 }}>
-          Remind in
-          <input
-            type="number"
-            min={1}
-            value={deadlineMins}
-            onChange={(e) => setDeadlineMins(parseInt(e.target.value, 10) || 1)}
-            style={{ ...inputStyle, width: 80, display: "inline-block", marginLeft: 8 }}
-          />
-          minutes
-        </div>
-      )}
-
-      <button
-        type="button"
+      <Btn
+        size="block"
+        variant="primary"
         onClick={submit}
         disabled={create.isPending}
-        style={{
-          width: "100%",
-          marginTop: 8,
-          padding: "10px",
-          borderRadius: 8,
-          border: "none",
-          background: "#2563eb",
-          color: "white",
-          fontWeight: 600,
-          cursor: create.isPending ? "default" : "pointer",
-          opacity: create.isPending ? 0.6 : 1,
-        }}
+        className="mt-3"
       >
         {create.isPending ? "…" : "Add"}
-      </button>
-      {error && <div className="error" style={{ marginTop: 6 }}>{error}</div>}
+      </Btn>
+      {error && <p className="error mt-2">{error}</p>}
     </div>
   );
 };
 
-const UsersSection = ({
+const SelectInline = ({
+  value,
+  onChange,
+  options,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  options: { value: string; label: string }[];
+}) => (
+  <select
+    value={value}
+    onChange={(e) => onChange(e.target.value)}
+    className="rounded-md border border-line bg-paper px-2 py-1.5 focus:border-ink focus:outline-none"
+  >
+    {options.map((o) => (
+      <option key={o.value} value={o.value}>
+        {o.label}
+      </option>
+    ))}
+  </select>
+);
+
+// ── Task row (All tasks list) ─────────────────────────────────────
+
+const TaskRow = ({
+  task,
+  labels,
+  taskResults,
+  onDelete,
+  deleting,
+  onSaved,
+}: {
+  task: Task;
+  labels: Label[];
+  taskResults: TaskResultDef[];
+  onDelete: () => void;
+  deleting: boolean;
+  onSaved: () => void;
+}) => {
+  const [editing, setEditing] = useState(false);
+  const [title, setTitle] = useState(task.title);
+  const [priority, setPriority] = useState(task.priority);
+  const [labelId, setLabelId] = useState<string | null>(task.labelId);
+  const [resultTypeId, setResultTypeId] = useState<string | null>(task.resultTypeId);
+  const m = useMutation({
+    mutationFn: () =>
+      updateTask(task.id, {
+        title: title.trim(),
+        priority,
+        labelId,
+        resultTypeId,
+      }),
+    onSuccess: () => {
+      setEditing(false);
+      onSaved();
+    },
+  });
+  const labelName = labels.find((l) => l.id === task.labelId)?.displayName;
+  const resultName = taskResults.find((r) => r.id === task.resultTypeId)?.displayName;
+
+  if (editing) {
+    return (
+      <div className="task border-t border-line-soft px-1 py-2">
+        <input
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          className="mb-1 w-full rounded-md border border-line bg-paper px-3 py-2 text-sm focus:border-ink focus:outline-none"
+        />
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <SelectInline
+            value={labelId ?? ""}
+            onChange={(v) => setLabelId(v || null)}
+            options={[
+              { value: "", label: "— no label —" },
+              ...labels.map((l) => ({ value: l.id, label: l.displayName })),
+            ]}
+          />
+          <SelectInline
+            value={resultTypeId ?? ""}
+            onChange={(v) => setResultTypeId(v || null)}
+            options={[
+              { value: "", label: "— no result —" },
+              ...taskResults.map((r) => ({
+                value: r.id,
+                label: `${r.displayName} (${r.unitName})`,
+              })),
+            ]}
+          />
+          <span className="cap">priority</span>
+          <select
+            value={priority}
+            onChange={(e) => setPriority(parseInt(e.target.value, 10))}
+            className="rounded-md border border-line bg-paper px-2 py-1 text-xs focus:border-ink focus:outline-none"
+          >
+            {[0, 1, 2, 3].map((p) => (
+              <option key={p} value={p}>
+                {p}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="mt-2 flex justify-end gap-2">
+          <Btn variant="ghost" size="pillSm" onClick={() => setEditing(false)}>
+            Cancel
+          </Btn>
+          <Btn
+            variant="sage"
+            size="pillSm"
+            onClick={() => m.mutate()}
+            disabled={m.isPending}
+          >
+            {m.isPending ? "…" : "Save"}
+          </Btn>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="task flex items-center justify-between border-t border-line-soft py-2.5">
+      <div className="min-w-0">
+        <div className="text-[15px] font-medium">{task.title}</div>
+        <div className="cap mt-0.5">
+          {KIND_LABEL[task.kind]} · pri {task.priority}
+          {labelName && ` · ${labelName}`}
+          {resultName && ` · ${resultName}`}
+          {!task.active && " · paused"}
+        </div>
+      </div>
+      <div className="flex gap-1">
+        <Btn variant="ghost" size="pillSm" onClick={() => setEditing(true)}>
+          Edit
+        </Btn>
+        <Btn
+          variant="danger"
+          size="pillSm"
+          onClick={onDelete}
+          disabled={deleting}
+        >
+          Delete
+        </Btn>
+      </div>
+    </div>
+  );
+};
+
+// ── Users + Devices + Pair tile ───────────────────────────────────
+
+const UsersBlock = ({
   users,
   sessionUserId,
   onChanged,
@@ -750,17 +979,21 @@ const UsersSection = ({
     mutationFn: deleteUser,
     onSuccess: onChanged,
   });
+
   return (
-    <section style={{ marginTop: 24 }}>
-      <h2 style={{ fontSize: 16, margin: "0 0 8px" }}>Users in this home</h2>
+    <>
       {users.map((u) => (
         <UserRow
           key={u.id}
           user={u}
           isSelf={u.id === sessionUserId}
-          onRename={(displayName) => rename.mutate({ id: u.id, displayName })}
+          onRename={(n) => rename.mutate({ id: u.id, displayName: n })}
           onRemove={() => {
-            if (confirm(`Remove ${u.displayName}? Private tasks where they're the only assignee will be deleted.`)) {
+            if (
+              confirm(
+                `Remove ${u.displayName}? Private tasks where they're the only assignee will be deleted.`,
+              )
+            ) {
               remove.mutate(u.id);
             }
           }}
@@ -768,31 +1001,36 @@ const UsersSection = ({
         />
       ))}
       {adding ? (
-        <div className="task" style={{ display: "flex", gap: 8 }}>
+        <div className="flex gap-2 py-2">
           <input
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="Display name"
-            style={{ ...inputStyle, marginTop: 0 }}
+            className="flex-1 rounded-md border border-line bg-paper px-3 py-2 text-sm focus:border-ink focus:outline-none"
           />
-          <button type="button" onClick={() => setAdding(false)} style={iconBtn}>
+          <Btn variant="ghost" size="pillSm" onClick={() => setAdding(false)}>
             Cancel
-          </button>
-          <button
-            type="button"
-            disabled={add.isPending || !name.trim()}
+          </Btn>
+          <Btn
+            variant="sage"
+            size="pillSm"
             onClick={() => add.mutate()}
-            style={{ ...iconBtn, color: "#22c55e", borderColor: "#15803d" }}
+            disabled={!name.trim() || add.isPending}
           >
-            {add.isPending ? "…" : "Add"}
-          </button>
+            Add
+          </Btn>
         </div>
       ) : (
-        <button type="button" onClick={() => setAdding(true)} style={iconBtn}>
+        <Btn
+          variant="outline"
+          size="pillSm"
+          className="mt-2"
+          onClick={() => setAdding(true)}
+        >
           + Add user
-        </button>
+        </Btn>
       )}
-    </section>
+    </>
   );
 };
 
@@ -805,71 +1043,63 @@ const UserRow = ({
 }: {
   user: User;
   isSelf: boolean;
-  onRename: (displayName: string) => void;
+  onRename: (n: string) => void;
   onRemove: () => void;
   removing: boolean;
 }) => {
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(user.displayName);
   return (
-    <div
-      className="task"
-      style={{
-        display: "flex",
-        gap: 8,
-        alignItems: "center",
-        justifyContent: "space-between",
-      }}
-    >
+    <div className="flex items-center justify-between border-t border-line-soft py-2">
       {editing ? (
         <input
           value={name}
           onChange={(e) => setName(e.target.value)}
-          style={{ ...inputStyle, marginTop: 0 }}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              onRename(name.trim());
-              setEditing(false);
-            }
-          }}
+          className="mr-2 flex-1 rounded-md border border-line bg-paper px-3 py-1.5 text-sm focus:border-ink focus:outline-none"
         />
       ) : (
-        <div>
-          {user.displayName}
-          {isSelf && <span className="meta"> · you</span>}
+        <div className="flex items-center gap-2">
+          <HowlerAvatar
+            avatarId={user.avatarId}
+            seed={user.id}
+            initials={user.displayName.slice(0, 2).toUpperCase()}
+            size={28}
+          />
+          <span className="text-sm">{user.displayName}</span>
+          {isSelf && <span className="cap">you</span>}
         </div>
       )}
-      <div style={{ display: "flex", gap: 6 }}>
+      <div className="flex gap-1">
         {editing ? (
           <>
-            <button type="button" onClick={() => setEditing(false)} style={iconBtn}>
+            <Btn variant="ghost" size="pillSm" onClick={() => setEditing(false)}>
               Cancel
-            </button>
-            <button
-              type="button"
+            </Btn>
+            <Btn
+              variant="sage"
+              size="pillSm"
               onClick={() => {
                 onRename(name.trim());
                 setEditing(false);
               }}
-              style={{ ...iconBtn, color: "#22c55e", borderColor: "#15803d" }}
             >
               Save
-            </button>
+            </Btn>
           </>
         ) : (
           <>
-            <button type="button" onClick={() => setEditing(true)} style={iconBtn}>
+            <Btn variant="ghost" size="pillSm" onClick={() => setEditing(true)}>
               Rename
-            </button>
+            </Btn>
             {!isSelf && (
-              <button
-                type="button"
-                disabled={removing}
+              <Btn
+                variant="danger"
+                size="pillSm"
                 onClick={onRemove}
-                style={{ ...iconBtn, color: "#f87171" }}
+                disabled={removing}
               >
                 Remove
-              </button>
+              </Btn>
             )}
           </>
         )}
@@ -878,7 +1108,7 @@ const UserRow = ({
   );
 };
 
-const DevicesSection = ({
+const DevicesBlock = ({
   devices,
   onChanged,
 }: {
@@ -893,42 +1123,43 @@ const DevicesSection = ({
     if (dMin < 60) return `${dMin} min ago`;
     return `${Math.round(dMin / 60)} h ago`;
   };
-  if (devices.length === 0) return null;
+  if (devices.length === 0)
+    return <p className="cap py-2">No paired devices yet.</p>;
   return (
-    <section style={{ marginTop: 24 }}>
-      <h2 style={{ fontSize: 16, margin: "0 0 8px" }}>Paired devices</h2>
+    <>
       {devices.map((d) => (
         <div
           key={d.id}
-          className="task"
-          style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}
+          className="flex items-center justify-between border-t border-line-soft py-2"
         >
-          <div>
-            <div>{d.hwModel || "Unnamed device"}</div>
-            <div className="meta">
+          <div className="min-w-0">
+            <div className="text-sm">{d.hwModel || "Unnamed device"}</div>
+            <div className="cap mt-0.5">
               {d.id.slice(0, 8)}… · last seen {fmtSeen(d.lastSeenAt)}
               {d.fwVersion && ` · fw ${d.fwVersion}`}
             </div>
           </div>
-          <button
-            type="button"
+          <Btn
+            variant="danger"
+            size="pillSm"
             disabled={m.isPending && m.variables === d.id}
             onClick={() => {
               if (confirm("Revoke this device?")) m.mutate(d.id);
             }}
-            style={{ ...iconBtn, color: "#f87171" }}
           >
             Revoke
-          </button>
+          </Btn>
         </div>
       ))}
-    </section>
+    </>
   );
 };
 
-const PairDevice = ({ onPaired }: { onPaired: () => void }) => {
+const PairTile = ({ onPaired }: { onPaired: () => void }) => {
   const [code, setCode] = useState("");
-  const [msg, setMsg] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
+  const [msg, setMsg] = useState<{ kind: "ok" | "error"; text: string } | null>(
+    null,
+  );
   const m = useMutation({
     mutationFn: apiPairConfirm,
     onSuccess: () => {
@@ -937,237 +1168,34 @@ const PairDevice = ({ onPaired }: { onPaired: () => void }) => {
       onPaired();
     },
     onError: (e) =>
-      setMsg({ kind: "error", text: e instanceof Error ? e.message : String(e) }),
+      setMsg({
+        kind: "error",
+        text: e instanceof Error ? e.message : String(e),
+      }),
   });
   return (
-    <section style={{ marginTop: 24 }}>
-      <h2 style={{ fontSize: 16, margin: "0 0 8px" }}>Pair a device</h2>
-      <div
-        style={{
-          padding: 12,
-          border: "1px solid #1e293b",
-          borderRadius: 12,
-          background: "#111827",
-          display: "flex",
-          gap: 8,
-        }}
-      >
+    <div className="mt-3 rounded-lg border border-line bg-paper-2 p-3">
+      <h3 className="cap mb-2">Pair a new dial</h3>
+      <div className="flex gap-2">
         <input
           value={code}
           onChange={(e) => setCode(e.target.value)}
           placeholder="6-digit code shown on your dial"
-          style={{ ...inputStyle, marginTop: 0 }}
+          className="flex-1 rounded-md border border-line bg-paper px-3 py-2 text-sm focus:border-ink focus:outline-none"
         />
-        <button
-          type="button"
+        <Btn
+          variant="primary"
           onClick={() => m.mutate(code.trim())}
           disabled={m.isPending || code.trim().length === 0}
-          style={{
-            padding: "8px 14px",
-            borderRadius: 8,
-            border: "none",
-            background: "#2563eb",
-            color: "white",
-            fontWeight: 600,
-            cursor: m.isPending ? "default" : "pointer",
-            opacity: m.isPending ? 0.6 : 1,
-          }}
         >
           {m.isPending ? "…" : "Pair"}
-        </button>
+        </Btn>
       </div>
       {msg && (
-        <div
-          className={msg.kind === "ok" ? "meta" : "error"}
-          style={{ marginTop: 6 }}
-        >
+        <p className={`mt-1.5 text-xs ${msg.kind === "ok" ? "text-ink-2" : "text-accent-rose"}`}>
           {msg.text}
-        </div>
+        </p>
       )}
-    </section>
-  );
-};
-
-const HomeAvatar = ({
-  avatarId,
-  onChanged,
-}: {
-  avatarId: string | null;
-  onChanged: () => void;
-}) => {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const url = avatarUrl(avatarId);
-  const onPick = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const { id } = await uploadAvatar(file);
-      await updateHome({ avatarId: id });
-      onChanged();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
-      e.target.value = "";
-    }
-  };
-  return (
-    <label
-      style={{
-        cursor: busy ? "default" : "pointer",
-        opacity: busy ? 0.6 : 1,
-        position: "relative",
-      }}
-      title={error ?? "Click to change home avatar"}
-    >
-      <input
-        type="file"
-        accept="image/jpeg,image/png,image/webp"
-        onChange={onPick}
-        disabled={busy}
-        style={{ display: "none" }}
-      />
-      {url ? (
-        <img
-          src={url}
-          alt=""
-          width={48}
-          height={48}
-          style={{
-            borderRadius: "50%",
-            objectFit: "cover",
-            border: "2px solid #1e293b",
-          }}
-        />
-      ) : (
-        <div
-          style={{
-            width: 48,
-            height: 48,
-            borderRadius: "50%",
-            background: "#1e293b",
-            display: "grid",
-            placeItems: "center",
-            fontSize: 20,
-            border: "2px dashed #334155",
-            color: "#94a3b8",
-          }}
-        >
-          +
-        </div>
-      )}
-    </label>
-  );
-};
-
-const PushToggle = () => {
-  const [perm, setPerm] = useState(currentPermission());
-  const [enabling, setEnabling] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  if (!isPushSupported()) return null;
-
-  const enable = async () => {
-    setEnabling(true);
-    setError(null);
-    const r = await subscribePush();
-    if (!r.ok) {
-      setError(
-        r.reason === "vapid-not-configured"
-          ? "Push not configured on the server yet (Phase 2.6b)"
-          : r.reason ?? "failed",
-      );
-    } else {
-      setPerm(currentPermission());
-    }
-    setEnabling(false);
-  };
-  const disable = async () => {
-    await unsubscribePush();
-    setPerm(currentPermission());
-  };
-
-  if (perm === "granted") {
-    return (
-      <div className="meta" style={{ marginBottom: 8, opacity: 0.7 }}>
-        Notifications enabled.{" "}
-        <button type="button" onClick={disable} style={{ ...iconBtn, marginLeft: 6 }}>
-          Disable
-        </button>
-      </div>
-    );
-  }
-  if (perm === "denied") {
-    return (
-      <div className="meta" style={{ marginBottom: 8, opacity: 0.6 }}>
-        Notifications blocked in browser settings.
-      </div>
-    );
-  }
-  return (
-    <div style={{ marginBottom: 8 }}>
-      <button
-        type="button"
-        onClick={enable}
-        disabled={enabling}
-        style={{ ...iconBtn, fontSize: 13 }}
-      >
-        {enabling ? "…" : "Enable notifications"}
-      </button>
-      {error && <span className="error" style={{ marginLeft: 8 }}>{error}</span>}
     </div>
   );
-};
-
-const Select = ({
-  value,
-  onChange,
-  options,
-}: {
-  value: string;
-  onChange: (v: string) => void;
-  options: { value: string; label: string }[];
-}) => (
-  <select
-    value={value}
-    onChange={(e) => onChange(e.target.value)}
-    style={selectStyle}
-  >
-    {options.map((o) => (
-      <option key={o.value} value={o.value}>
-        {o.label}
-      </option>
-    ))}
-  </select>
-);
-
-const iconBtn: React.CSSProperties = {
-  background: "transparent",
-  border: "1px solid #1e293b",
-  color: "inherit",
-  borderRadius: 6,
-  padding: "4px 10px",
-  cursor: "pointer",
-  fontSize: 12,
-};
-
-const inputStyle: React.CSSProperties = {
-  width: "100%",
-  padding: "8px 10px",
-  borderRadius: 8,
-  border: "1px solid #1e293b",
-  background: "#0f172a",
-  color: "inherit",
-  marginTop: 4,
-};
-
-const selectStyle: React.CSSProperties = {
-  padding: "6px 8px",
-  borderRadius: 6,
-  border: "1px solid #1e293b",
-  background: "#0f172a",
-  color: "inherit",
-  fontSize: 13,
 };

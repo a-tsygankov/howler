@@ -5,7 +5,7 @@
 > question in [`docs/plan.md`](docs/plan.md) §17, or discovers a new risk.
 > If this grows past one page it's wrong — move detail into `docs/`.
 
-**Last updated:** 2026-05-06 — Phase 3 (web stability gate) shipped on `dev-4`. Visual regression deferred to Phase 2.8.
+**Last updated:** 2026-05-06 — Phase 2.8 design-system port (core) shipped on `dev-5`. Task detail + result-types manager + desktop view deferred to 2.8b.
 
 ## Live URLs
 
