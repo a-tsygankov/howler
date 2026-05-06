@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "author": "howler",
+  "editor": "wokwi",
+  "parts": [
+    { "type": "board-esp32-s3-devkitc-1", "id": "esp", "top": 0, "left": 0, "attrs": { "psramType": "quad" } },
+    { "type": "wokwi-ili9341", "id": "lcd", "top": -100, "left": 200, "attrs": { "rotation": "0" } },
+    { "type": "wokwi-ky-040", "id": "enc", "top": 100, "left": 200 }
+  ],
+  "connections": [
+    [ "esp:11", "lcd:MOSI", "green", [] ],
+    [ "esp:10", "lcd:SCK",  "yellow", [] ],
+    [ "esp:9",  "lcd:CS",   "purple", [] ],
+    [ "esp:3",  "lcd:DC",   "orange", [] ],
+    [ "esp:14", "lcd:RST",  "white",  [] ],
+    [ "esp:46", "lcd:LED",  "red",    [] ],
+    [ "esp:GND.1", "lcd:GND", "black", [] ],
+    [ "esp:3V3", "lcd:VCC",  "red",    [] ],
+
+    [ "esp:5", "enc:CLK", "green", [] ],
+    [ "esp:6", "enc:DT",  "yellow", [] ],
+    [ "esp:7", "enc:SW",  "purple", [] ],
+    [ "esp:GND.2", "enc:GND", "black", [] ],
+    [ "esp:3V3", "enc:VCC", "red", [] ]
+  ]
+}

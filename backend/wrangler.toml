@@ -1,0 +1,49 @@
+name = "howler-api"
+main = "src/index.ts"
+compatibility_date = "2025-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Run once to provision, then paste IDs in below:
+#   wrangler d1 create howler-db
+#   wrangler r2 bucket create howler-firmware
+#   wrangler r2 bucket create howler-avatars
+#   wrangler queues create occurrence-fire
+
+[[d1_databases]]
+binding = "DB"
+database_name = "howler-db"
+database_id = "REPLACE_ME_AFTER_D1_CREATE"
+migrations_dir = "migrations"
+
+[[r2_buckets]]
+binding = "FIRMWARE"
+bucket_name = "howler-firmware"
+
+[[r2_buckets]]
+binding = "AVATARS"
+bucket_name = "howler-avatars"
+
+[[queues.producers]]
+binding = "OCCURRENCE_QUEUE"
+queue = "occurrence-fire"
+
+[[queues.consumers]]
+queue = "occurrence-fire"
+max_batch_size = 25
+max_batch_timeout = 5
+max_retries = 3
+dead_letter_queue = "occurrence-fire-dlq"
+
+# Cron fan-out — every minute, fire scheduled occurrences whose
+# next_fire_at <= now. The handler enqueues onto OCCURRENCE_QUEUE
+# and returns fast; per-occurrence work runs in the queue consumer.
+[triggers]
+crons = ["* * * * *"]
+
+[vars]
+ENVIRONMENT = "development"
+# AUTH_SECRET must be set as a secret in production:
+#   wrangler secret put AUTH_SECRET
+
+[observability]
+enabled = true

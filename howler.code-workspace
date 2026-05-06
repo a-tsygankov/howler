@@ -1,0 +1,20 @@
+{
+  "folders": [
+    { "name": "howler", "path": "." },
+    { "name": "backend", "path": "backend" },
+    { "name": "webapp", "path": "webapp" },
+    { "name": "firmware", "path": "firmware" }
+  ],
+  "settings": {
+    "files.eol": "\n",
+    "typescript.tsdk": "node_modules/typescript/lib"
+  },
+  "extensions": {
+    "recommendations": [
+      "platformio.platformio-ide",
+      "wokwi.wokwi-vscode",
+      "bradlc.vscode-tailwindcss",
+      "esbenp.prettier-vscode"
+    ]
+  }
+}
