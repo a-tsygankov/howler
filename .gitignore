@@ -23,6 +23,11 @@ drizzle/meta/
 # Vite
 *.local
 
+# Playwright
+test-results/
+playwright-report/
+playwright/.cache/
+
 # PlatformIO
 firmware/.pio/
 firmware/.vscode/
