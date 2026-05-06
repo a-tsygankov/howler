@@ -5,14 +5,69 @@ import { sqliteTable, text, integer, index } from "drizzle-orm/sqlite-core";
 
 export const users = sqliteTable("users", {
   id: text("id").primaryKey(),
-  email: text("email").notNull().unique(),
-  displayName: text("display_name").notNull(),
+  username: text("username").unique(),
+  email: text("email"),
+  displayName: text("display_name"),
   pinHash: text("pin_hash"),
   pinSalt: text("pin_salt"),
   createdAt: integer("created_at").notNull(),
   updatedAt: integer("updated_at").notNull(),
   isDeleted: integer("is_deleted").notNull().default(0),
 });
+
+export const pendingPairings = sqliteTable(
+  "pending_pairings",
+  {
+    deviceId: text("device_id").primaryKey(),
+    pairCode: text("pair_code").notNull(),
+    serial: text("serial"),
+    hwModel: text("hw_model"),
+    requestedAt: integer("requested_at").notNull(),
+    expiresAt: integer("expires_at").notNull(),
+    cancelledAt: integer("cancelled_at"),
+    confirmedAt: integer("confirmed_at"),
+    userId: text("user_id"),
+    deviceToken: text("device_token"),
+  },
+  (t) => ({
+    byPairCode: index("pending_pairings_pair_code_idx").on(t.pairCode),
+    byExpires: index("pending_pairings_expires_idx").on(t.expiresAt),
+  }),
+);
+
+export const loginQrTokens = sqliteTable(
+  "login_qr_tokens",
+  {
+    token: text("token").primaryKey(),
+    deviceId: text("device_id").notNull(),
+    userId: text("user_id").notNull(),
+    createdAt: integer("created_at").notNull(),
+    expiresAt: integer("expires_at").notNull(),
+    consumedAt: integer("consumed_at"),
+  },
+  (t) => ({
+    byDevice: index("login_qr_device_idx").on(t.deviceId),
+    byExpires: index("login_qr_expires_idx").on(t.expiresAt),
+  }),
+);
+
+export const authLogs = sqliteTable(
+  "auth_logs",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    userId: text("user_id"),
+    ts: integer("ts").notNull(),
+    kind: text("kind").notNull(),
+    identifier: text("identifier"),
+    result: text("result").notNull(),
+    errorMessage: text("error_message"),
+    durationMs: integer("duration_ms").notNull().default(0),
+  },
+  (t) => ({
+    byUserTs: index("auth_logs_user_ts_idx").on(t.userId, t.ts),
+    byTs: index("auth_logs_ts_idx").on(t.ts),
+  }),
+);
 
 export const tasks = sqliteTable(
   "tasks",

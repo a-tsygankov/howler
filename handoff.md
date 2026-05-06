@@ -5,14 +5,14 @@
 > question in [`docs/plan.md`](docs/plan.md) §17, or discovers a new risk.
 > If this grows past one page it's wrong — move detail into `docs/`.
 
-**Last updated:** 2026-05-06 — Phase 0 scaffold + first deploy live.
+**Last updated:** 2026-05-06 — Phase 1 step 2 (scheduler + ack) on `dev-1`.
 
 ## Live URLs
 
 | | |
 | --- | --- |
-| Worker | https://howler-api.atsyg-feedme.workers.dev |
-| Pages  | https://howler-webapp.pages.dev |
+| Worker | https://howler-api.atsyg-feedme.workers.dev (prod) |
+| Pages  | https://howler-webapp.pages.dev (prod) · https://dev-1.howler-webapp.pages.dev (dev-1 preview) |
 | D1     | `howler-db` (id `39b29c7a-28b2-4bdf-93cd-bdb9cb031488`) |
 | R2     | `howler-firmware`, `howler-avatars` |
 | Queue  | `occurrence-fire` (+ DLQ `occurrence-fire-dlq`) |
@@ -22,10 +22,49 @@
 
 ## Current phase + what's next
 
-**Phase 0 — Scaffolding.** Goal: green CI on a monorepo skeleton with
-all bindings declared, the Pages → Worker proxy wired, drizzle-kit
-migrations producing real SQL, and the firmware `domain/application/adapters`
-layout ready to take its first port.
+**Roadmap reordered (plan §1.1 / §18, 2026-05-06).** Phases 1–3 are
+now server + webapp only; device firmware work is deferred to
+Phase 4, which gates on the web stack being demo-ready and bug-quiet
+for a week. The firmware skeleton stays in CI so architectural
+breakage gets caught early; no active firmware development until
+the gate is met.
+
+---
+
+**Phase 1 steps 1 + 2 landed on `dev-1`.**
+
+Step 1 — auth: PIN + HMAC tokens (UserToken 30 d, DeviceToken 365 d),
+transparent accounts, device pairing, login-by-QR. End-to-end chain
+(pair → quick-setup → device-token → login-token-create → login-qr →
+fresh UserToken) verified against the deployed Worker. Replay /
+expired / wrong-secret / deviceId-mismatch / wrong-pin all rejected.
+
+Step 2 — scheduler: Schedule + Occurrence repos filled (specs:
+OwnedBy, ForTask, DueBefore, PendingForUser); pure
+`computeNextFireAt` for DAILY / PERIODIC / ONESHOT; cron `* * * * *`
+fans schedules onto `OCCURRENCE_QUEUE`; queue consumer materialises
+`PENDING` occurrences and advances `next_fire_at`. Smoke-tested in
+prod: ONESHOT task with `deadlineHint = now + 5s` → next cron tick →
+`/api/occurrences/pending` returned the materialised row → `/ack`
+flipped it to ACKED → replay was idempotent.
+
+Webapp: full dashboard at https://dev-1.howler-webapp.pages.dev with
+tabs for Quick-start / Log in / Sign up, the QR-landing path, a
+pending-occurrences list with Done buttons, and a kind-aware
+create-task form (DAILY times / PERIODIC interval / ONESHOT remind-in).
+
+Next: **Phase 2 (server + web hardening)** per the reordered §18.
+Top of the punchlist:
+- Schedule templates (preset rules + user-defined).
+- Web push notifications via the PWA service worker.
+- Device list + revoke from the SPA.
+- Workers Analytics Engine dashboards (cron lag, ack latency).
+- Rate-limit the auth endpoints.
+- Option B avatars (round photo + urgency ring).
+
+After Phase 2 → **Phase 3** (Playwright happy paths + observability +
+the 7-day stability gate). Only then does device firmware (Phase 4+)
+become an active surface again.
 
 **What's left in Phase 0:**
 
@@ -74,6 +113,40 @@ recommendations; if you disagree, raise it before Phase 1 starts.
   `AUTH_SECRET` set on Worker, `WORKER_ORIGIN` set on Pages.
   End-to-end smoke: `https://howler-webapp.pages.dev/api/health` →
   `{ok:true}` proves the Pages → Functions → Worker → D1 chain.
+- 2026-05-06 — Phase 1 step 1 (auth) on `dev-1`. Migration `0001_auth.sql`
+  applied to local + remote D1 (rebuilt `users` table to add
+  `username` + relax `email/display_name` to nullable; added
+  `pending_pairings`, `login_qr_tokens`, `auth_logs`). Auth primitives
+  (PBKDF2 PIN + HMAC user/device tokens), Hono middleware, and
+  routes for `/api/auth/{setup,login,me,logout,set-pin,quick-setup,
+  login-token-create,login-qr}` + `/api/pair/{start,check,confirm}`.
+  `/api/tasks` no longer accepts `X-User-Id`; Bearer token required.
+  Webapp adds Quick-start / Log in / Sign up tabs and a `?token=&deviceId=`
+  QR-landing path. 13/13 unit tests pass; full pair+QR chain verified
+  against prod Worker.
+- 2026-05-06 — Phase 1 step 2 (scheduler) on `dev-1`. D1 repos for
+  Schedule + Occurrence; pure `computeNextFireAt` (7 unit tests);
+  cron-driven fan-out + Queue consumer materialise PENDING rows and
+  advance `next_fire_at`. `POST /api/tasks` creates Task + Schedule
+  atomically with kind-default rules. New routes `/api/occurrences/
+  {pending,/:id/ack}` (idempotent re-ack). Webapp dashboard surfaces
+  pending list + create-task form with kind-aware fields.
+  20/20 backend tests green. Cron + queue path verified end-to-end
+  in prod (ONESHOT now+5 → cron tick → pending → ack).
+- 2026-05-06 — Integration tests via `@cloudflare/vitest-pool-workers`.
+  9 tests exercise the live Worker (auth, pair+QR end-to-end with
+  replay rejection + deviceId mismatch, task RBAC across two users,
+  ack idempotency). Migrations applied to in-memory D1 via
+  `?raw` SQL imports. **29/29 backend tests green.**
+- 2026-05-06 — Webapp CRUD complete-the-loop. `DELETE /api/tasks/:id`
+  (soft delete, owner-checked) + Delete buttons on every task; a
+  Pair-a-device tile on the dashboard that POSTs `/api/pair/confirm`
+  so the SPA can drive the full pair flow without leaving the page.
+- 2026-05-06 — Task EDIT. `PATCH /api/tasks/:id` for
+  `{title, description, priority, active}` (kind changes still go via
+  delete-and-recreate — schedule rebuild is non-trivial). Inline-
+  edit row in the dashboard. **30/30 backend tests green** (added
+  the PATCH happy-path + non-owner 403).
 
 ## Open questions (synced with plan §17)
 

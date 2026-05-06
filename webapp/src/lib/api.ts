@@ -1,7 +1,6 @@
 import { z } from "zod";
+import { getToken, clearSession } from "./session.ts";
 
-// Phase 0 — duplicates the backend TaskDto schema. Once we bring up
-// the shared types package (Phase 1), import from there instead.
 const TaskSchema = z.object({
   id: z.string(),
   userId: z.string(),
@@ -19,18 +18,170 @@ export type Task = z.infer<typeof TaskSchema>;
 
 const TasksResponseSchema = z.object({ tasks: z.array(TaskSchema) });
 
-const PHASE0_USER_ID = "00000000000000000000000000000001";
+const baseHeaders = (init?: HeadersInit): HeadersInit => {
+  const h: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...(init as Record<string, string> | undefined),
+  };
+  const token = getToken();
+  if (token) h["Authorization"] = `Bearer ${token}`;
+  return h;
+};
 
-const baseHeaders = (): HeadersInit => ({
-  "Content-Type": "application/json",
-  "X-User-Id": PHASE0_USER_ID,
+const handle = async (res: Response): Promise<unknown> => {
+  if (res.status === 401) {
+    // Token rejected — clear local session so the UI re-prompts.
+    clearSession();
+    throw new Error("unauthorized");
+  }
+  if (!res.ok) {
+    let msg = `HTTP ${res.status}`;
+    try {
+      const body = (await res.json()) as { error?: string };
+      if (body.error) msg = body.error;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(msg);
+  }
+  return res.json();
+};
+
+const api = {
+  get: async (path: string): Promise<unknown> =>
+    handle(
+      await fetch(`/api${path}`, {
+        method: "GET",
+        headers: baseHeaders(),
+        credentials: "include",
+      }),
+    ),
+  post: async (path: string, body: unknown): Promise<unknown> =>
+    handle(
+      await fetch(`/api${path}`, {
+        method: "POST",
+        headers: baseHeaders(),
+        credentials: "include",
+        body: JSON.stringify(body),
+      }),
+    ),
+};
+
+// ── Auth ────────────────────────────────────────────────────────────
+
+const AuthResponseSchema = z.object({
+  token: z.string(),
+  userId: z.string(),
+  username: z.string().nullable(),
+  deviceClaimed: z.boolean().optional(),
+});
+export type AuthResponse = z.infer<typeof AuthResponseSchema>;
+
+export const apiSetup = async (
+  username: string,
+  pin: string,
+): Promise<AuthResponse> =>
+  AuthResponseSchema.parse(await api.post("/auth/setup", { username, pin }));
+
+export const apiLogin = async (
+  username: string,
+  pin: string,
+): Promise<AuthResponse> =>
+  AuthResponseSchema.parse(await api.post("/auth/login", { username, pin }));
+
+export const apiQuickSetup = async (input?: {
+  pairCode?: string;
+  displayName?: string;
+}): Promise<AuthResponse> =>
+  AuthResponseSchema.parse(await api.post("/auth/quick-setup", input ?? {}));
+
+export const apiLoginQr = async (
+  deviceId: string,
+  token: string,
+): Promise<AuthResponse> =>
+  AuthResponseSchema.parse(
+    await api.post("/auth/login-qr", { deviceId, token }),
+  );
+
+export const apiLogout = async (): Promise<void> => {
+  await api.post("/auth/logout", {});
+  clearSession();
+};
+
+// ── Tasks ──────────────────────────────────────────────────────────
+
+export const fetchTasks = async (): Promise<Task[]> =>
+  TasksResponseSchema.parse(await api.get("/tasks")).tasks;
+
+export type TaskKind = "DAILY" | "PERIODIC" | "ONESHOT";
+
+export interface CreateTaskInput {
+  title: string;
+  kind: TaskKind;
+  priority?: number;
+  description?: string;
+  times?: string[];
+  intervalDays?: number;
+  deadlineHint?: number;
+}
+
+export const createTask = async (input: CreateTaskInput): Promise<Task> =>
+  TaskSchema.parse(await api.post("/tasks", input));
+
+export interface UpdateTaskInput {
+  title?: string;
+  description?: string | null;
+  priority?: number;
+  active?: boolean;
+}
+
+export const updateTask = async (
+  id: string,
+  patch: UpdateTaskInput,
+): Promise<Task> => {
+  const res = await fetch(`/api/tasks/${id}`, {
+    method: "PATCH",
+    headers: baseHeaders(),
+    credentials: "include",
+    body: JSON.stringify(patch),
+  });
+  return TaskSchema.parse(await handle(res));
+};
+
+export const deleteTask = async (id: string): Promise<void> => {
+  const res = await fetch(`/api/tasks/${id}`, {
+    method: "DELETE",
+    headers: baseHeaders(),
+    credentials: "include",
+  });
+  if (!res.ok && res.status !== 204) throw new Error(`delete: HTTP ${res.status}`);
+};
+
+export const apiPairConfirm = async (pairCode: string): Promise<void> => {
+  await api.post("/pair/confirm", { pairCode });
+};
+
+// ── Occurrences ────────────────────────────────────────────────────
+
+const OccurrenceSchema = z.object({
+  id: z.string(),
+  taskId: z.string(),
+  dueAt: z.number().int(),
+  status: z.enum(["PENDING", "ACKED", "SKIPPED", "MISSED"]),
+  ackedAt: z.number().int().nullable(),
+});
+export type Occurrence = z.infer<typeof OccurrenceSchema>;
+
+const OccurrencesResponseSchema = z.object({
+  occurrences: z.array(OccurrenceSchema),
 });
 
-export const fetchTasks = async (): Promise<Task[]> => {
-  const res = await fetch("/api/tasks", { headers: baseHeaders() });
-  if (!res.ok) throw new Error(`tasks: HTTP ${res.status}`);
-  return TasksResponseSchema.parse(await res.json()).tasks;
-};
+export const fetchPending = async (): Promise<Occurrence[]> =>
+  OccurrencesResponseSchema.parse(await api.get("/occurrences/pending"))
+    .occurrences;
+
+export const ackOccurrence = async (id: string): Promise<Occurrence> =>
+  OccurrenceSchema.parse(await api.post(`/occurrences/${id}/ack`, {}));
 
 export const fetchHealth = async (): Promise<{ ok: boolean }> => {
   const res = await fetch("/api/health");

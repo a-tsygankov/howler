@@ -26,6 +26,37 @@
 | Avatars | n/a | Per-task urgency-tinted imagery |
 | Testing | Ad-hoc | Layered + HIL strategy |
 
+### 1.1. Priority — current focus *(updated 2026-05-06)*
+
+**Server + webapp first; device firmware deferred until both are stable and functional.**
+
+Concretely: §18's roadmap was reordered so Phases 1–3 are entirely
+server + webapp work (auth, scheduler, web CRUD, observability,
+Playwright happy-path), and device-firmware work begins in Phase 4
+once the web stack is *demo-ready and bug-quiet*. The hardware
+choice in §4, the firmware stack in §12, the device UX contract
+in §11, the OTA design in §14, and the comms abstraction's MQTT
+adapter in §10 are all still authoritative — they're just not
+active development surfaces until Phase 4 starts.
+
+**Why:** the device only earns its keep when the server + web app
+underneath it are reliable. Delivering the phone-first experience
+end-to-end first means we (a) catch protocol-level mistakes before
+they're baked into firmware, (b) have something to demo the moment
+hardware exists, and (c) avoid the failure mode where firmware bugs
+mask server bugs (or vice versa) during integration.
+
+**What this does NOT change:**
+- The **comms abstraction** (§10) stays in place from day one — the
+  REST polling adapter is what the webapp uses today; the device
+  just hasn't grown one yet.
+- The **Repository / UnitOfWork** seam (§9) is already the discipline
+  the server uses; nothing about the deferral relaxes it.
+- The **firmware skeleton** (`firmware/` with `domain/application/
+  adapters` layout, native + simulator PlatformIO envs) remains in
+  the repo and keeps building in CI — the build is the canary that
+  catches breaking architectural changes early.
+
 ---
 
 ## 2. Glossary
@@ -66,6 +97,10 @@ These cross-cut every section below. We pick libraries to honour them, not the o
 ---
 
 ## 4. Hardware — CrowPanel ESP32 Rotary Display 1.28" *(per Feedme)*
+
+> **§1.1 status: device work is Phase 4+.** The pin map, partition
+> layout, and driver decisions below remain authoritative — we just
+> aren't soldering until the server + webapp are stable.
 
 **Updated after Feedme review.** The board Feedme already runs on is the **CrowPanel 1.28" HMI ESP32 Rotary Display** (Elecrow):
 
@@ -549,6 +584,10 @@ For server → device, Workers publish over MQTT-over-WebSockets (`mqtt.js`) ins
 
 ## 11. Device UX — Unified Menu Component
 
+> **§1.1 status: device work is Phase 4+.** The contract below is what
+> the firmware will implement when device development resumes; the
+> webapp meanwhile drives the entire user experience.
+
 Every screen is a composite of **two regions**:
 
 ```
@@ -615,6 +654,12 @@ stateDiagram-v2
 
 ## 12. Device firmware stack — pick
 
+> **§1.1 status: device work is Phase 4+.** The skeleton (`firmware/`
+> with `domain/application/adapters`, `[env:native]` + `[env:simulator]`
+> + `[env:crowpanel]` PlatformIO envs) lives in the repo today and
+> CI builds all three on every PR — that's the canary keeping the
+> port stable while we focus on the server + web app.
+
 CrowPanel ESP32 Rotary Display (§4) is not an M5Stack board, so M5Unified / M5GFX don't apply. Feedme already runs on this hardware with a working stack; we keep the bones and bump LVGL.
 
 | Layer | Pick | Source |
@@ -678,6 +723,11 @@ Background removal runs as an **async Workers Queue job**; the UI shows the orig
 ---
 
 ## 14. OTA Updates
+
+> **§1.1 status: device work is Phase 4+, and OTA itself is Phase 6.**
+> The design below is locked in but unbuilt; R2 bucket
+> `howler-firmware` was provisioned in Phase 0 so the bucket key is
+> already there when we resume.
 
 **Pick: ESP-IDF `esp_https_ota` (exposed via Arduino-ESP32) with signed images, dual-app partition layout, binaries on R2, manifests served by the Worker.**
 
@@ -796,14 +846,40 @@ The hardest open problem: device-server integration testing. Below we name the l
 
 ## 18. Phased Roadmap
 
+> **Reordered 2026-05-06 per §1.1.** Phases 1–3 are server + webapp
+> only; device firmware work begins at Phase 4 once the web stack is
+> demo-ready. Old phase contents weren't deleted — they were split
+> between the server-side bits (pulled forward) and device-side bits
+> (pushed back to Phase 4+).
+
 | Phase | Theme | Ships |
 | --- | --- | --- |
-| **0 — Scaffolding** | Repo, CI, Cloudflare bindings | Monorepo (`backend/`, `webapp/`, `firmware/`, `scripts/`) — same shape as Feedme; `wrangler.toml` with D1 + R2 + Queue + Cron bindings; Pages project + `webapp/functions/api/[[path]].ts` proxy (copied from Feedme); baseline drizzle-kit migration; firmware skeleton with `domain/application/adapters` layout; `[env:native]` + `[env:simulator]` (Wokwi) PlatformIO envs; CI green (path-filtered backend/webapp/firmware jobs, mirrored from Feedme's `deploy.yml`); `handoff.md`; §20.1 conflicts C1–C7 resolved |
-| **1 — MVP** | End-to-end with REST polling | All 3 task shapes; templates; web CRUD; device reads pending list, ack via long-press; Option B avatars; Repository/UoW landed; Cron + Queue scheduling; LWW triplet + idempotency keys on every syncable entity; PIN auth + dual UserToken/DeviceToken inherited from Feedme; Playwright happy path |
-| **2 — Device polish** | UX contract + tests | Unified menu component; arc + marquee; HIL-1 in CI; LVGL theming; offline degraded mode |
-| **3 — MQTT swap** | Comms transport flip | HiveMQ Cloud account; MQTT bridge service deployed (Fly.io / Container); MQTT adapter behind feature flag; mTLS to broker; keep REST as fallback |
-| **4 — OTA** | Signed updates + rollback | Signing in CI; firmware self-update; HIL-3 release gate; rollback test |
-| **5 — Polish** | Stylized avatars + nice-to-haves | Option A avatar pipeline (Workers AI); passkeys; richer schedule templates; Workers Analytics dashboards |
+| **0 — Scaffolding** ✅ | Repo, CI, Cloudflare bindings | Monorepo (`backend/`, `webapp/`, `firmware/`, `scripts/`) — same shape as Feedme; `wrangler.toml` with D1 + R2 + Queue + Cron bindings; Pages project + `webapp/functions/api/[[path]].ts` proxy (copied from Feedme); baseline drizzle-kit migration; firmware skeleton with `domain/application/adapters` layout; `[env:native]` + `[env:simulator]` (Wokwi) + `[env:crowpanel]` PlatformIO envs; CI green; §20.1 conflicts C1–C7 resolved |
+| **1 — Server + Web MVP** 🟡 | End-to-end web flow over REST | All 3 task shapes; web CRUD (create / list / edit / delete / ack); transparent + PIN accounts; pair flow + login-by-QR; Repository/UoW seam; Cron + Queue scheduling; LWW triplet + idempotency keys on every syncable entity; PIN auth + dual UserToken/DeviceToken; integration tests over real D1 binding |
+| **2 — Server + Web hardening** | Feature-completion + UX polish | Schedule templates (preset rules + DB-backed user-defined); web push notifications via PWA service worker; device list + revoke from the web; per-task description / notes; Workers Analytics Engine dashboards for cron lag, ack latency, auth failures; rate-limiting on auth endpoints; **Option B avatars** (round photo + urgency ring) — the all-photo path with no AI bg-removal |
+| **3 — Web stability gate** | Beta-ready | Playwright happy paths covering quick-setup → create task → ack → edit → delete; visual regression on the dashboard; error-budget SLOs documented; CSP locked down on Pages; structured server logs + Logpush to R2; `handoff.md` audit; **gate to Phase 4: server + webapp must be demo-ready and bug-quiet for one week before device work resumes** |
+| — *device work resumes here* — | | |
+| **4 — Device firmware MVP** | Web-stable + first device | Hardware ordered; firmware grows real `WifiNetwork` adapter + token persistence; `/api/pair/start` flow runs on the dial; pending-list polling + long-press ack; HIL-1 (native) + HIL-2 (Wokwi) in CI; HIL-3 (real CrowPanel) on `release/*` only |
+| **5 — Device UX + comms maturity** | Unified menu + MQTT | §11 unified menu component (control region + info view, arc, marquee); LVGL 9 theming; offline degraded mode; HiveMQ Cloud broker + bridge service; MQTT adapter behind a feature flag; keep REST as fallback |
+| **6 — OTA** | Signed updates + rollback | Signing in CI; firmware self-update via `esp_https_ota`; pending-verify + auto-rollback; HIL-3 release gate; manifest rollout rules per device |
+| **7 — Polish** | Stylized avatars + advanced | Option A avatar pipeline (Workers AI bg-removal, silhouette tinting); passkeys; richer schedule templates editor; richer Analytics dashboards; webapp animations; native mobile shell *(maybe)* |
+
+**Status legend:** ✅ done · 🟡 in progress · *(unmarked)* not started.
+
+**What "demo-ready" means for the Phase 3 → 4 gate:**
+
+1. The Phase 1 + 2 happy paths in Playwright stay green for 7
+   consecutive days on `main`.
+2. No P0/P1 bugs open against the web app or API.
+3. The Phase 2 Workers Analytics dashboard shows cron lag p99 < 90 s
+   and ack latency p99 < 500 ms for 24 h of synthetic traffic.
+4. Two non-engineer testers complete the quick-setup → create task →
+   get notification → ack flow on a phone without help.
+
+Until those are met, no firmware time. The discipline matters: the
+device is the most expensive feedback loop in the system, and
+shipping it before the server stabilises just multiplies bug-hunt
+cost across two layers we can't change at the same speed.
 
 ---
 
@@ -924,4 +1000,6 @@ These are genuinely new and have no Feedme precedent — design from scratch:
 
 ---
 
-*End of plan. Phase 0 starts after C1–C7 in §20.1 are confirmed and §4 hardware is locked.*
+*End of plan. Phase 0 is complete (C1–C7 resolved per §20.4). Phase 1
+is in progress on `dev-1`; Phase 2 begins once `handoff.md` lists no
+P0/P1 issues against Phase 1's surface.*

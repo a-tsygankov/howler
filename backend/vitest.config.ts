@@ -8,6 +8,9 @@ export default defineWorkersConfig({
         miniflare: {
           compatibilityDate: "2025-01-01",
           compatibilityFlags: ["nodejs_compat"],
+          bindings: {
+            AUTH_SECRET: "integration-test-secret",
+          },
         },
       },
     },
