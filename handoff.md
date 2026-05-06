@@ -114,6 +114,11 @@ recommendations; if you disagree, raise it before Phase 1 starts.
   pending list + create-task form with kind-aware fields.
   20/20 backend tests green. Cron + queue path verified end-to-end
   in prod (ONESHOT now+5 → cron tick → pending → ack).
+- 2026-05-06 — Integration tests via `@cloudflare/vitest-pool-workers`.
+  9 tests exercise the live Worker (auth, pair+QR end-to-end with
+  replay rejection + deviceId mismatch, task RBAC across two users,
+  ack idempotency). Migrations applied to in-memory D1 via
+  `?raw` SQL imports. **29/29 backend tests green.**
 
 ## Open questions (synced with plan §17)
 
