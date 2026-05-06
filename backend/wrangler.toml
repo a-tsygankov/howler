@@ -49,10 +49,29 @@ type = "ratelimit"
 namespace_id = "1001"
 simple = { limit = 10, period = 60 }
 
+# Workers Analytics Engine — fire-and-forget structured events for
+# cron lag, ack latency, auth failures, push delivery. Query via the
+# Cloudflare dashboard's SQL Analytics Engine view.
+#
+# DISABLED until Analytics Engine is enabled on the account at
+#   https://dash.cloudflare.com/<account>/workers/analytics-engine
+# Once enabled, uncomment and redeploy. The instrumentation code in
+# src/observability.ts is already wired and is a no-op when the
+# binding is missing, so the toggle is one config change.
+# [[analytics_engine_datasets]]
+# binding = "ANALYTICS"
+# dataset = "howler_events"
+
 [vars]
 ENVIRONMENT = "development"
 # AUTH_SECRET must be set as a secret in production:
 #   wrangler secret put AUTH_SECRET
+# PUSH_VAPID_PRIVATE_KEY must be set as a secret too:
+#   wrangler secret put PUSH_VAPID_PRIVATE_KEY
+# PUSH_VAPID_PUBLIC_KEY is non-secret (it's served to clients);
+# generate a fresh keypair with `node scripts/gen-vapid.mjs`.
+PUSH_VAPID_PUBLIC_KEY = "BOlOdaqrQjvihqh-4O5x76dov01ospCtCUpop4imLLYx5IjWFWuVXlaX9Ixd5No_Qdw5Vg9nQhThLKbyCZAcrPo"
+VAPID_CONTACT = "mailto:noreply@howler.local"
 
 [observability]
 enabled = true

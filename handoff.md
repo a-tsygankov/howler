@@ -5,7 +5,7 @@
 > question in [`docs/plan.md`](docs/plan.md) §17, or discovers a new risk.
 > If this grows past one page it's wrong — move detail into `docs/`.
 
-**Last updated:** 2026-05-06 — Phase 2 (server + web hardening) shipped on `dev-2`. Web-push encryption (2.6b) deferred.
+**Last updated:** 2026-05-06 — Phase 2 complete (incl. 2.6b push delivery + 2.7 analytics instrumentation).
 
 ## Live URLs
 
@@ -83,13 +83,19 @@ create-task form (DAILY times / PERIODIC interval / ONESHOT remind-in).
 - ✅ 2.4 schedule templates (5 seeded per home; tasks accept templateId)
 - ✅ 2.5 Option B avatars (R2 uploader + home avatar in dashboard)
 - ✅ 2.6 web push **plumbing** — endpoints, table, SW, permission flow
-- ⛔ 2.6b web push **delivery** (VAPID-signed encrypted payloads from
-   the queue consumer) — *deferred*. Without this, browsers drop
-   pushes silently. To ship: generate a VAPID keypair, set
-   `PUSH_VAPID_PUBLIC_KEY` (Worker var) + `PUSH_VAPID_PRIVATE_KEY`
-   (Worker secret), implement aes128gcm + ECDH + HKDF + ES256 JWT
-   signing in `services/push.ts`, fan out from `consumeFireQueue`.
-- ⛔ 2.7 Workers Analytics dashboards — *deferred* (own chunk).
+- ✅ 2.6b web push **delivery** — VAPID JWT (RFC 8292, ES256) +
+  AES128GCM payload encryption (RFC 8291) implemented in
+  `services/push.ts` with `crypto.subtle`. `consumeFireQueue` calls
+  `dispatchPushForOccurrence` which fans out per-subscription. Dead
+  subscriptions tombstone on 404/410. VAPID keypair generated with
+  `node scripts/gen-vapid.mjs`; public key in `wrangler.toml [vars]`,
+  private uploaded as Worker secret.
+- ✅ 2.7 Workers Analytics Engine — `observability.ts` instruments
+  cron lag, ack latency, auth events, and push delivery; binding is
+  commented out in `wrangler.toml` because the account doesn't have
+  Analytics Engine enabled yet (one dashboard click + uncomment +
+  redeploy and dashboards light up). SQL queries for the standard
+  dashboards are documented in `docs/observability.md`.
 
 **Next:** Phase 3 — Playwright happy paths + observability + the
 7-day stability gate. Only then does device firmware (Phase 4+)

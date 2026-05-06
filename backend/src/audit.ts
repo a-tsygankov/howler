@@ -1,8 +1,11 @@
-// Auth audit log — ring buffer capped at 100 rows per user (and 1000
-// total for un-attributed events). Same shape as Feedme's `audit.ts`.
-// Diagnostic surface: lets the user inspect *why* a pair / login flow
-// failed without grepping Worker logs. Phase 1 only — we'll consider
-// promoting/demoting this to Workers Analytics Engine in a later phase.
+// Auth audit log — ring buffer capped at 100 rows per home (and 1000
+// total for un-attributed events). Diagnostic surface for "why did
+// this pair / login flow fail" without grepping Worker logs.
+//
+// Plan §17 #3 / Phase 2.7: each insert also fires a Workers Analytics
+// Engine data point (via observability.recordAuthEvent) so a
+// dashboard can show success/error rates over time without opening
+// the per-home ring buffer.
 
 const PER_USER_CAP = 100;
 const GLOBAL_UNATTRIBUTED_CAP = 1000;
@@ -22,6 +25,9 @@ export type AuthLogKind =
 
 export type AuthLogResult = "ok" | "error";
 
+import type { Bindings } from "./env.ts";
+import { recordAuthEvent } from "./observability.ts";
+
 export const recordAuthLog = async (
   db: D1Database,
   homeId: string | null,
@@ -31,9 +37,13 @@ export const recordAuthLog = async (
   result: AuthLogResult,
   errorMessage: string | null,
   startMs: number,
+  env?: Bindings,
 ): Promise<void> => {
   const ts = Math.floor(Date.now() / 1000);
   const durationMs = Date.now() - startMs;
+  if (env) {
+    recordAuthEvent(env, kind, result, durationMs, errorMessage ?? undefined);
+  }
   try {
     await db
       .prepare(
