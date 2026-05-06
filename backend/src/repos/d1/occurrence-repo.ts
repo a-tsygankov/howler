@@ -3,7 +3,9 @@ import type { Occurrence } from "../../domain/occurrence.ts";
 import {
   asDeviceId,
   asOccurrenceId,
+  asTaskExecutionId,
   asTaskId,
+  asUserId,
   type OccurrenceId,
 } from "../../domain/ids.ts";
 import type { D1UnitOfWork } from "./unit-of-work.ts";
@@ -15,7 +17,9 @@ interface OccurrenceRow {
   fired_at: number | null;
   acked_at: number | null;
   status: "PENDING" | "ACKED" | "SKIPPED" | "MISSED";
-  acked_by_device: string | null;
+  acked_by_user_id: string | null;
+  acked_by_device_id: string | null;
+  execution_id: string | null;
   idempotency_key: string | null;
   created_at: number;
   updated_at: number;
@@ -29,7 +33,9 @@ const rowToOccurrence = (r: OccurrenceRow): Occurrence => ({
   firedAt: r.fired_at,
   ackedAt: r.acked_at,
   status: r.status,
-  ackedByDevice: r.acked_by_device ? asDeviceId(r.acked_by_device) : null,
+  ackedByUserId: r.acked_by_user_id ? asUserId(r.acked_by_user_id) : null,
+  ackedByDeviceId: r.acked_by_device_id ? asDeviceId(r.acked_by_device_id) : null,
+  executionId: r.execution_id ? asTaskExecutionId(r.execution_id) : null,
   idempotencyKey: r.idempotency_key,
   createdAt: r.created_at,
   updatedAt: r.updated_at,
@@ -53,20 +59,17 @@ export class D1OccurrenceRepository
   }
 
   async findMany(spec: ISpecification<Occurrence>): Promise<Occurrence[]> {
-    if (spec.tag === "PendingForUser") {
-      // Tasks belong to a user; occurrences are scoped through the
-      // task. Single JOIN keeps the spec implementation transport-
-      // local — the spec object itself stays user-agnostic.
-      const userId = spec.params["userId"] as string;
+    if (spec.tag === "PendingForHome") {
+      const homeId = spec.params["homeId"] as string;
       const limit = (spec.params["limit"] as number | undefined) ?? 50;
       const { results } = await this.d1
         .prepare(
           `SELECT o.* FROM occurrences o
            JOIN tasks t ON t.id = o.task_id
-           WHERE t.user_id = ? AND o.status = 'PENDING' AND o.is_deleted = 0
+           WHERE t.home_id = ? AND o.status = 'PENDING' AND o.is_deleted = 0
            ORDER BY o.due_at ASC LIMIT ?`,
         )
-        .bind(userId, limit)
+        .bind(homeId, limit)
         .all<OccurrenceRow>();
       return results.map(rowToOccurrence);
     }
@@ -85,16 +88,14 @@ export class D1OccurrenceRepository
   }
 
   add(o: Occurrence): Promise<void> {
-    // INSERT OR IGNORE on the idempotency_key unique index dedupes
-    // device-side replays. Plan §6 / Feedme `events.event_id` lesson.
     this.uow.enqueue(
       this.d1
         .prepare(
           `INSERT OR IGNORE INTO occurrences
              (id, task_id, due_at, fired_at, acked_at, status,
-              acked_by_device, idempotency_key,
-              created_at, updated_at, is_deleted)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              acked_by_user_id, acked_by_device_id, execution_id,
+              idempotency_key, created_at, updated_at, is_deleted)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .bind(
           o.id,
@@ -103,7 +104,9 @@ export class D1OccurrenceRepository
           o.firedAt,
           o.ackedAt,
           o.status,
-          o.ackedByDevice,
+          o.ackedByUserId,
+          o.ackedByDeviceId,
+          o.executionId,
           o.idempotencyKey,
           o.createdAt,
           o.updatedAt,
@@ -119,7 +122,8 @@ export class D1OccurrenceRepository
         .prepare(
           `UPDATE occurrences SET
              due_at = ?, fired_at = ?, acked_at = ?, status = ?,
-             acked_by_device = ?, updated_at = ?, is_deleted = ?
+             acked_by_user_id = ?, acked_by_device_id = ?,
+             execution_id = ?, updated_at = ?, is_deleted = ?
            WHERE id = ?`,
         )
         .bind(
@@ -127,7 +131,9 @@ export class D1OccurrenceRepository
           o.firedAt,
           o.ackedAt,
           o.status,
-          o.ackedByDevice,
+          o.ackedByUserId,
+          o.ackedByDeviceId,
+          o.executionId,
           o.updatedAt,
           o.isDeleted ? 1 : 0,
           o.id,

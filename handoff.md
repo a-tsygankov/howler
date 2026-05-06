@@ -5,14 +5,14 @@
 > question in [`docs/plan.md`](docs/plan.md) §17, or discovers a new risk.
 > If this grows past one page it's wrong — move detail into `docs/`.
 
-**Last updated:** 2026-05-06 — Phase 1 step 2 (scheduler + ack) on `dev-1`.
+**Last updated:** 2026-05-06 — Phase 2.0 (home-centric model) live on `dev-2`.
 
 ## Live URLs
 
 | | |
 | --- | --- |
 | Worker | https://howler-api.atsyg-feedme.workers.dev (prod) |
-| Pages  | https://howler-webapp.pages.dev (prod) · https://dev-1.howler-webapp.pages.dev (dev-1 preview) |
+| Pages  | https://howler-webapp.pages.dev (prod) · https://dev-1.howler-webapp.pages.dev (dev-1) · https://dev-2.howler-webapp.pages.dev (dev-2) |
 | D1     | `howler-db` (id `39b29c7a-28b2-4bdf-93cd-bdb9cb031488`) |
 | R2     | `howler-firmware`, `howler-avatars` |
 | Queue  | `occurrence-fire` (+ DLQ `occurrence-fire-dlq`) |
@@ -28,6 +28,27 @@ Phase 4, which gates on the web stack being demo-ready and bug-quiet
 for a week. The firmware skeleton stays in CI so architectural
 breakage gets caught early; no active firmware development until
 the gate is met.
+
+**Data model pivot (plan §6, 2026-05-06).** Howler is now home-centric:
+**HOME** is the auth realm and contains multiple **USER**s, **DEVICE**s,
+**LABEL**s, and tasks. Each task can be assigned to one or more users
+(via `task_assignments` join), can be private, can carry an optional
+label, and can opt into a numeric **TASK_RESULT** type (Pushups,
+Grams, Rating, …). Acking an occurrence writes a row to the new
+**append-only `task_executions`** log with a denormalized snapshot of
+label + unit, so dashboards can run aggregates (avg daily grams,
+weekly pushups) without joins that break when types or labels change.
+Migration `0002_home.sql` rebuilds the affected tables (no real prod
+data yet) and seeds five default TaskResult types per home. Token
+claims grow a `homeId`. Login + QR exchange add a user-picker step
+(`/api/auth/select-user`). See §6.1 for the migration outline, §6.2
+for the new auth flow, §6.3 for the **10** design defaults I'm ready
+to commit to unless overridden, §6.4 for the seeded TaskResult
+templates, §6.5 for append-only semantics.
+
+**This rework is now Phase 2's first item** — everything else in
+Phase 2 (templates, web push, observability, avatars) builds on the
+new schema, so it ships before any of them.
 
 ---
 
@@ -133,6 +154,20 @@ recommendations; if you disagree, raise it before Phase 1 starts.
   pending list + create-task form with kind-aware fields.
   20/20 backend tests green. Cron + queue path verified end-to-end
   in prod (ONESHOT now+5 → cron tick → pending → ack).
+- 2026-05-06 — Phase 2.0 — home-centric model rework on `dev-2`.
+  Migration `0002_home.sql` rebuilds the schema (home, user-as-child,
+  labels, task_results, task_assignments, task_executions; tokens
+  carry homeId; auth flow grows a user-picker step). Application-
+  level seed inserts the 4 default labels + 5 TaskResult templates
+  per new home. `POST /api/occurrences/:id/ack` now accepts
+  `{resultValue?, notes?}` and writes a denormalized snapshot to
+  `task_executions` in the same UoW batch. New CRUD routes for
+  `/api/labels` and `/api/task-results`. **31/31 backend tests
+  green** (10 in the integration suite, including a new `ack-with-
+  resultValue stores the snapshot` case). Worker live at the same
+  URL; webapp live at https://dev-2.howler-webapp.pages.dev with a
+  user-picker after login + an ack dialog that asks for the value
+  when a task has a result type.
 - 2026-05-06 — Integration tests via `@cloudflare/vitest-pool-workers`.
   9 tests exercise the live Worker (auth, pair+QR end-to-end with
   replay rejection + deviceId mismatch, task RBAC across two users,

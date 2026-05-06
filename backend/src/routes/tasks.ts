@@ -3,58 +3,143 @@ import { zValidator } from "@hono/zod-validator";
 import type { Bindings } from "../env.ts";
 import { D1UnitOfWork } from "../repos/d1/unit-of-work.ts";
 import { CreateTaskSchema, UpdateTaskSchema } from "../shared/schemas.ts";
-import { createTask, getTask, listTasks, updateTask } from "../services/task-service.ts";
-import { asTaskId, asUserId } from "../domain/ids.ts";
+import {
+  createTask,
+  getTask,
+  listTasks,
+  updateTask,
+} from "../services/task-service.ts";
+import { asHomeId, asTaskId } from "../domain/ids.ts";
 import { requireAuth, requireUser, type AuthVars } from "../middleware/auth.ts";
 
-export const tasksRouter = new Hono<{ Bindings: Bindings; Variables: AuthVars }>()
+const replaceAssignments = async (
+  db: D1Database,
+  taskId: string,
+  homeId: string,
+  userIds: string[],
+  nowSec: number,
+): Promise<void> => {
+  // Validate every userId belongs to the caller's home before
+  // writing — otherwise a hostile client could attach foreign users.
+  if (userIds.length > 0) {
+    const placeholders = userIds.map(() => "?").join(",");
+    const { results } = await db
+      .prepare(
+        `SELECT id FROM users WHERE home_id = ? AND is_deleted = 0
+         AND id IN (${placeholders})`,
+      )
+      .bind(homeId, ...userIds)
+      .all<{ id: string }>();
+    const valid = new Set(results.map((r) => r.id));
+    for (const u of userIds) {
+      if (!valid.has(u)) throw new Error(`user ${u} not in this home`);
+    }
+  }
+  const ops: D1PreparedStatement[] = [
+    db.prepare("DELETE FROM task_assignments WHERE task_id = ?").bind(taskId),
+  ];
+  for (const userId of userIds) {
+    ops.push(
+      db
+        .prepare(
+          "INSERT INTO task_assignments (task_id, user_id, created_at) VALUES (?, ?, ?)",
+        )
+        .bind(taskId, userId, nowSec),
+    );
+  }
+  if (ops.length > 1) await db.batch(ops);
+  else await ops[0]!.run();
+};
+
+export const tasksRouter = new Hono<{
+  Bindings: Bindings;
+  Variables: AuthVars;
+}>()
   .use("*", requireAuth(), requireUser())
+
   .get("/", async (c) => {
-    const userId = asUserId(c.get("auth").userId);
+    const homeId = asHomeId(c.get("user").homeId);
     const uow = new D1UnitOfWork(c.env.DB);
-    const tasks = await listTasks(uow, userId);
+    const tasks = await listTasks(uow, homeId);
     return c.json({ tasks });
   })
+
   .get("/:id", async (c) => {
+    const callerHomeId = c.get("user").homeId;
     const uow = new D1UnitOfWork(c.env.DB);
     const result = await getTask(uow, c.req.param("id"));
     if (!result.ok) return c.json({ error: result.error }, 404);
-    // Defence-in-depth: don't leak someone else's task even if its id is guessed.
-    if (result.value.userId !== c.get("auth").userId) {
+    if (result.value.homeId !== callerHomeId) {
       return c.json({ error: "not-found" }, 404);
     }
-    return c.json(result.value);
+    // Hydrate assignees.
+    const { results } = await c.env.DB
+      .prepare("SELECT user_id FROM task_assignments WHERE task_id = ?")
+      .bind(result.value.id)
+      .all<{ user_id: string }>();
+    return c.json({
+      ...result.value,
+      assignees: results.map((r) => r.user_id),
+    });
   })
+
   .post("/", zValidator("json", CreateTaskSchema), async (c) => {
-    const userId = c.get("auth").userId;
+    const auth = c.get("user");
+    const home = await c.env.DB
+      .prepare("SELECT tz FROM homes WHERE id = ?")
+      .bind(auth.homeId)
+      .first<{ tz: string }>();
+    const homeTz = home?.tz ?? "UTC";
     const uow = new D1UnitOfWork(c.env.DB);
-    const dto = await createTask(uow, userId, c.req.valid("json"));
+    const input = c.req.valid("json");
+    const { dto, taskId } = await createTask(
+      uow,
+      { homeId: auth.homeId, creatorUserId: auth.userId, homeTz },
+      input,
+    );
+    if (input.assignees && input.assignees.length > 0) {
+      await replaceAssignments(
+        c.env.DB,
+        taskId,
+        auth.homeId,
+        input.assignees,
+        Math.floor(Date.now() / 1000),
+      );
+    }
     return c.json(dto, 201);
   })
+
   .patch("/:id", zValidator("json", UpdateTaskSchema), async (c) => {
-    const callerId = c.get("auth").userId;
+    const auth = c.get("user");
     const id = c.req.param("id");
     const uow = new D1UnitOfWork(c.env.DB);
-    const result = await updateTask(uow, id, callerId, c.req.valid("json"));
+    const patch = c.req.valid("json");
+    const result = await updateTask(uow, id, auth.homeId, patch);
     if (!result.ok) {
       const status = result.error === "not-found" ? 404 : 403;
       return c.json({ error: result.error }, status);
     }
+    if (patch.assignees !== undefined) {
+      await replaceAssignments(
+        c.env.DB,
+        id,
+        auth.homeId,
+        patch.assignees,
+        Math.floor(Date.now() / 1000),
+      );
+    }
     return c.json(result.value);
   })
+
   .delete("/:id", async (c) => {
-    const callerId = c.get("auth").userId;
+    const auth = c.get("user");
     const id = c.req.param("id");
     const uow = new D1UnitOfWork(c.env.DB);
     const result = await getTask(uow, id);
     if (!result.ok) return c.json({ error: result.error }, 404);
-    if (result.value.userId !== callerId) {
+    if (result.value.homeId !== auth.homeId) {
       return c.json({ error: "not-found" }, 404);
     }
-    // Soft delete; cron's DueBefore + tasks.OwnedBy specs already
-    // filter on is_deleted=0, so a deleted task immediately drops
-    // out of every list. Schedule rows are tombstoned alongside
-    // when they next fire (Phase 2 will add an explicit cascade).
     await uow.run(async (tx) => {
       await tx.tasks.remove(asTaskId(result.value.id));
     });

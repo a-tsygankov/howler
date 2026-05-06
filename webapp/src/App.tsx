@@ -1,10 +1,10 @@
 import { useState } from "react";
-import { getUser, type SessionUser } from "./lib/session.ts";
+import { getSession, type SessionInfo } from "./lib/session.ts";
 import { Login } from "./Login.tsx";
 import { Dashboard } from "./Dashboard.tsx";
 
 export const App = () => {
-  const [user, setUser] = useState<SessionUser | null>(getUser);
-  if (!user) return <Login onLoggedIn={setUser} />;
-  return <Dashboard user={user} onLogout={() => setUser(null)} />;
+  const [session, setSession] = useState<SessionInfo | null>(getSession);
+  if (!session) return <Login onLoggedIn={setSession} />;
+  return <Dashboard session={session} onLogout={() => setSession(null)} />;
 };

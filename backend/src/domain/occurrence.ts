@@ -1,4 +1,10 @@
-import type { DeviceId, OccurrenceId, TaskId } from "./ids.ts";
+import type {
+  DeviceId,
+  OccurrenceId,
+  TaskExecutionId,
+  TaskId,
+  UserId,
+} from "./ids.ts";
 
 export type OccurrenceStatus = "PENDING" | "ACKED" | "SKIPPED" | "MISSED";
 
@@ -9,7 +15,9 @@ export interface Occurrence {
   firedAt: number | null;
   ackedAt: number | null;
   status: OccurrenceStatus;
-  ackedByDevice: DeviceId | null;
+  ackedByUserId: UserId | null;
+  ackedByDeviceId: DeviceId | null;
+  executionId: TaskExecutionId | null;
   idempotencyKey: string | null;
   createdAt: number;
   updatedAt: number;
