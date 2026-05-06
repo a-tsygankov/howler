@@ -1,3 +1,4 @@
+import { clock } from "../clock.ts";
 // Pure next-fire-time computation. No DB, no clock — caller passes
 // `now` so this is property-testable. Plan §17 risk #6 (DST) is
 // addressed by computing in user TZ then materialising the absolute

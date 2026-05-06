@@ -1,3 +1,4 @@
+import { clock } from "../clock.ts";
 import type { IUnitOfWork } from "../repos/interfaces.ts";
 import { ownedByHome } from "../repos/specs.ts";
 import {
@@ -86,7 +87,7 @@ export const createTask = async (
   input: CreateTaskInput,
 ): Promise<CreateTaskResult> =>
   uow.run(async (tx) => {
-    const nowMs = Date.now();
+    const nowMs = clock().nowMs();
     const nowSec = Math.floor(nowMs / 1000);
     const taskId = asTaskId(newUuid());
     const task: Task = {
@@ -155,7 +156,7 @@ export const updateTask = async (
           ? null
           : asTaskResultId(patch.resultTypeId),
       isPrivate: patch.isPrivate ?? t.isPrivate,
-      updatedAt: Date.now(),
+      updatedAt: clock().nowMs(),
     };
     await tx.tasks.update(next);
     return ok(toDto(next));

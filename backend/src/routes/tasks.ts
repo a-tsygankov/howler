@@ -1,3 +1,4 @@
+import { clock } from "../clock.ts";
 import { Hono } from "hono";
 import { zValidator } from "@hono/zod-validator";
 import type { Bindings } from "../env.ts";
@@ -128,7 +129,7 @@ export const tasksRouter = new Hono<{
         taskId,
         auth.homeId,
         input.assignees,
-        Math.floor(Date.now() / 1000),
+        clock().nowSec(),
       );
     }
     return c.json(dto, 201);
@@ -150,7 +151,7 @@ export const tasksRouter = new Hono<{
         id,
         auth.homeId,
         patch.assignees,
-        Math.floor(Date.now() / 1000),
+        clock().nowSec(),
       );
     }
     return c.json(result.value);

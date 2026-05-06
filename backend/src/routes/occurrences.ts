@@ -1,3 +1,4 @@
+import { clock } from "../clock.ts";
 import { Hono } from "hono";
 import { zValidator } from "@hono/zod-validator";
 import type { Bindings } from "../env.ts";

@@ -1,3 +1,4 @@
+import { clock } from "./clock.ts";
 import { Hono } from "hono";
 import type { Bindings, OccurrenceFireMessage } from "./env.ts";
 import { tasksRouter } from "./routes/tasks.ts";
@@ -22,7 +23,7 @@ const app = new Hono<{ Bindings: Bindings; Variables: AuthVars }>();
 // /api/health probe; everything else logs method+path+status.
 app.use("*", async (c, next) => {
   const reqId = reqIdFor(c.req.raw);
-  const start = Date.now();
+  const start = clock().nowMs();
   await next();
   const path = new URL(c.req.url).pathname;
   if (path === "/api/health") return;
@@ -31,12 +32,12 @@ app.use("*", async (c, next) => {
     method: c.req.method,
     path,
     status: c.res.status,
-    durationMs: Date.now() - start,
+    durationMs: clock().nowMs() - start,
   });
 });
 
 app.get("/api/health", (c) =>
-  c.json({ ok: true, env: c.env.ENVIRONMENT, ts: Date.now() }),
+  c.json({ ok: true, env: c.env.ENVIRONMENT, ts: clock().nowMs() }),
 );
 
 app.route("/api/auth", authRouter);

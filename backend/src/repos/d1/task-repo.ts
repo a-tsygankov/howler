@@ -1,3 +1,4 @@
+import { clock } from "../../clock.ts";
 import type { IRepository, ISpecification } from "../interfaces.ts";
 import type { Task } from "../../domain/task.ts";
 import {
@@ -140,7 +141,7 @@ export class D1TaskRepository implements IRepository<Task, TaskId> {
   }
 
   remove(id: TaskId): Promise<void> {
-    const now = Date.now();
+    const now = clock().nowMs();
     this.uow.enqueue(
       this.d1
         .prepare("UPDATE tasks SET is_deleted = 1, updated_at = ? WHERE id = ?")

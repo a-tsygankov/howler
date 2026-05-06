@@ -1,3 +1,4 @@
+import { clock } from "../clock.ts";
 import { Hono } from "hono";
 import { zValidator } from "@hono/zod-validator";
 import type { Bindings } from "../env.ts";
@@ -98,7 +99,7 @@ export const authRouter = new Hono<{ Bindings: Bindings; Variables: AuthVars }>(
   //   user.login = NULL  (per-user logins added later)
   // Seeds the four default labels and five default TaskResults.
   .post("/setup", rateLimit("setup"), zValidator("json", SetupSchema), async (c) => {
-    const start = Date.now();
+    const start = clock().nowMs();
     const { login, pin, tz } = c.req.valid("json");
     const taken = await c.env.DB.prepare(
       "SELECT id FROM homes WHERE login = ? AND is_deleted = 0",
@@ -112,7 +113,7 @@ export const authRouter = new Hono<{ Bindings: Bindings; Variables: AuthVars }>(
     const { salt, hash } = await hashPin(pin);
     const homeId = newUuid();
     const userId = newUuid();
-    const nowSec = Math.floor(Date.now() / 1000);
+    const nowSec = clock().nowSec();
     await c.env.DB.batch([
       c.env.DB.prepare(
         `INSERT INTO homes (id, display_name, login, pin_salt, pin_hash, tz, created_at, updated_at, is_deleted)
@@ -145,7 +146,7 @@ export const authRouter = new Hono<{ Bindings: Bindings; Variables: AuthVars }>(
       return null;
     }
   }), zValidator("json", LoginSchema), async (c) => {
-    const start = Date.now();
+    const start = clock().nowMs();
     const { login, pin } = c.req.valid("json");
     const home = await c.env.DB.prepare(
       `SELECT id, display_name, login, pin_salt, pin_hash, tz FROM homes
@@ -197,7 +198,7 @@ export const authRouter = new Hono<{ Bindings: Bindings; Variables: AuthVars }>(
   // Phone exchanges its short-lived selectorToken plus a chosen user
   // for a real UserToken.
   .post("/select-user", zValidator("json", SelectUserSchema), async (c) => {
-    const start = Date.now();
+    const start = clock().nowMs();
     const { selectorToken, userId } = c.req.valid("json");
     const payload = await verifySelectorToken(selectorToken, requireSecret(c.env));
     if (!payload) {
@@ -225,12 +226,12 @@ export const authRouter = new Hono<{ Bindings: Bindings; Variables: AuthVars }>(
   // pairCode is supplied and matches a fresh pending_pairings row,
   // claim that device for the new home.
   .post("/quick-setup", rateLimit("quick-setup"), zValidator("json", QuickSetupSchema), async (c) => {
-    const start = Date.now();
+    const start = clock().nowMs();
     const { pairCode, displayName, tz } = c.req.valid("json");
     const homeId = newUuid();
     const userId = newUuid();
     const homeLogin = QUICK_SETUP_PREFIX + randomHex(QUICK_SETUP_RAND_HEX / 2);
-    const nowSec = Math.floor(Date.now() / 1000);
+    const nowSec = clock().nowSec();
 
     let pendingDeviceId: string | null = null;
     if (pairCode) {
@@ -346,7 +347,7 @@ export const authRouter = new Hono<{ Bindings: Bindings; Variables: AuthVars }>(
 
   // ── POST /api/auth/set-pin { pin } — promote transparent → PIN ────
   .post("/set-pin", requireAuth(), requireUser(), zValidator("json", SetPinSchema), async (c) => {
-    const start = Date.now();
+    const start = clock().nowMs();
     const u = c.get("user");
     const { pin } = c.req.valid("json");
     const home = await c.env.DB.prepare(
@@ -360,7 +361,7 @@ export const authRouter = new Hono<{ Bindings: Bindings; Variables: AuthVars }>(
       return c.json({ error: "PIN already set; change-pin not implemented" }, 409);
     }
     const { salt, hash } = await hashPin(pin);
-    const nowSec = Math.floor(Date.now() / 1000);
+    const nowSec = clock().nowSec();
     await c.env.DB.prepare(
       `UPDATE homes SET pin_salt = ?, pin_hash = ?, updated_at = ? WHERE id = ?`,
     )
@@ -372,7 +373,7 @@ export const authRouter = new Hono<{ Bindings: Bindings; Variables: AuthVars }>(
 
   // ── POST /api/auth/login-token-create — DeviceToken required ──────
   .post("/login-token-create", requireAuth(), async (c) => {
-    const start = Date.now();
+    const start = clock().nowMs();
     const info = c.get("auth");
     if (info.type !== "device") return c.json({ error: "device-token-required" }, 403);
     const pair = await c.env.DB.prepare(
@@ -387,7 +388,7 @@ export const authRouter = new Hono<{ Bindings: Bindings; Variables: AuthVars }>(
       return c.json({ error: "device pairing has been revoked" }, 401);
     }
     const token = randomHex(16);
-    const nowSec = Math.floor(Date.now() / 1000);
+    const nowSec = clock().nowSec();
     const expiresAt = nowSec + QR_TOKEN_TTL_SEC;
     await c.env.DB.prepare(
       `INSERT INTO login_qr_tokens (token, device_id, home_id, created_at, expires_at, consumed_at)
@@ -403,7 +404,7 @@ export const authRouter = new Hono<{ Bindings: Bindings; Variables: AuthVars }>(
   // Returns either a direct UserToken (single user) or a selector +
   // user list (multi-user). Per plan §6.2.
   .post("/login-qr", rateLimit("login-qr"), zValidator("json", LoginQrSchema), async (c) => {
-    const start = Date.now();
+    const start = clock().nowMs();
     const { deviceId, token } = c.req.valid("json");
     const row = await c.env.DB.prepare(
       `SELECT home_id, expires_at, consumed_at, device_id
@@ -424,7 +425,7 @@ export const authRouter = new Hono<{ Bindings: Bindings; Variables: AuthVars }>(
       await recordAuthLog(c.env.DB, row.home_id, null, "login-qr", deviceId, "error", "deviceId mismatch", start);
       return c.json({ error: "deviceId mismatch" }, 403);
     }
-    const nowSec = Math.floor(Date.now() / 1000);
+    const nowSec = clock().nowSec();
     if (row.expires_at <= nowSec) {
       return c.json({ error: "token expired (60s TTL)" }, 410);
     }

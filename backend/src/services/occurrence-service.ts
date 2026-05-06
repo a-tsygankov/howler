@@ -1,3 +1,4 @@
+import { clock } from "../clock.ts";
 import type { IUnitOfWork } from "../repos/interfaces.ts";
 import type { D1UnitOfWork } from "../repos/d1/unit-of-work.ts";
 import { pendingForHome } from "../repos/specs.ts";
@@ -96,7 +97,7 @@ export const ackOccurrence = async (
       unit = rt?.unit_name ?? null;
     }
 
-    const nowMs = Date.now();
+    const nowMs = clock().nowMs();
     const nowSec = Math.floor(nowMs / 1000);
     const executionId = asTaskExecutionId(newUuid());
 

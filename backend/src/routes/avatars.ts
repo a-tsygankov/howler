@@ -1,3 +1,4 @@
+import { clock } from "../clock.ts";
 import { Hono } from "hono";
 import type { Bindings } from "../env.ts";
 import { newUuid } from "../domain/ids.ts";
@@ -64,7 +65,7 @@ export const avatarsRouter = new Hono<{
     await c.env.AVATARS.put(r2Key, await file.arrayBuffer(), {
       httpMetadata: { contentType: file.type },
     });
-    const nowSec = Math.floor(Date.now() / 1000);
+    const nowSec = clock().nowSec();
     await c.env.DB.prepare(
       `INSERT INTO avatars (id, home_id, r2_key, content_type, size_bytes, created_at, is_deleted)
        VALUES (?, ?, ?, ?, ?, ?, 0)`,

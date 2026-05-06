@@ -1,3 +1,4 @@
+import { clock } from "../clock.ts";
 import { Hono } from "hono";
 import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
@@ -60,7 +61,7 @@ export const scheduleTemplatesRouter = new Hono<{
     const u = c.get("user");
     const body = c.req.valid("json");
     const id = newUuid();
-    const nowSec = Math.floor(Date.now() / 1000);
+    const nowSec = clock().nowSec();
     await c.env.DB.prepare(
       `INSERT INTO schedule_templates (id, home_id, display_name, description, rule_json, system, sort_order, created_at, updated_at, is_deleted)
        VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, 0)`,
@@ -105,7 +106,7 @@ export const scheduleTemplatesRouter = new Hono<{
     if (row.system === 1) {
       return c.json({ error: "cannot delete a system template" }, 409);
     }
-    const nowSec = Math.floor(Date.now() / 1000);
+    const nowSec = clock().nowSec();
     await c.env.DB.prepare(
       "UPDATE schedule_templates SET is_deleted = 1, updated_at = ? WHERE id = ?",
     )
