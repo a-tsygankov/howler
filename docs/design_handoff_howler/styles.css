@@ -1,0 +1,92 @@
+/* Howler — warm domestic aesthetic
+   Cream paper, ink charcoal, soft accents. */
+:root {
+  --paper: #F5EFE3;
+  --paper-2: #EDE5D3;
+  --paper-3: #E4D9C0;
+  --ink: #2A2620;
+  --ink-2: #4B433A;
+  --ink-3: #6E6557;
+  --ink-mute: #97907F;
+  --line: #D6CAB0;
+  --line-soft: #E2D7BE;
+
+  /* accents — warm, low-chroma */
+  --accent-amber: #C77A2A;     /* primary, urgent */
+  --accent-rose:  #B25A55;     /* private / overdue */
+  --accent-sage:  #6E8A5C;     /* done / safe */
+  --accent-plum:  #8A5B7A;     /* meta */
+  --accent-sky:   #6F8AA1;     /* periodic */
+
+  /* urgency ring colors */
+  --urg-0: #B7A98A;  /* idle */
+  --urg-1: #C9A862;  /* due soon */
+  --urg-2: #C77A2A;  /* due now */
+  --urg-3: #B25A55;  /* overdue */
+
+  --radius: 14px;
+  --radius-sm: 8px;
+  --radius-lg: 22px;
+
+  --shadow-sm: 0 1px 0 rgba(42,38,32,0.05), 0 2px 6px rgba(42,38,32,0.04);
+  --shadow-md: 0 1px 0 rgba(42,38,32,0.06), 0 6px 20px rgba(42,38,32,0.08);
+
+  --font-serif: "Source Serif 4", "Source Serif Pro", "Iowan Old Style", Georgia, serif;
+  --font-sans: "Inter Tight", -apple-system, "SF Pro Text", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", monospace;
+  --font-display: "Fraunces", "Source Serif 4", Georgia, serif;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  font-family: var(--font-sans);
+  color: var(--ink);
+  background: var(--paper);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Subtle paper grain — single tiny SVG noise */
+.paper-grain {
+  position: relative;
+}
+.paper-grain::before {
+  content: "";
+  position: absolute; inset: 0;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' seed='4'/><feColorMatrix values='0 0 0 0 0.16  0 0 0 0 0.15  0 0 0 0 0.13  0 0 0 0.06 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+  opacity: 0.6;
+  pointer-events: none;
+  mix-blend-mode: multiply;
+  z-index: 0;
+}
+.paper-grain > * { position: relative; z-index: 1; }
+
+/* Common type */
+.h-display { font-family: var(--font-display); font-weight: 500; letter-spacing: -0.02em; line-height: 1.05; }
+.h-serif   { font-family: var(--font-serif); font-weight: 500; letter-spacing: -0.01em; }
+.mono      { font-family: var(--font-mono); }
+.cap       { font-family: var(--font-mono); text-transform: uppercase; letter-spacing: 0.12em; font-size: 11px; color: var(--ink-3); }
+
+/* Buttons */
+.btn {
+  font-family: var(--font-sans);
+  font-weight: 500;
+  font-size: 14px;
+  border-radius: 999px;
+  padding: 10px 16px;
+  border: 1px solid var(--line);
+  background: var(--paper);
+  color: var(--ink);
+  cursor: pointer;
+  display: inline-flex; align-items: center; gap: 8px;
+}
+.btn-primary {
+  background: var(--ink);
+  color: var(--paper);
+  border-color: var(--ink);
+}
+.btn-ghost { background: transparent; border-color: transparent; }
+
+/* Phone frame helper bg */
+.phone-bg { background: var(--paper); }

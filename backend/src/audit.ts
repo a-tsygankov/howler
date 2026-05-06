@@ -1,3 +1,4 @@
+import { clock } from "./clock.ts";
 // Auth audit log — ring buffer capped at 100 rows per home (and 1000
 // total for un-attributed events). Diagnostic surface for "why did
 // this pair / login flow fail" without grepping Worker logs.
@@ -39,8 +40,8 @@ export const recordAuthLog = async (
   startMs: number,
   env?: Bindings,
 ): Promise<void> => {
-  const ts = Math.floor(Date.now() / 1000);
-  const durationMs = Date.now() - startMs;
+  const ts = clock().nowSec();
+  const durationMs = clock().nowMs() - startMs;
   if (env) {
     recordAuthEvent(env, kind, result, durationMs, errorMessage ?? undefined);
   }

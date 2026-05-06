@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Howler — Mockups</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600&family=Inter+Tight:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+<link rel="stylesheet" href="styles.css">
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<style>
+html, body, #root { height: 100%; }
+body { background: #E9DFC7; }
+.phone-shell {
+  width: 360px; height: 760px; border-radius: 44px;
+  background: var(--paper); position: relative;
+  box-shadow: 0 1px 0 #FBF7EC inset, 0 30px 60px -30px rgba(42,38,32,0.25);
+  border: 1px solid var(--line);
+  overflow: hidden;
+}
+.phone-shell::before {
+  content: "";
+  position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
+  width: 110px; height: 28px; background: #15110C; border-radius: 999px; z-index: 10;
+}
+.phone-status {
+  position: absolute; top: 0; left: 0; right: 0; height: 50px;
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 18px 28px 0; font-family: var(--font-sans); font-weight: 600; font-size: 13px;
+  z-index: 5;
+}
+.phone-content {
+  position: absolute; inset: 50px 0 0; overflow: hidden;
+}
+.phone-scroll {
+  height: 100%; overflow: auto;
+}
+</style>
+</head>
+<body>
+
+<script src="data.js"></script>
+
+<script type="text/babel" src="icons.jsx"></script>
+<script type="text/babel" src="avatar.jsx"></script>
+<script type="text/babel" src="home-variants.jsx"></script>
+<script type="text/babel" src="secondary-screens.jsx"></script>
+<script type="text/babel" src="ack-variants.jsx"></script>
+<script type="text/babel" src="device-screens.jsx"></script>
+<script type="text/babel" src="icon-showcase.jsx"></script>
+<script type="text/babel" src="design-canvas.jsx"></script>
+
+<div id="root"></div>
+
+<script type="text/babel">
+const { DesignCanvas, DCSection, DCArtboard } = window;
+const { HomeV1, HomeV2, HomeV3, HomeV4, BottomTabs } = window.HOME_VARIANTS;
+const { TaskList, TaskDetail, ResultTypesManager } = window.SECONDARY_SCREENS;
+const { AckSheetStepper, AckSheetSlider, AckSheetWheel } = window.ACK_VARIANTS;
+const { DialIdle, DialPending, DialAckArc } = window.DEVICE_SCREENS;
+const { IconShowcaseA, IconShowcaseB, IconShowcaseC } = window.ICON_SHOWCASES;
+
+// Phone wrapper with chrome + status bar
+function Phone({ children }) {
+  return (
+    <div className="phone-shell">
+      <div className="phone-status">
+        <span>9:41</span>
+        <span style={{display:"flex", gap:6, alignItems:"center"}}>
+          <span style={{fontFamily:"var(--font-mono)", fontSize:10, opacity:.6}}>5G</span>
+          <span style={{width:22, height:11, borderRadius:3, border:"1.4px solid currentColor", position:"relative"}}>
+            <span style={{position:"absolute", left:1, top:1, bottom:1, width:"75%", background:"currentColor", borderRadius:1.5, display:"block"}}/>
+          </span>
+        </span>
+      </div>
+      <div className="phone-content">
+        <div className="phone-scroll">{children}</div>
+        <BottomTabs/>
+      </div>
+    </div>
+  );
+}
+
+// Desktop preview — minimal: shows the dashboard inside a larger frame
+function DesktopHome() {
+  return (
+    <div style={{width:1200, height:760, background:"var(--paper-2)", borderRadius:14, border:"1px solid var(--line)", overflow:"hidden", display:"flex"}}>
+      {/* Sidebar */}
+      <aside style={{width:240, background:"#FBF7EC", borderRight:"1px solid var(--line-soft)", padding:"22px 18px", display:"flex", flexDirection:"column", gap:18}}>
+        <div className="h-display" style={{fontSize:22}}>Howler</div>
+        <div style={{display:"flex", flexDirection:"column", gap:2}}>
+          {[["Today",true],["All tasks",false],["Stats",false],["Members",false],["Settings",false]].map(([n,a]) => (
+            <button key={n} style={{
+              padding:"8px 12px", borderRadius:10, fontSize:14, textAlign:"left",
+              border:"none", background: a ? "var(--paper-3)" : "transparent",
+              fontWeight: a ? 600 : 400, color: a ? "var(--ink)" : "var(--ink-2)",
+            }}>{n}</button>
+          ))}
+        </div>
+        <div className="cap" style={{paddingTop:14}}>Labels</div>
+        <div style={{display:"flex", flexDirection:"column", gap:6}}>
+          {window.HOWLER_DATA.labels.map(l => (
+            <button key={l.id} style={{padding:"6px 10px", border:"none", background:"transparent", color:"var(--ink-2)", fontSize:13, textAlign:"left", display:"flex", gap:8, alignItems:"center"}}>
+              <span style={{width:8, height:8, borderRadius:"50%", background:l.color}}/>{l.name}
+            </button>
+          ))}
+        </div>
+      </aside>
+      {/* Main */}
+      <main style={{flex:1, background:"var(--paper)", overflow:"auto"}}>
+        <div style={{padding:"28px 32px", display:"grid", gridTemplateColumns:"1.4fr 1fr", gap:24}}>
+          <div>
+            <div className="cap">Wednesday · May 6</div>
+            <div className="h-display" style={{fontSize:38, marginTop:6}}>Good morning, Alex</div>
+            <div style={{color:"var(--ink-3)", fontSize:14, marginTop:4}}>4 of 9 done · 5 still to go</div>
+          </div>
+          <div style={{background:"#FBF7EC", borderRadius:14, padding:"14px 16px", border:"1px solid var(--line-soft)", alignSelf:"start"}}>
+            <div className="cap">Streak</div>
+            <div className="h-display" style={{fontSize:32, marginTop:4}}>12 days</div>
+            <div style={{display:"flex", gap:3, marginTop:8}}>
+              {Array.from({length:14}).map((_,i) => (
+                <div key={i} style={{width:14, height:22, borderRadius:3, background: i < 12 ? "var(--accent-amber)" : "var(--paper-3)"}}/>
+              ))}
+            </div>
+          </div>
+        </div>
+        <div style={{padding:"0 32px 32px", display:"grid", gridTemplateColumns:"1fr 1fr", gap:14}}>
+          {window.HOWLER_DATA.tasks.slice(0,8).map(t => (
+            <DesktopTaskRow key={t.id} t={t}/>
+          ))}
+        </div>
+      </main>
+    </div>
+  );
+}
+function DesktopTaskRow({ t }) {
+  const lbl = window.HOWLER_DATA.labels.find(l=>l.id===t.label);
+  return (
+    <div style={{display:"flex", gap:14, alignItems:"center", padding:"12px 14px", background:"#FBF7EC", borderRadius:12, border:"1px solid var(--line-soft)"}}>
+      <window.HowlerAvatar photo={t.photo} initials={t.initials} urgency={t.urgency} size={42}/>
+      <div style={{flex:1, minWidth:0}}>
+        <div style={{fontSize:15, fontWeight:500}}>{t.title}</div>
+        <div style={{fontSize:12, color:"var(--ink-3)"}}>{t.due} · <span style={{color:lbl.color}}>{lbl.name}</span></div>
+      </div>
+      <button style={{width:34, height:34, borderRadius:"50%", background:"var(--ink)", color:"var(--paper)", border:"none"}}>✓</button>
+    </div>
+  );
+}
+
+const DENSITY = { small: 0.6, medium: 0.85, large: 1.1 };
+const D = window.HOWLER_DATA;
+
+ReactDOM.createRoot(document.getElementById("root")).render(
+  <DesignCanvas title="Howler — Mockups" subtitle="Phone home dashboard variants · key flows · device screens · iconography">
+
+    <DCSection id="home-variants" title="Home dashboard — 4 layout variants" subtitle="All show today's pending occurrences. Different hierarchies and visual treatments.">
+      <DCArtboard id="home-v1" label="V1 — Day Ribbon (agenda by hour)" width={360} height={760}>
+        <Phone><HomeV1/></Phone>
+      </DCArtboard>
+      <DCArtboard id="home-v2" label="V2 — Stack (urgency-first cards)" width={360} height={760}>
+        <Phone><HomeV2/></Phone>
+      </DCArtboard>
+      <DCArtboard id="home-v3" label="V3 — Rooms (grouped by label)" width={360} height={760}>
+        <Phone><HomeV3/></Phone>
+      </DCArtboard>
+      <DCArtboard id="home-v4" label="V4 — Hearth (hero card + grid)" width={360} height={760}>
+        <Phone><HomeV4/></Phone>
+      </DCArtboard>
+    </DCSection>
+
+    <DCSection id="secondary" title="Secondary screens" subtitle="Task list, task detail with execution history, result types manager.">
+      <DCArtboard id="task-list" label="Task list / browse" width={360} height={760}>
+        <Phone><TaskList/></Phone>
+      </DCArtboard>
+      <DCArtboard id="task-detail" label="Task detail + history" width={360} height={760}>
+        <Phone><TaskDetail taskId="t1"/></Phone>
+      </DCArtboard>
+      <DCArtboard id="rt-manager" label="Result types manager" width={360} height={760}>
+        <Phone><ResultTypesManager/></Phone>
+      </DCArtboard>
+    </DCSection>
+
+    <DCSection id="ack" title="Ack flow with resultValue — 3 explorations" subtitle="When a task has a result type, completing it can capture a number. Three takes on how that feels.">
+      <DCArtboard id="ack-stepper" label="A — Stepper modal (+/− with presets)" width={360} height={760}>
+        <Phone><AckSheetStepper/></Phone>
+      </DCArtboard>
+      <DCArtboard id="ack-slider" label="B — Slider sheet (+ last-time hint)" width={360} height={760}>
+        <Phone><AckSheetSlider/></Phone>
+      </DCArtboard>
+      <DCArtboard id="ack-wheel" label="C — Wheel picker" width={360} height={760}>
+        <Phone><AckSheetWheel/></Phone>
+      </DCArtboard>
+    </DCSection>
+
+    <DCSection id="desktop" title="Desktop view (responsive baseline)" subtitle="Same dashboard scaled to a 1200-wide window — sidebar nav, two-column hero.">
+      <DCArtboard id="desktop-home" label="Desktop · Today" width={1200} height={760}>
+        <DesktopHome/>
+      </DCArtboard>
+    </DCSection>
+
+    <DCSection id="device" title="M5Stack Dial / CrowPanel — round 240×240 device screens" subtitle="Phase 4+ work but the contract is locked. Idle clock, pending occurrence, ack-arc confirmation.">
+      <DCArtboard id="dial-idle" label="Idle" width={320} height={340}><DialIdle/></DCArtboard>
+      <DCArtboard id="dial-pending" label="Pending occurrence" width={320} height={340}><DialPending/></DCArtboard>
+      <DCArtboard id="dial-ack" label="Long-press to ack — arc fills" width={320} height={340}><DialAckArc/></DCArtboard>
+    </DCSection>
+
+    <DCSection id="icons" title="Iconography — 3 sets" subtitle="Same 20 entity / category symbols rendered in three styles. Pick one for the system; the rest are alternates.">
+      <DCArtboard id="icons-a" label="Set A — Hand-drawn line (recommended)" width={500} height={520}><IconShowcaseA/></DCArtboard>
+      <DCArtboard id="icons-b" label="Set B — Solid friendly" width={500} height={520}><IconShowcaseB/></DCArtboard>
+      <DCArtboard id="icons-c" label="Set C — Editorial mark" width={500} height={520}><IconShowcaseC/></DCArtboard>
+    </DCSection>
+
+  </DesignCanvas>
+);
+</script>
+
+</body>
+</html>

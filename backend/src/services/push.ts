@@ -1,3 +1,4 @@
+import { clock } from "../clock.ts";
 // Web Push delivery — RFC 8030 (HTTP push), RFC 8291 (aes128gcm
 // encryption), RFC 8292 (VAPID auth). Implemented with crypto.subtle
 // so it runs natively in Workers.
@@ -90,7 +91,7 @@ const buildVapidJwt = async (
     new TextEncoder().encode(
       JSON.stringify({
         aud: audience,
-        exp: Math.floor(Date.now() / 1000) + 12 * 60 * 60,
+        exp: clock().nowSec() + 12 * 60 * 60,
         sub: contact,
       }),
     ),
@@ -325,7 +326,7 @@ export const dispatchPushForOccurrence = async (
         `UPDATE push_subscriptions SET is_deleted = 1, updated_at = ?
          WHERE id IN (${placeholders})`,
       )
-      .bind(Math.floor(Date.now() / 1000), ...dead)
+      .bind(clock().nowSec(), ...dead)
       .run();
   }
 };

@@ -1,3 +1,4 @@
+import { clock } from "../clock.ts";
 // Cron-driven fan-out + queue-driven occurrence firing.
 //
 // Cron tick: every minute the scheduled() handler picks up to 100
@@ -24,19 +25,19 @@ import { recordCronTick, recordOccurrenceFired } from "../observability.ts";
 const FANOUT_BATCH = 100;
 
 export const scheduledFanout = async (env: Bindings): Promise<number> => {
-  const startMs = Date.now();
+  const startMs = clock().nowMs();
   const uow = new D1UnitOfWork(env.DB);
   const nowSec = Math.floor(startMs / 1000);
   const due = await uow.schedules.findMany(dueBefore(nowSec, FANOUT_BATCH));
   if (due.length === 0) {
-    recordCronTick(env, 0, Date.now() - startMs);
+    recordCronTick(env, 0, clock().nowMs() - startMs);
     return 0;
   }
   const messages: MessageSendRequest<OccurrenceFireMessage>[] = due.map((s) => ({
     body: { scheduleId: s.id, dueAt: s.nextFireAt ?? nowSec },
   }));
   await env.OCCURRENCE_QUEUE.sendBatch(messages);
-  recordCronTick(env, due.length, Date.now() - startMs);
+  recordCronTick(env, due.length, clock().nowMs() - startMs);
   return due.length;
 };
 
@@ -67,7 +68,7 @@ const fireOne = async (
     if (!schedule) return; // schedule deleted between cron pick and consume
     if (schedule.nextFireAt === null) return; // already advanced past
 
-    const nowMs = Date.now();
+    const nowMs = clock().nowMs();
     const occId = asOccurrenceId(newUuid());
     await tx.occurrences.add({
       id: occId,

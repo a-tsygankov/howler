@@ -8,7 +8,11 @@ name: Deploy
 # device. Use ./scripts/deploy.sh --firmware from a workstation.
 #
 # Required secrets:
-#   CLOUDFLARE_API_TOKEN   — Workers + D1 + Pages edit
+#   CLOUDFLARE_API_KEY     — Cloudflare *API token* (not the legacy
+#                            global API key) with Workers + D1 +
+#                            Pages edit scopes. Mapped at the use
+#                            site to the env var CLOUDFLARE_API_TOKEN
+#                            that wrangler reads at runtime.
 #   CLOUDFLARE_ACCOUNT_ID  — 32-char hex from the dashboard sidebar
 
 on:
@@ -83,14 +87,14 @@ jobs:
       # continue-on-error tolerance loop needed (plan §16 / §20.3).
       - name: Apply D1 migrations
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_KEY }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: pnpm db:migrate:remote
 
       - name: Deploy Worker
         uses: cloudflare/wrangler-action@v3
         with:
-          apiToken:   ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          apiToken:   ${{ secrets.CLOUDFLARE_API_KEY }}
           accountId:  ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: backend
           command: deploy
@@ -113,6 +117,67 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm build
 
+  # On PRs only: deploy this PR's webapp to a per-branch Cloudflare
+  # Pages preview so the E2E job below runs against the actual code
+  # under review (the production alias only updates on push-to-main).
+  # Cloudflare Pages slugifies branch → <slug>.<project>.pages.dev;
+  # our branch names are already valid slugs.
+  webapp-preview-deploy:
+    name: Webapp preview deploy (PR)
+    needs: [changes, webapp-build]
+    if: github.event_name == 'pull_request' && needs.changes.outputs.webapp == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      preview_url: ${{ steps.branch_url.outputs.url }}
+    defaults: { run: { working-directory: webapp } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: 'pnpm' }
+      - run: pnpm install --frozen-lockfile
+        working-directory: .
+      - run: pnpm build
+      - id: branch_slug
+        run: echo "slug=${GITHUB_HEAD_REF}" >> "$GITHUB_OUTPUT"
+        shell: bash
+      - id: branch_url
+        run: |
+          echo "url=https://${{ steps.branch_slug.outputs.slug }}.howler-webapp.pages.dev" >> "$GITHUB_OUTPUT"
+        shell: bash
+      - name: Deploy to Pages (branch preview)
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken:  ${{ secrets.CLOUDFLARE_API_KEY }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: webapp
+          command: pages deploy dist --project-name=howler-webapp --branch=${{ steps.branch_slug.outputs.slug }} --commit-dirty=true
+
+  webapp-e2e:
+    name: Webapp E2E (Playwright)
+    needs: [changes, webapp-preview-deploy]
+    if: github.event_name == 'pull_request' && needs.changes.outputs.webapp == 'true'
+    runs-on: ubuntu-latest
+    defaults: { run: { working-directory: webapp } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: 'pnpm' }
+      - run: pnpm install --frozen-lockfile
+        working-directory: .
+      - run: pnpm exec playwright install --with-deps chromium
+      - name: Run E2E against branch preview
+        env:
+          E2E_BASE_URL: ${{ needs.webapp-preview-deploy.outputs.preview_url }}
+        run: pnpm test:e2e
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: webapp/playwright-report
+          retention-days: 7
+
   webapp-deploy:
     name: Webapp deploy
     needs: [changes, webapp-build]
@@ -132,7 +197,7 @@ jobs:
       - name: Deploy to Cloudflare Pages
         uses: cloudflare/wrangler-action@v3
         with:
-          apiToken:  ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          apiToken:  ${{ secrets.CLOUDFLARE_API_KEY }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: webapp
           command: pages deploy dist --project-name=howler-webapp --branch=main

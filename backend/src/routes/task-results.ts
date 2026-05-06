@@ -1,3 +1,4 @@
+import { clock } from "../clock.ts";
 import { Hono } from "hono";
 import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
@@ -71,7 +72,7 @@ export const taskResultsRouter = new Hono<{
     const info = c.get("user");
     const body = c.req.valid("json");
     const id = newUuid();
-    const nowSec = Math.floor(Date.now() / 1000);
+    const nowSec = clock().nowSec();
     await c.env.DB.prepare(
       `INSERT INTO task_results (id, home_id, display_name, unit_name, min_value, max_value, step, default_value, use_last_value, system, sort_order, created_at, updated_at, is_deleted)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, 0)`,
@@ -104,7 +105,7 @@ export const taskResultsRouter = new Hono<{
     if (!row || row.home_id !== info.homeId) {
       return c.json({ error: "not-found" }, 404);
     }
-    const nowSec = Math.floor(Date.now() / 1000);
+    const nowSec = clock().nowSec();
     await c.env.DB.prepare(
       "UPDATE task_results SET is_deleted = 1, updated_at = ? WHERE id = ?",
     )

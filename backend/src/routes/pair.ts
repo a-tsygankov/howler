@@ -1,3 +1,4 @@
+import { clock } from "../clock.ts";
 import { Hono } from "hono";
 import { zValidator } from "@hono/zod-validator";
 import type { Bindings } from "../env.ts";
@@ -27,9 +28,9 @@ const newPairCode = (): string => {
 
 export const pairRouter = new Hono<{ Bindings: Bindings; Variables: AuthVars }>()
   .post("/start", zValidator("json", PairStartSchema), async (c) => {
-    const start = Date.now();
+    const start = clock().nowMs();
     const { deviceId, serial, hwModel } = c.req.valid("json");
-    const now = Math.floor(Date.now() / 1000);
+    const now = clock().nowSec();
     const expiresAt = now + PAIR_TTL_SEC;
 
     const existing = await c.env.DB.prepare(
@@ -98,7 +99,7 @@ export const pairRouter = new Hono<{ Bindings: Bindings; Variables: AuthVars }>(
         deviceToken: row.device_token,
       });
     }
-    const now = Math.floor(Date.now() / 1000);
+    const now = clock().nowSec();
     if (row.expires_at <= now) return c.json({ status: "expired" });
     return c.json({ status: "pending", expiresAt: row.expires_at });
   })
@@ -110,7 +111,7 @@ export const pairRouter = new Hono<{ Bindings: Bindings; Variables: AuthVars }>(
     requireUser(),
     zValidator("json", PairConfirmSchema),
     async (c) => {
-      const start = Date.now();
+      const start = clock().nowMs();
       const u = c.get("user");
       const { pairCode } = c.req.valid("json");
       const row = await c.env.DB.prepare(
@@ -130,7 +131,7 @@ export const pairRouter = new Hono<{ Bindings: Bindings; Variables: AuthVars }>(
       }
       if (row.cancelled_at) return c.json({ error: "pairing cancelled" }, 410);
       if (row.confirmed_at) return c.json({ error: "already confirmed" }, 409);
-      const now = Math.floor(Date.now() / 1000);
+      const now = clock().nowSec();
       if (row.expires_at <= now) return c.json({ error: "pair code expired" }, 410);
 
       const deviceToken = await issueDeviceToken(

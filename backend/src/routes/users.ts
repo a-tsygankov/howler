@@ -1,3 +1,4 @@
+import { clock } from "../clock.ts";
 import { Hono } from "hono";
 import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
@@ -69,7 +70,7 @@ export const usersRouter = new Hono<{
     }
 
     const id = newUuid();
-    const nowSec = Math.floor(Date.now() / 1000);
+    const nowSec = clock().nowSec();
     await c.env.DB.prepare(
       `INSERT INTO users (id, home_id, display_name, login, created_at, updated_at, is_deleted)
        VALUES (?, ?, ?, ?, ?, ?, 0)`,
@@ -113,7 +114,7 @@ export const usersRouter = new Hono<{
     }
     if (sets.length === 0) return c.body(null, 204);
     sets.push("updated_at = ?");
-    binds.push(Math.floor(Date.now() / 1000));
+    binds.push(clock().nowSec());
     binds.push(id);
     await c.env.DB.prepare(`UPDATE users SET ${sets.join(", ")} WHERE id = ?`)
       .bind(...binds)
@@ -151,7 +152,7 @@ export const usersRouter = new Hono<{
       return c.json({ error: "cannot delete the last user in a home" }, 400);
     }
 
-    const nowMs = Date.now();
+    const nowMs = clock().nowMs();
     const nowSec = Math.floor(nowMs / 1000);
 
     // Find tasks that lose their only assignee in this delete AND are

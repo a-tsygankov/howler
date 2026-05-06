@@ -1,3 +1,4 @@
+import { clock } from "../clock.ts";
 import { Hono } from "hono";
 import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
@@ -30,7 +31,7 @@ export const pushRouter = new Hono<{
   .post("/subscribe", zValidator("json", SubscribeInput), async (c) => {
     const u = c.get("user");
     const body = c.req.valid("json");
-    const nowSec = Math.floor(Date.now() / 1000);
+    const nowSec = clock().nowSec();
     const id = newUuid();
     await c.env.DB.prepare(
       `INSERT INTO push_subscriptions (id, home_id, user_id, endpoint, p256dh, auth_secret, user_agent, created_at, updated_at, is_deleted)
@@ -62,7 +63,7 @@ export const pushRouter = new Hono<{
   .delete("/subscribe", zValidator("json", z.object({ endpoint: z.string().url() })), async (c) => {
     const u = c.get("user");
     const { endpoint } = c.req.valid("json");
-    const nowSec = Math.floor(Date.now() / 1000);
+    const nowSec = clock().nowSec();
     await c.env.DB.prepare(
       `UPDATE push_subscriptions SET is_deleted = 1, updated_at = ?
        WHERE endpoint = ? AND user_id = ?`,

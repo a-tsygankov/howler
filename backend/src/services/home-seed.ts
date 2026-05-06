@@ -1,3 +1,4 @@
+import { clock } from "../clock.ts";
 // Default labels + TaskResults seeded into every new home (plan §6.4).
 
 import type { D1UnitOfWork } from "../repos/d1/unit-of-work.ts";

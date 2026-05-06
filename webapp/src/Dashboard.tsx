@@ -115,7 +115,7 @@ export const Dashboard = ({ session, onLogout }: Props) => {
   };
 
   return (
-    <main>
+    <main data-testid="dashboard">
       <header
         style={{
           display: "flex",

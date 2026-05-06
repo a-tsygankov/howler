@@ -1,3 +1,4 @@
+import { clock } from "./clock.ts";
 // PIN-based account auth + dual-token issuance.
 //
 // Ported from Feedme `backend/src/auth.ts`. Differences:
@@ -178,7 +179,7 @@ export const issueUserToken = (
       type: "user",
       homeId,
       userId,
-      exp: Math.floor(Date.now() / 1000) + USER_TOKEN_TTL_SEC,
+      exp: clock().nowSec() + USER_TOKEN_TTL_SEC,
     },
     secret,
   );
@@ -193,7 +194,7 @@ export const issueDeviceToken = (
       type: "device",
       homeId,
       deviceId,
-      exp: Math.floor(Date.now() / 1000) + DEVICE_TOKEN_TTL_SEC,
+      exp: clock().nowSec() + DEVICE_TOKEN_TTL_SEC,
     },
     secret,
   );
@@ -206,7 +207,7 @@ export const issueSelectorToken = (
     {
       type: "selector",
       homeId,
-      exp: Math.floor(Date.now() / 1000) + SELECTOR_TOKEN_TTL_SEC,
+      exp: clock().nowSec() + SELECTOR_TOKEN_TTL_SEC,
     },
     secret,
   );
@@ -241,7 +242,7 @@ export const verifyToken = async (
     return null;
   }
   if (!isTokenPayload(payload)) return null;
-  if (payload.exp < Math.floor(Date.now() / 1000)) return null;
+  if (payload.exp < clock().nowSec()) return null;
   return payload;
 };
 

@@ -1,3 +1,4 @@
+import { clock } from "../clock.ts";
 import { Hono } from "hono";
 import type { Bindings } from "../env.ts";
 import { requireAuth, requireUser, type AuthVars } from "../middleware/auth.ts";
@@ -60,7 +61,7 @@ export const devicesRouter = new Hono<{
     if (!row || row.home_id !== u.homeId) {
       return c.json({ error: "not-found" }, 404);
     }
-    const nowSec = Math.floor(Date.now() / 1000);
+    const nowSec = clock().nowSec();
     await c.env.DB.prepare(
       "UPDATE devices SET is_deleted = 1, updated_at = ? WHERE id = ?",
     )

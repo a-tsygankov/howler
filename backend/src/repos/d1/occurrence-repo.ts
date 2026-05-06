@@ -1,3 +1,4 @@
+import { clock } from "../../clock.ts";
 import type { IRepository, ISpecification } from "../interfaces.ts";
 import type { Occurrence } from "../../domain/occurrence.ts";
 import {
@@ -143,7 +144,7 @@ export class D1OccurrenceRepository
   }
 
   remove(id: OccurrenceId): Promise<void> {
-    const now = Date.now();
+    const now = clock().nowMs();
     this.uow.enqueue(
       this.d1
         .prepare("UPDATE occurrences SET is_deleted = 1, updated_at = ? WHERE id = ?")

@@ -1,3 +1,4 @@
+import { clock } from "../clock.ts";
 import { Hono } from "hono";
 import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
@@ -57,7 +58,7 @@ export const labelsRouter = new Hono<{
   .post("/", zValidator("json", LabelInput), async (c) => {
     const info = c.get("user");
     const id = newUuid();
-    const nowSec = Math.floor(Date.now() / 1000);
+    const nowSec = clock().nowSec();
     const body = c.req.valid("json");
     await c.env.DB.prepare(
       `INSERT INTO labels (id, home_id, display_name, color, system, sort_order, created_at, updated_at, is_deleted)
@@ -92,7 +93,7 @@ export const labelsRouter = new Hono<{
     const info = c.get("user");
     const id = c.req.param("id");
     const patch = c.req.valid("json");
-    const nowSec = Math.floor(Date.now() / 1000);
+    const nowSec = clock().nowSec();
     const row = await c.env.DB
       .prepare("SELECT home_id FROM labels WHERE id = ? AND is_deleted = 0")
       .bind(id)
@@ -132,7 +133,7 @@ export const labelsRouter = new Hono<{
     if (row.system === 1) {
       return c.json({ error: "cannot delete a system label" }, 409);
     }
-    const nowSec = Math.floor(Date.now() / 1000);
+    const nowSec = clock().nowSec();
     await c.env.DB.prepare(
       "UPDATE labels SET is_deleted = 1, updated_at = ? WHERE id = ?",
     )

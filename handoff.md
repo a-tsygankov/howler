@@ -5,7 +5,7 @@
 > question in [`docs/plan.md`](docs/plan.md) §17, or discovers a new risk.
 > If this grows past one page it's wrong — move detail into `docs/`.
 
-**Last updated:** 2026-05-06 — Phase 2 complete (incl. 2.6b push delivery + 2.7 analytics instrumentation).
+**Last updated:** 2026-05-06 — Phase 3 (web stability gate) shipped on `dev-4`. Visual regression deferred to Phase 2.8.
 
 ## Live URLs
 
@@ -97,9 +97,25 @@ create-task form (DAILY times / PERIODIC interval / ONESHOT remind-in).
   redeploy and dashboards light up). SQL queries for the standard
   dashboards are documented in `docs/observability.md`.
 
-**Next:** Phase 3 — Playwright happy paths + observability + the
-7-day stability gate. Only then does device firmware (Phase 4+)
-become an active surface again.
+**Phase 3 status:**
+
+- ✅ 3.1 Playwright `webapp/e2e/happy-path.spec.ts` — 3 tests (API
+  health, login screen, quick-setup → dashboard → create task);
+  `pnpm --filter howler-webapp test:e2e` runs them; `E2E_BASE_URL`
+  overrides target.
+- ✅ 3.2 CSP + HSTS + X-Frame-Options + Referrer-Policy +
+  Permissions-Policy on every Pages response via
+  `webapp/functions/_middleware.ts`.
+- ✅ 3.3 Structured JSON logs (`backend/src/logger.ts`) on every
+  request, cron tick, queue error.
+- ✅ 3.4 SLO targets + Logpush setup recipe in `docs/observability.md`.
+- ✅ 3.5 CI runs Playwright on every webapp-touching PR
+  (`.github/workflows/deploy.yml` `webapp-e2e` job).
+
+**Next: Phase 2.8 — design-system port** (the design handoff in
+`docs/design_handoff_howler/`). After 2.8 lands, we add visual-
+regression tests, then run the 7-day stability watch on `main`
+that gates Phase 4 (device firmware).
 
 **What's left in Phase 0:**
 

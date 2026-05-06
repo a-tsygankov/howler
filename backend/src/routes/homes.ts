@@ -1,3 +1,4 @@
+import { clock } from "../clock.ts";
 import { Hono } from "hono";
 import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
@@ -37,7 +38,7 @@ export const homesRouter = new Hono<{
     }
     if (sets.length === 0) return c.body(null, 204);
     sets.push("updated_at = ?");
-    binds.push(Math.floor(Date.now() / 1000));
+    binds.push(clock().nowSec());
     binds.push(u.homeId);
     await c.env.DB.prepare(`UPDATE homes SET ${sets.join(", ")} WHERE id = ?`)
       .bind(...binds)
