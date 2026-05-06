@@ -5,7 +5,7 @@
 > question in [`docs/plan.md`](docs/plan.md) §17, or discovers a new risk.
 > If this grows past one page it's wrong — move detail into `docs/`.
 
-**Last updated:** 2026-05-06 — Phase 1 step 1 (auth) on `dev-1`.
+**Last updated:** 2026-05-06 — Phase 1 step 2 (scheduler + ack) on `dev-1`.
 
 ## Live URLs
 
@@ -22,15 +22,30 @@
 
 ## Current phase + what's next
 
-**Phase 1 step 1 — auth.** PIN + HMAC tokens, transparent accounts,
-device pairing, and login-by-QR all landed on `dev-1`. End-to-end
-chain (pair → quick-setup → device-token → login-token-create →
-login-qr → fresh UserToken) verified against the deployed Worker.
-Replay protection, expired tokens, deviceId mismatch, wrong PIN —
-all rejected as expected.
+**Phase 1 steps 1 + 2 landed on `dev-1`.**
 
-Next: Phase 1 step 2 — Schedule + Occurrence repos + Cron + Queue
-fan-out (plan §7).
+Step 1 — auth: PIN + HMAC tokens (UserToken 30 d, DeviceToken 365 d),
+transparent accounts, device pairing, login-by-QR. End-to-end chain
+(pair → quick-setup → device-token → login-token-create → login-qr →
+fresh UserToken) verified against the deployed Worker. Replay /
+expired / wrong-secret / deviceId-mismatch / wrong-pin all rejected.
+
+Step 2 — scheduler: Schedule + Occurrence repos filled (specs:
+OwnedBy, ForTask, DueBefore, PendingForUser); pure
+`computeNextFireAt` for DAILY / PERIODIC / ONESHOT; cron `* * * * *`
+fans schedules onto `OCCURRENCE_QUEUE`; queue consumer materialises
+`PENDING` occurrences and advances `next_fire_at`. Smoke-tested in
+prod: ONESHOT task with `deadlineHint = now + 5s` → next cron tick →
+`/api/occurrences/pending` returned the materialised row → `/ack`
+flipped it to ACKED → replay was idempotent.
+
+Webapp: full dashboard at https://dev-1.howler-webapp.pages.dev with
+tabs for Quick-start / Log in / Sign up, the QR-landing path, a
+pending-occurrences list with Done buttons, and a kind-aware
+create-task form (DAILY times / PERIODIC interval / ONESHOT remind-in).
+
+Next: Phase 1 step 3 — device firmware reads `/api/occurrences/pending`,
+renders via the §11 unified menu, ack via long-press.
 
 **What's left in Phase 0:**
 
@@ -90,6 +105,15 @@ recommendations; if you disagree, raise it before Phase 1 starts.
   Webapp adds Quick-start / Log in / Sign up tabs and a `?token=&deviceId=`
   QR-landing path. 13/13 unit tests pass; full pair+QR chain verified
   against prod Worker.
+- 2026-05-06 — Phase 1 step 2 (scheduler) on `dev-1`. D1 repos for
+  Schedule + Occurrence; pure `computeNextFireAt` (7 unit tests);
+  cron-driven fan-out + Queue consumer materialise PENDING rows and
+  advance `next_fire_at`. `POST /api/tasks` creates Task + Schedule
+  atomically with kind-default rules. New routes `/api/occurrences/
+  {pending,/:id/ack}` (idempotent re-ack). Webapp dashboard surfaces
+  pending list + create-task form with kind-aware fields.
+  20/20 backend tests green. Cron + queue path verified end-to-end
+  in prod (ONESHOT now+5 → cron tick → pending → ack).
 
 ## Open questions (synced with plan §17)
 

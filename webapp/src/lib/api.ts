@@ -113,6 +113,43 @@ export const apiLogout = async (): Promise<void> => {
 export const fetchTasks = async (): Promise<Task[]> =>
   TasksResponseSchema.parse(await api.get("/tasks")).tasks;
 
+export type TaskKind = "DAILY" | "PERIODIC" | "ONESHOT";
+
+export interface CreateTaskInput {
+  title: string;
+  kind: TaskKind;
+  priority?: number;
+  description?: string;
+  times?: string[];
+  intervalDays?: number;
+  deadlineHint?: number;
+}
+
+export const createTask = async (input: CreateTaskInput): Promise<Task> =>
+  TaskSchema.parse(await api.post("/tasks", input));
+
+// ── Occurrences ────────────────────────────────────────────────────
+
+const OccurrenceSchema = z.object({
+  id: z.string(),
+  taskId: z.string(),
+  dueAt: z.number().int(),
+  status: z.enum(["PENDING", "ACKED", "SKIPPED", "MISSED"]),
+  ackedAt: z.number().int().nullable(),
+});
+export type Occurrence = z.infer<typeof OccurrenceSchema>;
+
+const OccurrencesResponseSchema = z.object({
+  occurrences: z.array(OccurrenceSchema),
+});
+
+export const fetchPending = async (): Promise<Occurrence[]> =>
+  OccurrencesResponseSchema.parse(await api.get("/occurrences/pending"))
+    .occurrences;
+
+export const ackOccurrence = async (id: string): Promise<Occurrence> =>
+  OccurrenceSchema.parse(await api.post(`/occurrences/${id}/ack`, {}));
+
 export const fetchHealth = async (): Promise<{ ok: boolean }> => {
   const res = await fetch("/api/health");
   if (!res.ok) throw new Error(`health: HTTP ${res.status}`);
