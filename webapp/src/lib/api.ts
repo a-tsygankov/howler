@@ -302,6 +302,67 @@ export const fetchTaskResults = async (): Promise<TaskResultDef[]> =>
     .parse(await callJson("GET", "/task-results"))
     .taskResults;
 
+export interface CreateTaskResultInput {
+  displayName: string;
+  unitName: string;
+  minValue?: number | null;
+  maxValue?: number | null;
+  step: number;
+  defaultValue?: number | null;
+  useLastValue?: boolean;
+  sortOrder?: number;
+}
+
+export const createTaskResult = async (
+  input: CreateTaskResultInput,
+): Promise<TaskResultDef> =>
+  TaskResultSchema.parse(await callJson("POST", "/task-results", input));
+
+export const updateTaskResult = async (
+  id: string,
+  patch: Partial<CreateTaskResultInput>,
+): Promise<void> => {
+  await callJson("PATCH", `/task-results/${id}`, patch);
+};
+
+export const deleteTaskResult = async (
+  id: string,
+): Promise<{ ok: boolean; tasksAffected: number }> =>
+  z
+    .object({ ok: z.boolean(), tasksAffected: z.number().int() })
+    .parse(await callJson("DELETE", `/task-results/${id}`));
+
+// ── Task executions (history for sparkline / detail view) ─────────
+
+const ExecutionSchema = z.object({
+  id: Hex32,
+  taskId: Hex32,
+  occurrenceId: z.string().nullable(),
+  userId: z.string().nullable(),
+  labelId: z.string().nullable(),
+  resultTypeId: z.string().nullable(),
+  resultValue: z.number().nullable(),
+  resultUnit: z.string().nullable(),
+  notes: z.string().nullable(),
+  ts: z.number().int(),
+});
+export type TaskExecution = z.infer<typeof ExecutionSchema>;
+
+export const fetchTaskExecutions = async (
+  taskId: string,
+  limit = 30,
+): Promise<TaskExecution[]> =>
+  z
+    .object({ executions: z.array(ExecutionSchema) })
+    .parse(await callJson("GET", `/tasks/${taskId}/executions?limit=${limit}`))
+    .executions;
+
+export const fetchTask = async (id: string): Promise<Task & { assignees: string[] }> => {
+  const data = (await callJson("GET", `/tasks/${id}`)) as unknown;
+  return TaskSchema.extend({ assignees: z.array(Hex32) })
+    .parse(data) as Task & { assignees: string[] };
+};
+
 // ── Users (within the caller's home) ────────────────────────────────
 
 const UserSchema = z.object({

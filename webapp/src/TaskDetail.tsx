@@ -1,0 +1,167 @@
+import { useQuery } from "@tanstack/react-query";
+import { Link, useParams } from "react-router-dom";
+import {
+  fetchLabels,
+  fetchTask,
+  fetchTaskExecutions,
+  fetchTaskResults,
+  fetchUsers,
+} from "./lib/api.ts";
+import { HowlerAvatar } from "./components/HowlerAvatar.tsx";
+import { Sparkline } from "./components/Sparkline.tsx";
+import { Icon } from "./components/Icon.tsx";
+
+const fmtTs = (sec: number): string => {
+  const d = new Date(sec * 1000);
+  return d.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+};
+
+export const TaskDetail = () => {
+  const { taskId = "" } = useParams<{ taskId: string }>();
+
+  const taskQ = useQuery({
+    queryKey: ["task", taskId],
+    queryFn: () => fetchTask(taskId),
+    enabled: !!taskId,
+  });
+  const execsQ = useQuery({
+    queryKey: ["executions", taskId],
+    queryFn: () => fetchTaskExecutions(taskId, 30),
+    enabled: !!taskId,
+  });
+  const labelsQ = useQuery({ queryKey: ["labels"], queryFn: fetchLabels });
+  const taskResultsQ = useQuery({
+    queryKey: ["taskResults"],
+    queryFn: fetchTaskResults,
+  });
+  const usersQ = useQuery({ queryKey: ["users"], queryFn: fetchUsers });
+
+  if (taskQ.isLoading) {
+    return <div className="px-5 py-10 text-center text-ink-3">Loading…</div>;
+  }
+  if (!taskQ.data) {
+    return (
+      <main className="paper-grain mx-auto min-h-screen max-w-md px-5 py-10">
+        <Link to="/" className="cap inline-flex items-center gap-1 text-ink-3">
+          <Icon name="chevron-left" size={14} /> Back
+        </Link>
+        <p className="mt-6 font-serif text-lg">Task not found.</p>
+      </main>
+    );
+  }
+
+  const task = taskQ.data;
+  const label = labelsQ.data?.find((l) => l.id === task.labelId);
+  const result = taskResultsQ.data?.find((r) => r.id === task.resultTypeId);
+  const heroTint = label?.color ?? "#6E6557";
+
+  const executions = execsQ.data ?? [];
+  const userById = new Map((usersQ.data ?? []).map((u) => [u.id, u]));
+
+  return (
+    <main
+      data-testid="task-detail"
+      className="paper-grain mx-auto min-h-screen max-w-md"
+    >
+      <header
+        className="px-5 pb-5 pt-6"
+        style={{
+          background: `linear-gradient(180deg, ${heroTint}1f 0%, transparent 100%)`,
+        }}
+      >
+        <Link
+          to="/"
+          className="cap inline-flex items-center gap-1 text-ink-3 hover:text-ink"
+        >
+          <Icon name="chevron-left" size={14} /> Back
+        </Link>
+        <div className="mt-3 flex items-center gap-3">
+          <HowlerAvatar
+            avatarId={task.avatarId}
+            seed={task.id}
+            initials={task.title.slice(0, 2).toUpperCase()}
+            size={48}
+          />
+          <div className="min-w-0 flex-1">
+            <h1 className="truncate font-display text-2xl">{task.title}</h1>
+            <p className="cap mt-0.5">
+              {task.kind === "DAILY"
+                ? "daily"
+                : task.kind === "PERIODIC"
+                  ? "every N days"
+                  : "one-time"}
+              {label && ` · ${label.displayName}`}
+              {result && ` · ${result.displayName}`}
+              {task.isPrivate && " · private"}
+            </p>
+          </div>
+        </div>
+        {task.description && (
+          <p className="mt-3 font-serif text-base text-ink-2">
+            {task.description}
+          </p>
+        )}
+      </header>
+
+      {result && (
+        <section className="border-t border-line-soft px-5 py-4">
+          <h2 className="cap mb-2">
+            Last {executions.length} {result.displayName} ({result.unitName})
+          </h2>
+          <div className="text-ink">
+            <Sparkline
+              points={executions.map((e) => ({ ts: e.ts, value: e.resultValue }))}
+              width={340}
+              height={56}
+            />
+          </div>
+        </section>
+      )}
+
+      <section className="border-t border-line-soft px-5 py-4">
+        <h2 className="cap mb-2">History</h2>
+        {execsQ.isLoading && <p className="cap py-2">Loading…</p>}
+        {!execsQ.isLoading && executions.length === 0 && (
+          <p className="cap py-2">No executions yet.</p>
+        )}
+        {executions.map((e) => {
+          const u = e.userId ? userById.get(e.userId) : undefined;
+          const initials = (u?.displayName ?? "?")
+            .slice(0, 2)
+            .toUpperCase();
+          return (
+            <div
+              key={e.id}
+              className="flex items-start gap-3 border-t border-line-soft py-2.5"
+            >
+              <HowlerAvatar
+                seed={u?.id ?? e.id}
+                initials={initials}
+                size={28}
+              />
+              <div className="min-w-0 flex-1">
+                <div className="flex items-baseline justify-between gap-2">
+                  <span className="text-sm">
+                    {e.resultValue !== null
+                      ? `${e.resultValue} ${e.resultUnit ?? ""}`.trim()
+                      : "✓"}
+                  </span>
+                  <span className="cap shrink-0">{fmtTs(e.ts)}</span>
+                </div>
+                {e.notes && (
+                  <p className="mt-0.5 text-xs italic text-ink-3">{e.notes}</p>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </section>
+    </main>
+  );
+};

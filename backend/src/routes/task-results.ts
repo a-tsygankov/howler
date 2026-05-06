@@ -95,6 +95,68 @@ export const taskResultsRouter = new Hono<{
     return c.json({ id, homeId: info.homeId, ...body, system: false, createdAt: nowSec, updatedAt: nowSec }, 201);
   })
 
+  .patch("/:id", zValidator("json", TaskResultInput.partial()), async (c) => {
+    const info = c.get("user");
+    const id = c.req.param("id");
+    const patch = c.req.valid("json");
+    const row = await c.env.DB
+      .prepare("SELECT home_id FROM task_results WHERE id = ? AND is_deleted = 0")
+      .bind(id)
+      .first<{ home_id: string }>();
+    if (!row || row.home_id !== info.homeId) {
+      return c.json({ error: "not-found" }, 404);
+    }
+    const sets: string[] = [];
+    const binds: unknown[] = [];
+    if (patch.displayName !== undefined) {
+      sets.push("display_name = ?");
+      binds.push(patch.displayName);
+    }
+    if (patch.unitName !== undefined) {
+      sets.push("unit_name = ?");
+      binds.push(patch.unitName);
+    }
+    if (patch.minValue !== undefined) {
+      sets.push("min_value = ?");
+      binds.push(patch.minValue);
+    }
+    if (patch.maxValue !== undefined) {
+      sets.push("max_value = ?");
+      binds.push(patch.maxValue);
+    }
+    if (patch.step !== undefined) {
+      sets.push("step = ?");
+      binds.push(patch.step);
+    }
+    if (patch.defaultValue !== undefined) {
+      sets.push("default_value = ?");
+      binds.push(patch.defaultValue);
+    }
+    if (patch.useLastValue !== undefined) {
+      sets.push("use_last_value = ?");
+      binds.push(patch.useLastValue ? 1 : 0);
+    }
+    if (patch.sortOrder !== undefined) {
+      sets.push("sort_order = ?");
+      binds.push(patch.sortOrder);
+    }
+    if (sets.length === 0) return c.body(null, 204);
+    sets.push("updated_at = ?");
+    binds.push(clock().nowSec());
+    binds.push(id);
+    await c.env.DB.prepare(
+      `UPDATE task_results SET ${sets.join(", ")} WHERE id = ?`,
+    )
+      .bind(...binds)
+      .run();
+    return c.body(null, 204);
+  })
+
+  // Plan §6.3 #10: deleting a TaskResult is a soft-delete; tasks
+  // referencing it keep the FK pointing at the now-deleted row, so
+  // historical task_executions stay legible via the snapshotted
+  // result_unit. We surface a count of affected tasks in the
+  // response so the SPA can show the warning before confirming.
   .delete("/:id", async (c) => {
     const info = c.get("user");
     const id = c.req.param("id");
@@ -105,11 +167,17 @@ export const taskResultsRouter = new Hono<{
     if (!row || row.home_id !== info.homeId) {
       return c.json({ error: "not-found" }, 404);
     }
+    const referenced = await c.env.DB
+      .prepare(
+        "SELECT COUNT(*) AS n FROM tasks WHERE result_type_id = ? AND is_deleted = 0",
+      )
+      .bind(id)
+      .first<{ n: number }>();
     const nowSec = clock().nowSec();
     await c.env.DB.prepare(
       "UPDATE task_results SET is_deleted = 1, updated_at = ? WHERE id = ?",
     )
       .bind(nowSec, id)
       .run();
-    return c.body(null, 204);
+    return c.json({ ok: true, tasksAffected: referenced?.n ?? 0 });
   });
