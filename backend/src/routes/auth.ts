@@ -6,7 +6,9 @@ import {
   buildSessionCookie,
   hashPin,
   isTransparentUser,
+  issueSelectorToken,
   issueUserToken,
+  verifySelectorToken,
   verifyPin,
 } from "../auth.ts";
 import { recordAuthLog } from "../audit.ts";
@@ -15,13 +17,15 @@ import {
   LoginQrSchema,
   LoginSchema,
   QuickSetupSchema,
+  SelectUserSchema,
   SetPinSchema,
   SetupSchema,
 } from "../shared/schemas.ts";
 import { requireAuth, requireUser, type AuthVars } from "../middleware/auth.ts";
+import { seedHomeDefaults } from "../services/home-seed.ts";
 
 const QR_TOKEN_TTL_SEC = 60;
-const QUICK_SETUP_PREFIX = "user-";
+const QUICK_SETUP_PREFIX = "home-";
 const QUICK_SETUP_RAND_HEX = 8;
 
 const randomHex = (bytes: number): string => {
@@ -35,88 +39,187 @@ const requireSecret = (env: Bindings): string => {
   return env.AUTH_SECRET;
 };
 
-interface UserRow {
+interface HomeRow {
   id: string;
-  username: string | null;
-  display_name: string | null;
+  display_name: string;
+  login: string | null;
   pin_salt: string | null;
   pin_hash: string | null;
+  tz: string;
 }
 
+interface UserRow {
+  id: string;
+  home_id: string;
+  display_name: string;
+  login: string | null;
+}
+
+interface SelectorResponseUser {
+  id: string;
+  displayName: string;
+}
+
+const selectorResponse = (
+  selectorToken: string,
+  homeId: string,
+  users: UserRow[],
+): {
+  selectorToken: string;
+  homeId: string;
+  users: SelectorResponseUser[];
+} => ({
+  selectorToken,
+  homeId,
+  users: users.map((u) => ({ id: u.id, displayName: u.display_name })),
+});
+
+// Quick path: when a home has exactly one user, the caller never has
+// to pick — we mint the UserToken directly.
+const directUserResponse = async (
+  env: Bindings,
+  homeId: string,
+  user: UserRow,
+): Promise<{ token: string; userId: string; homeId: string }> => {
+  const token = await issueUserToken(homeId, user.id, requireSecret(env));
+  return { token, userId: user.id, homeId };
+};
+
 export const authRouter = new Hono<{ Bindings: Bindings; Variables: AuthVars }>()
-  // ── POST /api/auth/setup { username, pin } ─────────────────────────
-  // Create a new PIN-protected user from scratch. Fails if the
-  // username is already taken.
+  // ── POST /api/auth/setup { login, pin, tz? } ───────────────────────
+  // Creates a brand-new HOME + first USER. Defaults:
+  //   home.display_name = login
+  //   home.login = login        (globally unique)
+  //   home.tz = body.tz ?? "UTC"
+  //   user.display_name = "User 1"
+  //   user.login = NULL  (per-user logins added later)
+  // Seeds the four default labels and five default TaskResults.
   .post("/setup", zValidator("json", SetupSchema), async (c) => {
     const start = Date.now();
-    const { username, pin } = c.req.valid("json");
+    const { login, pin, tz } = c.req.valid("json");
     const taken = await c.env.DB.prepare(
-      "SELECT id FROM users WHERE username = ? AND is_deleted = 0",
+      "SELECT id FROM homes WHERE login = ? AND is_deleted = 0",
     )
-      .bind(username)
+      .bind(login)
       .first<{ id: string }>();
     if (taken) {
-      await recordAuthLog(c.env.DB, null, "setup", username, "error", "username taken", start);
-      return c.json({ error: "username already taken" }, 409);
+      await recordAuthLog(c.env.DB, null, null, "setup", login, "error", "login taken", start);
+      return c.json({ error: "login already taken" }, 409);
     }
     const { salt, hash } = await hashPin(pin);
+    const homeId = newUuid();
     const userId = newUuid();
-    const now = Math.floor(Date.now() / 1000);
-    await c.env.DB.prepare(
-      `INSERT INTO users (id, username, pin_salt, pin_hash, created_at, updated_at, is_deleted)
-       VALUES (?, ?, ?, ?, ?, ?, 0)`,
-    )
-      .bind(userId, username, salt, hash, now, now)
-      .run();
-    const token = await issueUserToken(userId, requireSecret(c.env));
-    await recordAuthLog(c.env.DB, userId, "setup", username, "ok", null, start);
+    const nowSec = Math.floor(Date.now() / 1000);
+    await c.env.DB.batch([
+      c.env.DB.prepare(
+        `INSERT INTO homes (id, display_name, login, pin_salt, pin_hash, tz, created_at, updated_at, is_deleted)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+      ).bind(homeId, login, login, salt, hash, tz ?? "UTC", nowSec, nowSec),
+      c.env.DB.prepare(
+        `INSERT INTO users (id, home_id, display_name, created_at, updated_at, is_deleted)
+         VALUES (?, ?, 'User 1', ?, ?, 0)`,
+      ).bind(userId, homeId, nowSec, nowSec),
+    ]);
+    await seedHomeDefaults(c.env.DB, homeId, nowSec);
+
+    const token = await issueUserToken(homeId, userId, requireSecret(c.env));
+    await recordAuthLog(c.env.DB, homeId, userId, "setup", login, "ok", null, start);
     c.header("Set-Cookie", buildSessionCookie(token));
-    return c.json({ token, userId, username }, 201);
+    return c.json({ token, homeId, userId, homeLogin: login }, 201);
   })
 
-  // ── POST /api/auth/login { username, pin } ─────────────────────────
+  // ── POST /api/auth/login { login, pin } ────────────────────────────
+  // Resolves login → home, verifies the home-level PIN, and EITHER:
+  //   - returns a UserToken (if the home has exactly one user), or
+  //   - returns { selectorToken, users[] } so the SPA can show a picker.
   .post("/login", zValidator("json", LoginSchema), async (c) => {
     const start = Date.now();
-    const { username, pin } = c.req.valid("json");
-    const row = await c.env.DB.prepare(
-      `SELECT id, username, display_name, pin_salt, pin_hash
-       FROM users WHERE username = ? AND is_deleted = 0`,
+    const { login, pin } = c.req.valid("json");
+    const home = await c.env.DB.prepare(
+      `SELECT id, display_name, login, pin_salt, pin_hash, tz FROM homes
+       WHERE login = ? AND is_deleted = 0`,
     )
-      .bind(username)
-      .first<UserRow>();
-    if (!row) {
-      await recordAuthLog(c.env.DB, null, "login", username, "error", "no such user", start);
+      .bind(login)
+      .first<HomeRow>();
+    if (!home) {
+      await recordAuthLog(c.env.DB, null, null, "login", login, "error", "no such home", start);
       return c.json({ error: "invalid credentials" }, 401);
     }
-    if (isTransparentUser({ pinSalt: row.pin_salt, pinHash: row.pin_hash })) {
-      await recordAuthLog(c.env.DB, row.id, "login", username, "error", "transparent user (no pin)", start);
-      return c.json({ error: "this account has no PIN; use quick-setup or set-pin first" }, 409);
+    if (isTransparentUser({ pinSalt: home.pin_salt, pinHash: home.pin_hash })) {
+      await recordAuthLog(c.env.DB, home.id, null, "login", login, "error", "transparent home", start);
+      return c.json(
+        { error: "this home has no PIN; use quick-setup or set-pin first" },
+        409,
+      );
     }
-    const ok = await verifyPin(pin, row.pin_salt as string, row.pin_hash as string);
+    const ok = await verifyPin(pin, home.pin_salt as string, home.pin_hash as string);
     if (!ok) {
-      await recordAuthLog(c.env.DB, row.id, "login", username, "error", "wrong pin", start);
+      await recordAuthLog(c.env.DB, home.id, null, "login", login, "error", "wrong pin", start);
       return c.json({ error: "invalid credentials" }, 401);
     }
-    const token = await issueUserToken(row.id, requireSecret(c.env));
-    await recordAuthLog(c.env.DB, row.id, "login", username, "ok", null, start);
-    c.header("Set-Cookie", buildSessionCookie(token));
-    return c.json({ token, userId: row.id, username: row.username });
+    const { results: users } = await c.env.DB.prepare(
+      `SELECT id, home_id, display_name, login FROM users
+       WHERE home_id = ? AND is_deleted = 0
+       ORDER BY created_at ASC`,
+    )
+      .bind(home.id)
+      .all<UserRow>();
+    if (users.length === 0) {
+      // shouldn't happen — setup creates User 1 — but bail clearly
+      await recordAuthLog(c.env.DB, home.id, null, "login", login, "error", "no users", start);
+      return c.json({ error: "home has no users" }, 500);
+    }
+    if (users.length === 1) {
+      const user = users[0]!;
+      const dto = await directUserResponse(c.env, home.id, user);
+      await recordAuthLog(c.env.DB, home.id, user.id, "login", login, "ok", null, start);
+      c.header("Set-Cookie", buildSessionCookie(dto.token));
+      return c.json(dto);
+    }
+    const selector = await issueSelectorToken(home.id, requireSecret(c.env));
+    await recordAuthLog(c.env.DB, home.id, null, "login", login, "ok", "selector", start);
+    return c.json(selectorResponse(selector, home.id, users));
   })
 
-  // ── POST /api/auth/quick-setup { pairCode?, displayName? } ─────────
-  // Create a transparent user (no PIN). If `pairCode` is supplied
-  // and matches a fresh pending_pairings row, atomically claim that
-  // device for the new user — single-shot pairing path. Without
-  // pairCode this just provisions an account.
+  // ── POST /api/auth/select-user { selectorToken, userId } ──────────
+  // Phone exchanges its short-lived selectorToken plus a chosen user
+  // for a real UserToken.
+  .post("/select-user", zValidator("json", SelectUserSchema), async (c) => {
+    const start = Date.now();
+    const { selectorToken, userId } = c.req.valid("json");
+    const payload = await verifySelectorToken(selectorToken, requireSecret(c.env));
+    if (!payload) {
+      await recordAuthLog(c.env.DB, null, null, "select-user", null, "error", "bad selector", start);
+      return c.json({ error: "invalid or expired selector token" }, 401);
+    }
+    const user = await c.env.DB.prepare(
+      `SELECT id, home_id, display_name, login FROM users
+       WHERE id = ? AND home_id = ? AND is_deleted = 0`,
+    )
+      .bind(userId, payload.homeId)
+      .first<UserRow>();
+    if (!user) {
+      await recordAuthLog(c.env.DB, payload.homeId, null, "select-user", userId, "error", "no such user", start);
+      return c.json({ error: "user not in this home" }, 404);
+    }
+    const token = await issueUserToken(payload.homeId, user.id, requireSecret(c.env));
+    await recordAuthLog(c.env.DB, payload.homeId, user.id, "select-user", userId, "ok", null, start);
+    c.header("Set-Cookie", buildSessionCookie(token));
+    return c.json({ token, homeId: payload.homeId, userId: user.id });
+  })
+
+  // ── POST /api/auth/quick-setup { pairCode?, displayName?, tz? } ───
+  // Creates a TRANSPARENT home (no PIN) + first user atomically. If
+  // pairCode is supplied and matches a fresh pending_pairings row,
+  // claim that device for the new home.
   .post("/quick-setup", zValidator("json", QuickSetupSchema), async (c) => {
     const start = Date.now();
-    const { pairCode, displayName } = c.req.valid("json");
+    const { pairCode, displayName, tz } = c.req.valid("json");
+    const homeId = newUuid();
     const userId = newUuid();
-    const username = QUICK_SETUP_PREFIX + randomHex(QUICK_SETUP_RAND_HEX / 2);
-    const now = Math.floor(Date.now() / 1000);
+    const homeLogin = QUICK_SETUP_PREFIX + randomHex(QUICK_SETUP_RAND_HEX / 2);
+    const nowSec = Math.floor(Date.now() / 1000);
 
-    // Validate pair-code BEFORE creating the user so a stale code
-    // doesn't leave an orphan account behind.
     let pendingDeviceId: string | null = null;
     if (pairCode) {
       const pending = await c.env.DB.prepare(
@@ -131,55 +234,56 @@ export const authRouter = new Hono<{ Bindings: Bindings; Variables: AuthVars }>(
           confirmed_at: number | null;
         }>();
       if (!pending) {
-        await recordAuthLog(c.env.DB, null, "quick-setup", pairCode, "error", "unknown pair code", start);
+        await recordAuthLog(c.env.DB, null, null, "quick-setup", pairCode, "error", "unknown pair code", start);
         return c.json({ error: "unknown pair code — re-tap Pair on the device" }, 404);
       }
       if (pending.cancelled_at) {
-        await recordAuthLog(c.env.DB, null, "quick-setup", pairCode, "error", "cancelled", start);
         return c.json({ error: "pairing cancelled — re-tap Pair on the device" }, 410);
       }
       if (pending.confirmed_at) {
-        await recordAuthLog(c.env.DB, null, "quick-setup", pairCode, "error", "already confirmed", start);
         return c.json({ error: "pair code already used" }, 409);
       }
-      if (pending.expires_at <= now) {
-        await recordAuthLog(c.env.DB, null, "quick-setup", pairCode, "error", "expired", start);
+      if (pending.expires_at <= nowSec) {
         return c.json({ error: "pair code expired — re-tap Pair on the device" }, 410);
       }
       pendingDeviceId = pending.device_id;
     }
 
-    await c.env.DB.prepare(
-      `INSERT INTO users (id, username, display_name, created_at, updated_at, is_deleted)
-       VALUES (?, ?, ?, ?, ?, 0)`,
-    )
-      .bind(userId, username, displayName ?? null, now, now)
-      .run();
+    await c.env.DB.batch([
+      c.env.DB.prepare(
+        `INSERT INTO homes (id, display_name, login, tz, created_at, updated_at, is_deleted)
+         VALUES (?, ?, NULL, ?, ?, ?, 0)`,
+      ).bind(homeId, displayName ?? "Home", tz ?? "UTC", nowSec, nowSec),
+      c.env.DB.prepare(
+        `INSERT INTO users (id, home_id, display_name, created_at, updated_at, is_deleted)
+         VALUES (?, ?, 'User 1', ?, ?, 0)`,
+      ).bind(userId, homeId, nowSec, nowSec),
+    ]);
+    await seedHomeDefaults(c.env.DB, homeId, nowSec);
 
-    let deviceToken: string | null = null;
+    let deviceClaimed = false;
     if (pendingDeviceId) {
       const { issueDeviceToken } = await import("../auth.ts");
-      deviceToken = await issueDeviceToken(userId, pendingDeviceId, requireSecret(c.env));
-      // Confirm the pairing inline: claim the device, write the
-      // device token into pending_pairings so the device's next
-      // /pair/check returns confirmed.
+      const deviceToken = await issueDeviceToken(homeId, pendingDeviceId, requireSecret(c.env));
       await c.env.DB.batch([
         c.env.DB.prepare(
-          `INSERT INTO devices (id, user_id, serial, hw_model, created_at, updated_at, is_deleted)
+          `INSERT INTO devices (id, home_id, serial, hw_model, created_at, updated_at, is_deleted)
            VALUES (?, ?, ?, '', ?, ?, 0)
-           ON CONFLICT(id) DO UPDATE SET user_id = excluded.user_id,
+           ON CONFLICT(id) DO UPDATE SET home_id = excluded.home_id,
              updated_at = excluded.updated_at, is_deleted = 0`,
-        ).bind(pendingDeviceId, userId, pendingDeviceId.slice(0, 16), now, now),
+        ).bind(pendingDeviceId, homeId, pendingDeviceId.slice(0, 16), nowSec, nowSec),
         c.env.DB.prepare(
-          `UPDATE pending_pairings SET confirmed_at = ?, user_id = ?, device_token = ?
+          `UPDATE pending_pairings SET confirmed_at = ?, home_id = ?, device_token = ?
            WHERE device_id = ?`,
-        ).bind(now, userId, deviceToken, pendingDeviceId),
+        ).bind(nowSec, homeId, deviceToken, pendingDeviceId),
       ]);
+      deviceClaimed = true;
     }
 
-    const userToken = await issueUserToken(userId, requireSecret(c.env));
+    const token = await issueUserToken(homeId, userId, requireSecret(c.env));
     await recordAuthLog(
       c.env.DB,
+      homeId,
       userId,
       "quick-setup",
       pairCode ?? null,
@@ -187,32 +291,40 @@ export const authRouter = new Hono<{ Bindings: Bindings; Variables: AuthVars }>(
       null,
       start,
     );
-    c.header("Set-Cookie", buildSessionCookie(userToken));
+    c.header("Set-Cookie", buildSessionCookie(token));
     return c.json(
-      { token: userToken, userId, username, deviceClaimed: !!pendingDeviceId },
+      { token, homeId, userId, homeLogin, deviceClaimed },
       201,
     );
   })
 
-  // ── POST /api/auth/me — current user, requires UserToken ───────────
+  // ── POST /api/auth/me ──────────────────────────────────────────────
   .post("/me", requireAuth(), requireUser(), async (c) => {
-    const info = c.get("auth");
-    const row = await c.env.DB.prepare(
-      `SELECT id, username, display_name, pin_salt, pin_hash
-       FROM users WHERE id = ? AND is_deleted = 0`,
+    const u = c.get("user");
+    const home = await c.env.DB.prepare(
+      `SELECT id, display_name, login, pin_salt, pin_hash, tz FROM homes
+       WHERE id = ? AND is_deleted = 0`,
     )
-      .bind(info.userId)
+      .bind(u.homeId)
+      .first<HomeRow>();
+    const user = await c.env.DB.prepare(
+      `SELECT id, home_id, display_name, login FROM users
+       WHERE id = ? AND is_deleted = 0`,
+    )
+      .bind(u.userId)
       .first<UserRow>();
-    if (!row) return c.json({ error: "user not found" }, 404);
+    if (!home || !user) return c.json({ error: "session orphan" }, 404);
     return c.json({
-      userId: row.id,
-      username: row.username,
-      displayName: row.display_name,
-      hasPin: !isTransparentUser({ pinSalt: row.pin_salt, pinHash: row.pin_hash }),
+      homeId: home.id,
+      homeDisplayName: home.display_name,
+      homeLogin: home.login,
+      tz: home.tz,
+      hasPin: !isTransparentUser({ pinSalt: home.pin_salt, pinHash: home.pin_hash }),
+      userId: user.id,
+      userDisplayName: user.display_name,
     });
   })
 
-  // ── POST /api/auth/logout — clear cookie. No-op for Bearer clients ─
   .post("/logout", async (c) => {
     c.header("Set-Cookie", buildClearSessionCookie());
     return c.json({ ok: true });
@@ -221,137 +333,113 @@ export const authRouter = new Hono<{ Bindings: Bindings; Variables: AuthVars }>(
   // ── POST /api/auth/set-pin { pin } — promote transparent → PIN ────
   .post("/set-pin", requireAuth(), requireUser(), zValidator("json", SetPinSchema), async (c) => {
     const start = Date.now();
-    const info = c.get("auth");
+    const u = c.get("user");
     const { pin } = c.req.valid("json");
-    const row = await c.env.DB.prepare(
-      "SELECT pin_salt, pin_hash FROM users WHERE id = ?",
+    const home = await c.env.DB.prepare(
+      "SELECT pin_salt, pin_hash, login FROM homes WHERE id = ?",
     )
-      .bind(info.userId)
-      .first<{ pin_salt: string | null; pin_hash: string | null }>();
-    if (!row) {
-      await recordAuthLog(c.env.DB, info.userId, "set-pin", null, "error", "no user", start);
-      return c.json({ error: "user not found" }, 404);
-    }
-    if (!isTransparentUser({ pinSalt: row.pin_salt, pinHash: row.pin_hash })) {
-      await recordAuthLog(c.env.DB, info.userId, "set-pin", null, "error", "already has pin", start);
-      return c.json(
-        { error: "PIN already set; change-pin not implemented yet" },
-        409,
-      );
+      .bind(u.homeId)
+      .first<{ pin_salt: string | null; pin_hash: string | null; login: string | null }>();
+    if (!home) return c.json({ error: "home not found" }, 404);
+    if (!isTransparentUser({ pinSalt: home.pin_salt, pinHash: home.pin_hash })) {
+      await recordAuthLog(c.env.DB, u.homeId, u.userId, "set-pin", null, "error", "already has pin", start);
+      return c.json({ error: "PIN already set; change-pin not implemented" }, 409);
     }
     const { salt, hash } = await hashPin(pin);
-    const now = Math.floor(Date.now() / 1000);
+    const nowSec = Math.floor(Date.now() / 1000);
     await c.env.DB.prepare(
-      "UPDATE users SET pin_salt = ?, pin_hash = ?, updated_at = ? WHERE id = ?",
+      `UPDATE homes SET pin_salt = ?, pin_hash = ?, updated_at = ? WHERE id = ?`,
     )
-      .bind(salt, hash, now, info.userId)
+      .bind(salt, hash, nowSec, u.homeId)
       .run();
-    await recordAuthLog(c.env.DB, info.userId, "set-pin", null, "ok", null, start);
+    await recordAuthLog(c.env.DB, u.homeId, u.userId, "set-pin", null, "ok", null, start);
     return c.json({ ok: true });
   })
 
   // ── POST /api/auth/login-token-create — DeviceToken required ──────
-  // Mints a 60-second one-shot QR token for the device's already-
-  // paired user. Each call mints a fresh token. Replay protection
-  // is single-use consumption in /login-qr.
-  //
-  // Pairing-revocation gate: a DeviceToken outlives a `Forget device`
-  // action (no token revocation list), so we re-check there's an
-  // active devices row for this (deviceId, userId) before minting.
   .post("/login-token-create", requireAuth(), async (c) => {
     const start = Date.now();
     const info = c.get("auth");
-    if (info.type !== "device") {
-      return c.json({ error: "device-token-required" }, 403);
-    }
+    if (info.type !== "device") return c.json({ error: "device-token-required" }, 403);
     const pair = await c.env.DB.prepare(
       `SELECT id FROM devices
-       WHERE id = ? AND user_id = ? AND is_deleted = 0
+       WHERE id = ? AND home_id = ? AND is_deleted = 0
        LIMIT 1`,
     )
-      .bind(info.deviceId, info.userId)
+      .bind(info.deviceId, info.homeId)
       .first<{ id: string }>();
     if (!pair) {
-      await recordAuthLog(
-        c.env.DB,
-        info.userId,
-        "login-token-create",
-        info.deviceId,
-        "error",
-        "pairing revoked",
-        start,
-      );
-      return c.json(
-        { error: "device pairing has been revoked; re-pair from the device menu" },
-        401,
-      );
+      await recordAuthLog(c.env.DB, info.homeId, null, "login-token-create", info.deviceId, "error", "pairing revoked", start);
+      return c.json({ error: "device pairing has been revoked" }, 401);
     }
     const token = randomHex(16);
-    const now = Math.floor(Date.now() / 1000);
-    const expiresAt = now + QR_TOKEN_TTL_SEC;
+    const nowSec = Math.floor(Date.now() / 1000);
+    const expiresAt = nowSec + QR_TOKEN_TTL_SEC;
     await c.env.DB.prepare(
-      `INSERT INTO login_qr_tokens (token, device_id, user_id, created_at, expires_at, consumed_at)
+      `INSERT INTO login_qr_tokens (token, device_id, home_id, created_at, expires_at, consumed_at)
        VALUES (?, ?, ?, ?, ?, NULL)`,
     )
-      .bind(token, info.deviceId, info.userId, now, expiresAt)
+      .bind(token, info.deviceId, info.homeId, nowSec, expiresAt)
       .run();
-    await recordAuthLog(
-      c.env.DB,
-      info.userId,
-      "login-token-create",
-      info.deviceId,
-      "ok",
-      null,
-      start,
-    );
+    await recordAuthLog(c.env.DB, info.homeId, null, "login-token-create", info.deviceId, "ok", null, start);
     return c.json({ token, expiresAt });
   })
 
-  // ── POST /api/auth/login-qr { deviceId, token } — phone-side ──────
-  // No auth — the token IS the credential. Single-use is enforced by
-  // a conditional UPDATE so two concurrent calls can't both pass.
+  // ── POST /api/auth/login-qr { deviceId, token } ────────────────────
+  // Returns either a direct UserToken (single user) or a selector +
+  // user list (multi-user). Per plan §6.2.
   .post("/login-qr", zValidator("json", LoginQrSchema), async (c) => {
     const start = Date.now();
     const { deviceId, token } = c.req.valid("json");
     const row = await c.env.DB.prepare(
-      `SELECT user_id, expires_at, consumed_at, device_id
+      `SELECT home_id, expires_at, consumed_at, device_id
        FROM login_qr_tokens WHERE token = ?`,
     )
       .bind(token)
       .first<{
-        user_id: string;
+        home_id: string;
         expires_at: number;
         consumed_at: number | null;
         device_id: string;
       }>();
     if (!row) {
-      await recordAuthLog(c.env.DB, null, "login-qr", deviceId, "error", "unknown token", start);
+      await recordAuthLog(c.env.DB, null, null, "login-qr", deviceId, "error", "unknown token", start);
       return c.json({ error: "unknown token" }, 404);
     }
     if (row.device_id !== deviceId) {
-      await recordAuthLog(c.env.DB, row.user_id, "login-qr", deviceId, "error", "deviceId mismatch", start);
+      await recordAuthLog(c.env.DB, row.home_id, null, "login-qr", deviceId, "error", "deviceId mismatch", start);
       return c.json({ error: "deviceId mismatch" }, 403);
     }
-    const now = Math.floor(Date.now() / 1000);
-    if (row.expires_at <= now) {
-      await recordAuthLog(c.env.DB, row.user_id, "login-qr", deviceId, "error", "expired", start);
+    const nowSec = Math.floor(Date.now() / 1000);
+    if (row.expires_at <= nowSec) {
       return c.json({ error: "token expired (60s TTL)" }, 410);
     }
     if (row.consumed_at !== null) {
-      await recordAuthLog(c.env.DB, row.user_id, "login-qr", deviceId, "error", "already consumed", start);
       return c.json({ error: "token already consumed" }, 410);
     }
     const res = await c.env.DB.prepare(
       "UPDATE login_qr_tokens SET consumed_at = ? WHERE token = ? AND consumed_at IS NULL",
     )
-      .bind(now, token)
+      .bind(nowSec, token)
       .run();
     if ((res.meta.changes ?? 0) === 0) {
-      await recordAuthLog(c.env.DB, row.user_id, "login-qr", deviceId, "error", "race lost", start);
       return c.json({ error: "token already consumed" }, 410);
     }
-    const userToken = await issueUserToken(row.user_id, requireSecret(c.env));
-    await recordAuthLog(c.env.DB, row.user_id, "login-qr", deviceId, "ok", null, start);
-    c.header("Set-Cookie", buildSessionCookie(userToken));
-    return c.json({ token: userToken, userId: row.user_id });
+    const { results: users } = await c.env.DB.prepare(
+      `SELECT id, home_id, display_name, login FROM users
+       WHERE home_id = ? AND is_deleted = 0
+       ORDER BY created_at ASC`,
+    )
+      .bind(row.home_id)
+      .all<UserRow>();
+    if (users.length === 1) {
+      const user = users[0]!;
+      const dto = await directUserResponse(c.env, row.home_id, user);
+      await recordAuthLog(c.env.DB, row.home_id, user.id, "login-qr", deviceId, "ok", null, start);
+      c.header("Set-Cookie", buildSessionCookie(dto.token));
+      return c.json(dto);
+    }
+    const selector = await issueSelectorToken(row.home_id, requireSecret(c.env));
+    await recordAuthLog(c.env.DB, row.home_id, null, "login-qr", deviceId, "ok", "selector", start);
+    return c.json(selectorResponse(selector, row.home_id, users));
   });

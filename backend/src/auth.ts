@@ -20,6 +20,9 @@ const SALT_BYTES = 16;
 
 const USER_TOKEN_TTL_SEC = 30 * 24 * 60 * 60;
 const DEVICE_TOKEN_TTL_SEC = 365 * 24 * 60 * 60;
+// Selector token bridges PIN/QR-validated → user-picked. Short
+// lifetime; only valid for /api/auth/select-user.
+const SELECTOR_TOKEN_TTL_SEC = 5 * 60;
 
 const enc = new TextEncoder();
 
@@ -114,26 +117,36 @@ const derivePin = async (pin: string, saltHex: string): Promise<string> => {
 
 // ── Tokens ──────────────────────────────────────────────────────────
 
-export type TokenType = "user" | "device";
+export type TokenType = "user" | "device" | "selector";
 
 export interface UserTokenPayload {
   type: "user";
+  homeId: string;
   userId: string;
   exp: number; // epoch seconds
 }
 
 export interface DeviceTokenPayload {
   type: "device";
-  userId: string;
+  homeId: string;
   deviceId: string;
   exp: number;
 }
 
-export type TokenPayload = UserTokenPayload | DeviceTokenPayload;
+export interface SelectorTokenPayload {
+  type: "selector";
+  homeId: string;
+  exp: number;
+}
+
+export type TokenPayload =
+  | UserTokenPayload
+  | DeviceTokenPayload
+  | SelectorTokenPayload;
 
 export type AuthInfo =
-  | { type: "user"; userId: string }
-  | { type: "device"; userId: string; deviceId: string };
+  | { type: "user"; homeId: string; userId: string }
+  | { type: "device"; homeId: string; deviceId: string };
 
 const hmacKey = (secret: string): Promise<CryptoKey> =>
   crypto.subtle.importKey(
@@ -156,28 +169,55 @@ const signPayload = async (
 };
 
 export const issueUserToken = (
+  homeId: string,
   userId: string,
   secret: string,
 ): Promise<string> =>
   signPayload(
-    { type: "user", userId, exp: Math.floor(Date.now() / 1000) + USER_TOKEN_TTL_SEC },
+    {
+      type: "user",
+      homeId,
+      userId,
+      exp: Math.floor(Date.now() / 1000) + USER_TOKEN_TTL_SEC,
+    },
     secret,
   );
 
 export const issueDeviceToken = (
-  userId: string,
+  homeId: string,
   deviceId: string,
   secret: string,
 ): Promise<string> =>
   signPayload(
     {
       type: "device",
-      userId,
+      homeId,
       deviceId,
       exp: Math.floor(Date.now() / 1000) + DEVICE_TOKEN_TTL_SEC,
     },
     secret,
   );
+
+export const issueSelectorToken = (
+  homeId: string,
+  secret: string,
+): Promise<string> =>
+  signPayload(
+    {
+      type: "selector",
+      homeId,
+      exp: Math.floor(Date.now() / 1000) + SELECTOR_TOKEN_TTL_SEC,
+    },
+    secret,
+  );
+
+export const verifySelectorToken = async (
+  token: string,
+  secret: string,
+): Promise<SelectorTokenPayload | null> => {
+  const p = await verifyToken(token, secret);
+  return p && p.type === "selector" ? p : null;
+};
 
 export const verifyToken = async (
   token: string,
@@ -208,9 +248,11 @@ export const verifyToken = async (
 const isTokenPayload = (x: unknown): x is TokenPayload => {
   if (typeof x !== "object" || x === null) return false;
   const o = x as Record<string, unknown>;
-  if (typeof o["userId"] !== "string" || typeof o["exp"] !== "number") return false;
-  if (o["type"] === "user") return true;
+  if (typeof o["exp"] !== "number") return false;
+  if (typeof o["homeId"] !== "string") return false;
+  if (o["type"] === "user") return typeof o["userId"] === "string";
   if (o["type"] === "device") return typeof o["deviceId"] === "string";
+  if (o["type"] === "selector") return true;
   return false;
 };
 
@@ -253,7 +295,15 @@ export const authFromHeaders = async (
   const payload = await verifyToken(token, secret);
   if (!payload) return null;
   if (payload.type === "device") {
-    return { type: "device", userId: payload.userId, deviceId: payload.deviceId };
+    return {
+      type: "device",
+      homeId: payload.homeId,
+      deviceId: payload.deviceId,
+    };
   }
-  return { type: "user", userId: payload.userId };
+  if (payload.type === "user") {
+    return { type: "user", homeId: payload.homeId, userId: payload.userId };
+  }
+  // selector tokens never authenticate normal routes.
+  return null;
 };

@@ -2,22 +2,19 @@ import type { ISpecification } from "./interfaces.ts";
 import type { Task } from "../domain/task.ts";
 import type { Schedule } from "../domain/schedule.ts";
 import type { Occurrence } from "../domain/occurrence.ts";
-import type { TaskId, UserId } from "../domain/ids.ts";
+import type { HomeId, TaskId } from "../domain/ids.ts";
 
-// Specs are small, named, typed. They are NOT a generic query DSL —
-// each tag has a single intent the repository understands.
-
-export const ownedBy = (userId: UserId): ISpecification<Task> => ({
-  tag: "OwnedBy",
-  params: { userId },
+export const ownedByHome = (homeId: HomeId): ISpecification<Task> => ({
+  tag: "OwnedByHome",
+  params: { homeId },
 });
 
-export const pendingForUser = (
-  userId: UserId,
+export const pendingForHome = (
+  homeId: HomeId,
   limit = 50,
 ): ISpecification<Occurrence> => ({
-  tag: "PendingForUser",
-  params: { userId, limit },
+  tag: "PendingForHome",
+  params: { homeId, limit },
 });
 
 export const occurrencesForTask = (

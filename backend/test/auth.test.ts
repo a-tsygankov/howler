@@ -51,44 +51,43 @@ describe("transparent user sentinel", () => {
 });
 
 describe("token sign/verify", () => {
+  const homeId = "f".repeat(32);
   const userId = "a".repeat(32);
   const deviceId = "b".repeat(32);
 
   it("round-trips a UserToken", async () => {
-    const token = await issueUserToken(userId, SECRET);
+    const token = await issueUserToken(homeId, userId, SECRET);
     const payload = await verifyToken(token, SECRET);
     expect(payload?.type).toBe("user");
-    expect(payload?.userId).toBe(userId);
+    expect(payload?.homeId).toBe(homeId);
+    if (payload?.type === "user") expect(payload.userId).toBe(userId);
   });
 
   it("round-trips a DeviceToken with deviceId", async () => {
-    const token = await issueDeviceToken(userId, deviceId, SECRET);
+    const token = await issueDeviceToken(homeId, deviceId, SECRET);
     const payload = await verifyToken(token, SECRET);
     expect(payload?.type).toBe("device");
-    expect(payload?.userId).toBe(userId);
-    if (payload?.type === "device") {
-      expect(payload.deviceId).toBe(deviceId);
-    }
+    expect(payload?.homeId).toBe(homeId);
+    if (payload?.type === "device") expect(payload.deviceId).toBe(deviceId);
   });
 
   it("rejects a token signed with a different secret", async () => {
-    const token = await issueUserToken(userId, SECRET);
+    const token = await issueUserToken(homeId, userId, SECRET);
     expect(await verifyToken(token, "other-secret")).toBeNull();
   });
 
   it("rejects a tampered payload", async () => {
-    const token = await issueUserToken(userId, SECRET);
+    const token = await issueUserToken(homeId, userId, SECRET);
     const [, sig] = token.split(".");
-    const tampered = `${btoa(JSON.stringify({ type: "user", userId: "evil", exp: Date.now() / 1000 + 100 })).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")}.${sig}`;
+    const tampered = `${btoa(JSON.stringify({ type: "user", homeId, userId: "evil", exp: Date.now() / 1000 + 100 })).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")}.${sig}`;
     expect(await verifyToken(tampered, SECRET)).toBeNull();
   });
 
   it("rejects an expired token", async () => {
-    // Forge an expired payload, then re-sign so the HMAC validates
-    // but the exp check fails.
     const enc = new TextEncoder();
     const payload = JSON.stringify({
       type: "user",
+      homeId,
       userId,
       exp: Math.floor(Date.now() / 1000) - 10,
     });

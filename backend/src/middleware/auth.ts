@@ -4,6 +4,10 @@ import type { Bindings } from "../env.ts";
 
 export interface AuthVars {
   auth: AuthInfo;
+  // Narrowed view of `auth` set by requireUser; saves the inline
+  // discriminant check in every user-only handler.
+  user: { homeId: string; userId: string };
+  device: { homeId: string; deviceId: string };
 }
 
 export const requireAuth = (): MiddlewareHandler<{
@@ -33,6 +37,7 @@ export const requireUser = (): MiddlewareHandler<{
     if (!info || info.type !== "user") {
       return c.json({ error: "user-token-required" }, 403);
     }
+    c.set("user", { homeId: info.homeId, userId: info.userId });
     await next();
     return undefined;
   };
@@ -47,6 +52,7 @@ export const requireDevice = (): MiddlewareHandler<{
     if (!info || info.type !== "device") {
       return c.json({ error: "device-token-required" }, 403);
     }
+    c.set("device", { homeId: info.homeId, deviceId: info.deviceId });
     await next();
     return undefined;
   };

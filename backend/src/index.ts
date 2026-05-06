@@ -4,6 +4,8 @@ import { tasksRouter } from "./routes/tasks.ts";
 import { authRouter } from "./routes/auth.ts";
 import { pairRouter } from "./routes/pair.ts";
 import { occurrencesRouter } from "./routes/occurrences.ts";
+import { labelsRouter } from "./routes/labels.ts";
+import { taskResultsRouter } from "./routes/task-results.ts";
 import type { AuthVars } from "./middleware/auth.ts";
 import { consumeFireQueue, scheduledFanout } from "./services/fanout.ts";
 
@@ -17,6 +19,8 @@ app.route("/api/auth", authRouter);
 app.route("/api/pair", pairRouter);
 app.route("/api/tasks", tasksRouter);
 app.route("/api/occurrences", occurrencesRouter);
+app.route("/api/labels", labelsRouter);
+app.route("/api/task-results", taskResultsRouter);
 
 app.notFound((c) => c.json({ error: "not-found" }, 404));
 

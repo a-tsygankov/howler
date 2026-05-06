@@ -14,6 +14,7 @@ export type AuthLogKind =
   | "login-token-create"
   | "logout"
   | "set-pin"
+  | "select-user"
   | "quick-setup"
   | "pair-start"
   | "pair-check"
@@ -23,6 +24,7 @@ export type AuthLogResult = "ok" | "error";
 
 export const recordAuthLog = async (
   db: D1Database,
+  homeId: string | null,
   userId: string | null,
   kind: AuthLogKind,
   identifier: string | null,
@@ -36,31 +38,29 @@ export const recordAuthLog = async (
     await db
       .prepare(
         `INSERT INTO auth_logs
-         (user_id, ts, kind, identifier, result, error_message, duration_ms)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+         (home_id, user_id, ts, kind, identifier, result, error_message, duration_ms)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .bind(userId, ts, kind, identifier, result, errorMessage, durationMs)
+      .bind(homeId, userId, ts, kind, identifier, result, errorMessage, durationMs)
       .run();
 
-    // Prune older rows past the cap. One DELETE per insert; cheap on
-    // an indexed table with hundreds of rows. The unattributed case
-    // (userId IS NULL) can balloon under attack, so it gets a higher
-    // cap but still gets pruned.
-    if (userId) {
+    // Per-home cap; unattributed events get a higher global cap so
+    // pre-auth probes don't drown a home's diagnostic surface.
+    if (homeId) {
       await db
         .prepare(
-          `DELETE FROM auth_logs WHERE user_id = ? AND id NOT IN (
-             SELECT id FROM auth_logs WHERE user_id = ?
+          `DELETE FROM auth_logs WHERE home_id = ? AND id NOT IN (
+             SELECT id FROM auth_logs WHERE home_id = ?
              ORDER BY ts DESC LIMIT ?
            )`,
         )
-        .bind(userId, userId, PER_USER_CAP)
+        .bind(homeId, homeId, PER_USER_CAP)
         .run();
     } else {
       await db
         .prepare(
-          `DELETE FROM auth_logs WHERE user_id IS NULL AND id NOT IN (
-             SELECT id FROM auth_logs WHERE user_id IS NULL
+          `DELETE FROM auth_logs WHERE home_id IS NULL AND id NOT IN (
+             SELECT id FROM auth_logs WHERE home_id IS NULL
              ORDER BY ts DESC LIMIT ?
            )`,
         )
@@ -68,7 +68,6 @@ export const recordAuthLog = async (
         .run();
     }
   } catch (e) {
-    // Never let audit failures break the auth flow itself.
     console.warn("[audit] failed to record auth log:", e);
   }
 };

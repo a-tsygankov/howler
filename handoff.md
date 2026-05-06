@@ -5,14 +5,14 @@
 > question in [`docs/plan.md`](docs/plan.md) §17, or discovers a new risk.
 > If this grows past one page it's wrong — move detail into `docs/`.
 
-**Last updated:** 2026-05-06 — Phase 1 step 2 (scheduler + ack) on `dev-1`.
+**Last updated:** 2026-05-06 — Phase 2.0 (home-centric model) live on `dev-2`.
 
 ## Live URLs
 
 | | |
 | --- | --- |
 | Worker | https://howler-api.atsyg-feedme.workers.dev (prod) |
-| Pages  | https://howler-webapp.pages.dev (prod) · https://dev-1.howler-webapp.pages.dev (dev-1 preview) |
+| Pages  | https://howler-webapp.pages.dev (prod) · https://dev-1.howler-webapp.pages.dev (dev-1) · https://dev-2.howler-webapp.pages.dev (dev-2) |
 | D1     | `howler-db` (id `39b29c7a-28b2-4bdf-93cd-bdb9cb031488`) |
 | R2     | `howler-firmware`, `howler-avatars` |
 | Queue  | `occurrence-fire` (+ DLQ `occurrence-fire-dlq`) |
@@ -154,6 +154,20 @@ recommendations; if you disagree, raise it before Phase 1 starts.
   pending list + create-task form with kind-aware fields.
   20/20 backend tests green. Cron + queue path verified end-to-end
   in prod (ONESHOT now+5 → cron tick → pending → ack).
+- 2026-05-06 — Phase 2.0 — home-centric model rework on `dev-2`.
+  Migration `0002_home.sql` rebuilds the schema (home, user-as-child,
+  labels, task_results, task_assignments, task_executions; tokens
+  carry homeId; auth flow grows a user-picker step). Application-
+  level seed inserts the 4 default labels + 5 TaskResult templates
+  per new home. `POST /api/occurrences/:id/ack` now accepts
+  `{resultValue?, notes?}` and writes a denormalized snapshot to
+  `task_executions` in the same UoW batch. New CRUD routes for
+  `/api/labels` and `/api/task-results`. **31/31 backend tests
+  green** (10 in the integration suite, including a new `ack-with-
+  resultValue stores the snapshot` case). Worker live at the same
+  URL; webapp live at https://dev-2.howler-webapp.pages.dev with a
+  user-picker after login + an ack dialog that asks for the value
+  when a task has a result type.
 - 2026-05-06 — Integration tests via `@cloudflare/vitest-pool-workers`.
   9 tests exercise the live Worker (auth, pair+QR end-to-end with
   replay rejection + deviceId mismatch, task RBAC across two users,

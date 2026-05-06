@@ -3,43 +3,63 @@ import {
   apiLogin,
   apiLoginQr,
   apiQuickSetup,
+  apiSelectUser,
   apiSetup,
+  type LoginOutcome,
 } from "./lib/api.ts";
-import { setSession, type SessionUser } from "./lib/session.ts";
+import { setSession, type SessionInfo } from "./lib/session.ts";
 
 type Mode = "login" | "setup" | "quick" | "qr";
 
 interface Props {
-  onLoggedIn: (u: SessionUser) => void;
+  onLoggedIn: (s: SessionInfo) => void;
+}
+
+interface SelectorState {
+  selectorToken: string;
+  homeId: string;
+  users: { id: string; displayName: string }[];
 }
 
 export const Login = ({ onLoggedIn }: Props) => {
   const [mode, setMode] = useState<Mode>("quick");
-  const [username, setUsername] = useState("");
+  const [login, setLogin] = useState("");
   const [pin, setPin] = useState("");
   const [pairCode, setPairCode] = useState("");
+  const [selector, setSelector] = useState<SelectorState | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  // Pick up `?token=…&deviceId=…` from a QR scan landing on this page
-  // and finish the login-qr exchange automatically.
+  // Auto-finish a `?token=&deviceId=` QR landing.
   useEffect(() => {
     const url = new URL(window.location.href);
     const token = url.searchParams.get("token");
     const deviceId = url.searchParams.get("deviceId");
     if (token && deviceId) {
       setMode("qr");
-      void runQr(deviceId, token);
+      void wrap(async () => handleOutcome(await apiLoginQr(deviceId, token)));
     }
   }, []);
 
-  const finish = (resp: {
-    token: string;
-    userId: string;
-    username: string | null;
-  }) => {
-    setSession(resp.token, { userId: resp.userId, username: resp.username });
-    onLoggedIn({ userId: resp.userId, username: resp.username });
+  const handleOutcome = (outcome: LoginOutcome) => {
+    if (outcome.kind === "direct") {
+      setSession({
+        token: outcome.token,
+        homeId: outcome.homeId,
+        userId: outcome.userId,
+      });
+      onLoggedIn({
+        token: outcome.token,
+        homeId: outcome.homeId,
+        userId: outcome.userId,
+      });
+      return;
+    }
+    setSelector({
+      selectorToken: outcome.selectorToken,
+      homeId: outcome.homeId,
+      users: outcome.users,
+    });
   };
 
   const wrap = async (fn: () => Promise<void>) => {
@@ -55,15 +75,61 @@ export const Login = ({ onLoggedIn }: Props) => {
   };
 
   const runLogin = () =>
-    wrap(async () => finish(await apiLogin(username, pin)));
+    wrap(async () => handleOutcome(await apiLogin(login, pin)));
   const runSetup = () =>
-    wrap(async () => finish(await apiSetup(username, pin)));
+    wrap(async () => handleOutcome(await apiSetup(login, pin)));
   const runQuick = () =>
     wrap(async () =>
-      finish(await apiQuickSetup(pairCode ? { pairCode } : {})),
+      handleOutcome(await apiQuickSetup(pairCode ? { pairCode } : {})),
     );
-  const runQr = (deviceId: string, token: string) =>
-    wrap(async () => finish(await apiLoginQr(deviceId, token)));
+
+  const pickUser = (userId: string) =>
+    wrap(async () => {
+      if (!selector) return;
+      const r = await apiSelectUser(selector.selectorToken, userId);
+      setSession({ token: r.token, homeId: r.homeId, userId: r.userId });
+      onLoggedIn({ token: r.token, homeId: r.homeId, userId: r.userId });
+    });
+
+  if (selector) {
+    return (
+      <main>
+        <h1>Howler</h1>
+        <p style={{ opacity: 0.7 }}>Pick a user:</p>
+        {selector.users.map((u) => (
+          <button
+            key={u.id}
+            type="button"
+            onClick={() => pickUser(u.id)}
+            disabled={busy}
+            style={{
+              display: "block",
+              width: "100%",
+              padding: 12,
+              borderRadius: 10,
+              border: "1px solid #1e293b",
+              background: "#111827",
+              color: "inherit",
+              cursor: "pointer",
+              marginBottom: 8,
+              textAlign: "left",
+              fontSize: 16,
+            }}
+          >
+            {u.displayName}
+          </button>
+        ))}
+        {error && <p className="error">{error}</p>}
+        <button
+          type="button"
+          onClick={() => setSelector(null)}
+          style={{ marginTop: 12, background: "transparent", color: "inherit", border: "none", cursor: "pointer", opacity: 0.6 }}
+        >
+          Back
+        </button>
+      </main>
+    );
+  }
 
   return (
     <main>
@@ -99,7 +165,7 @@ export const Login = ({ onLoggedIn }: Props) => {
 
       {mode === "login" && (
         <section>
-          <Field label="Username" value={username} onChange={setUsername} autoComplete="username" />
+          <Field label="Login" value={login} onChange={setLogin} autoComplete="username" />
           <Field
             label="PIN"
             value={pin}
@@ -113,7 +179,7 @@ export const Login = ({ onLoggedIn }: Props) => {
 
       {mode === "setup" && (
         <section>
-          <Field label="Username" value={username} onChange={setUsername} autoComplete="username" />
+          <Field label="Login" value={login} onChange={setLogin} autoComplete="username" />
           <Field
             label="PIN (4+ chars)"
             value={pin}

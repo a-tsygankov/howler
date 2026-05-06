@@ -4,9 +4,10 @@ import { env, SELF } from "cloudflare:test";
 // Inline the SQL at build time (workerd has no fs).
 import init0000 from "../migrations/0000_init.sql?raw";
 import init0001 from "../migrations/0001_auth.sql?raw";
+import init0002 from "../migrations/0002_home.sql?raw";
 
 const applyMigrations = async () => {
-  for (const sql of [init0000, init0001]) {
+  for (const sql of [init0000, init0001, init0002]) {
     // Strip line comments first — they may contain `;` which would
     // otherwise break the naive split below.
     const stripped = sql
@@ -24,18 +25,22 @@ const applyMigrations = async () => {
 };
 
 const reset = async () => {
-  // Clear app tables between tests so cases don't bleed into each
-  // other. d1_migrations stays untouched.
+  // Clear app tables between tests. Order matters for FK references.
   for (const t of [
+    "task_executions",
     "occurrences",
     "schedules",
+    "task_assignments",
+    "tasks",
+    "task_results",
+    "labels",
     "device_outbox",
     "devices",
     "login_qr_tokens",
     "pending_pairings",
     "auth_logs",
-    "tasks",
     "users",
+    "homes",
   ]) {
     await env.DB.exec(`DELETE FROM ${t}`);
   }
@@ -48,7 +53,7 @@ beforeAll(applyMigrations);
 beforeEach(reset);
 
 describe("auth flow", () => {
-  it("quick-setup mints a UserToken for a transparent user", async () => {
+  it("quick-setup creates a transparent home + first user with a UserToken", async () => {
     const res = await SELF.fetch("https://t/api/auth/quick-setup", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -57,25 +62,29 @@ describe("auth flow", () => {
     expect(res.status).toBe(201);
     const body = await json(res);
     expect(body["token"]).toMatch(/\./);
+    expect(body["homeId"]).toMatch(/^[0-9a-f]{32}$/);
     expect(body["userId"]).toMatch(/^[0-9a-f]{32}$/);
     expect(body["deviceClaimed"]).toBe(false);
   });
 
-  it("setup → login → /me round-trips", async () => {
+  it("setup creates a home named after the login + first user; login → /me round-trips", async () => {
     const setup = await SELF.fetch("https://t/api/auth/setup", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ username: "alice", pin: "1234" }),
+      body: JSON.stringify({ login: "alice", pin: "1234" }),
     });
     expect(setup.status).toBe(201);
 
     const login = await SELF.fetch("https://t/api/auth/login", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ username: "alice", pin: "1234" }),
+      body: JSON.stringify({ login: "alice", pin: "1234" }),
     });
     expect(login.status).toBe(200);
-    const { token } = await json(login);
+    const loginBody = await json(login);
+    // Single-user home — login returns a UserToken directly.
+    const token = loginBody["token"] as string;
+    expect(token).toMatch(/\./);
 
     const me = await SELF.fetch("https://t/api/auth/me", {
       method: "POST",
@@ -83,7 +92,8 @@ describe("auth flow", () => {
     });
     expect(me.status).toBe(200);
     const meBody = await json(me);
-    expect(meBody["username"]).toBe("alice");
+    expect(meBody["homeDisplayName"]).toBe("alice");
+    expect(meBody["userDisplayName"]).toBe("User 1");
     expect(meBody["hasPin"]).toBe(true);
   });
 
@@ -91,12 +101,12 @@ describe("auth flow", () => {
     await SELF.fetch("https://t/api/auth/setup", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ username: "bob", pin: "1234" }),
+      body: JSON.stringify({ login: "bob", pin: "1234" }),
     });
     const res = await SELF.fetch("https://t/api/auth/login", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ username: "bob", pin: "9999" }),
+      body: JSON.stringify({ login: "bob", pin: "9999" }),
     });
     expect(res.status).toBe(401);
   });
@@ -145,14 +155,16 @@ describe("pair + login-by-QR flow", () => {
     expect(ltc.status).toBe(200);
     const { token: qrToken } = await json(ltc);
 
-    // 5. Phone exchanges it for a fresh UserToken.
+    // 5. Phone exchanges it. Single-user home → direct UserToken.
     const exchange = await SELF.fetch("https://t/api/auth/login-qr", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ deviceId, token: qrToken }),
     });
     expect(exchange.status).toBe(200);
-    expect((await json(exchange))["userId"]).toBe(qsBody["userId"]);
+    const exBody = await json(exchange);
+    expect(exBody["userId"]).toBe(qsBody["userId"]);
+    expect(exBody["homeId"]).toBe(qsBody["homeId"]);
 
     // 6. Replay is rejected.
     const replay = await SELF.fetch("https://t/api/auth/login-qr", {
@@ -200,14 +212,22 @@ describe("pair + login-by-QR flow", () => {
 });
 
 describe("tasks + occurrences", () => {
-  const auth = async (): Promise<{ token: string; userId: string }> => {
+  const auth = async (): Promise<{
+    token: string;
+    homeId: string;
+    userId: string;
+  }> => {
     const res = await SELF.fetch("https://t/api/auth/quick-setup", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: "{}",
     });
     const body = await json(res);
-    return { token: body["token"] as string, userId: body["userId"] as string };
+    return {
+      token: body["token"] as string,
+      homeId: body["homeId"] as string,
+      userId: body["userId"] as string,
+    };
   };
 
   it("tasks endpoint requires a token", async () => {
@@ -241,7 +261,7 @@ describe("tasks + occurrences", () => {
     expect(tasks[0]?.kind).toBe("DAILY");
   });
 
-  it("PATCH updates title + priority and rejects non-owner", async () => {
+  it("PATCH updates title + priority and rejects callers from other homes", async () => {
     const a = await auth();
     const b = await auth();
     const create = await SELF.fetch("https://t/api/tasks", {
@@ -267,8 +287,6 @@ describe("tasks + occurrences", () => {
     expect(okBody["title"]).toBe("new title");
     expect(okBody["priority"]).toBe(3);
 
-    // user B can't edit user A's task — gets 403 (wrong-user) once
-    // we look it up. (404 first if id is unknown.)
     const forbidden = await SELF.fetch(`https://t/api/tasks/${t.id}`, {
       method: "PATCH",
       headers: {
@@ -280,7 +298,7 @@ describe("tasks + occurrences", () => {
     expect(forbidden.status).toBe(403);
   });
 
-  it("user A can't see user B's tasks", async () => {
+  it("home A can't see home B's tasks", async () => {
     const a = await auth();
     const b = await auth();
     await SELF.fetch("https://t/api/tasks", {
@@ -322,21 +340,93 @@ describe("tasks + occurrences", () => {
       .bind(occId, task.id, Math.floor(now / 1000), now, now)
       .run();
 
+    // Phase 2: ack accepts a JSON body for resultValue/notes.
+    const ackHeaders = {
+      authorization: `Bearer ${token}`,
+      "content-type": "application/json",
+    } as const;
     const ack1 = await SELF.fetch(`https://t/api/occurrences/${occId}/ack`, {
       method: "POST",
-      headers: { authorization: `Bearer ${token}` },
+      headers: ackHeaders,
+      body: JSON.stringify({}),
     });
     expect(ack1.status).toBe(200);
-    const ack1Body = (await json(ack1)) as { status: string };
+    const ack1Body = (await json(ack1)) as { status: string; executionId: string | null };
     expect(ack1Body.status).toBe("ACKED");
+    expect(ack1Body.executionId).toMatch(/^[0-9a-f]{32}$/);
 
     const ack2 = await SELF.fetch(`https://t/api/occurrences/${occId}/ack`, {
       method: "POST",
-      headers: { authorization: `Bearer ${token}` },
+      headers: ackHeaders,
+      body: JSON.stringify({}),
     });
     expect(ack2.status).toBe(200);
     expect((await json(ack2))["status"]).toBe("ACKED");
 
+    // task_executions is append-only — even after re-ack, exactly
+    // one row.
+    const { results } = await env.DB
+      .prepare("SELECT id FROM task_executions WHERE task_id = ?")
+      .bind(task.id)
+      .all<{ id: string }>();
+    expect(results).toHaveLength(1);
+
     void userId;
+  });
+
+  it("ack with resultValue stores the snapshot in task_executions", async () => {
+    const { token, homeId } = await auth();
+    // Look up a system task_result type (Grams) to attach.
+    const { results: types } = await env.DB
+      .prepare(
+        "SELECT id, unit_name FROM task_results WHERE home_id = ? AND display_name = 'Grams'",
+      )
+      .bind(homeId)
+      .all<{ id: string; unit_name: string }>();
+    const grams = types[0]!;
+    const create = await SELF.fetch("https://t/api/tasks", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        title: "Feed cat",
+        kind: "ONESHOT",
+        resultTypeId: grams.id,
+      }),
+    });
+    expect(create.status).toBe(201);
+    const task = (await json(create)) as { id: string };
+    const occId = "c".repeat(32);
+    const now = Date.now();
+    await env.DB
+      .prepare(
+        `INSERT INTO occurrences (id, task_id, due_at, status,
+           created_at, updated_at, is_deleted)
+         VALUES (?, ?, ?, 'PENDING', ?, ?, 0)`,
+      )
+      .bind(occId, task.id, Math.floor(now / 1000), now, now)
+      .run();
+
+    const ack = await SELF.fetch(`https://t/api/occurrences/${occId}/ack`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ resultValue: 80, notes: "morning meal" }),
+    });
+    expect(ack.status).toBe(200);
+
+    const row = await env.DB
+      .prepare(
+        "SELECT result_value, result_unit, notes FROM task_executions WHERE task_id = ?",
+      )
+      .bind(task.id)
+      .first<{ result_value: number; result_unit: string; notes: string }>();
+    expect(row?.result_value).toBe(80);
+    expect(row?.result_unit).toBe("gr");
+    expect(row?.notes).toBe("morning meal");
   });
 });
