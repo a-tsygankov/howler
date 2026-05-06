@@ -22,6 +22,15 @@
 
 ## Current phase + what's next
 
+**Roadmap reordered (plan §1.1 / §18, 2026-05-06).** Phases 1–3 are
+now server + webapp only; device firmware work is deferred to
+Phase 4, which gates on the web stack being demo-ready and bug-quiet
+for a week. The firmware skeleton stays in CI so architectural
+breakage gets caught early; no active firmware development until
+the gate is met.
+
+---
+
 **Phase 1 steps 1 + 2 landed on `dev-1`.**
 
 Step 1 — auth: PIN + HMAC tokens (UserToken 30 d, DeviceToken 365 d),
@@ -44,8 +53,18 @@ tabs for Quick-start / Log in / Sign up, the QR-landing path, a
 pending-occurrences list with Done buttons, and a kind-aware
 create-task form (DAILY times / PERIODIC interval / ONESHOT remind-in).
 
-Next: Phase 1 step 3 — device firmware reads `/api/occurrences/pending`,
-renders via the §11 unified menu, ack via long-press.
+Next: **Phase 2 (server + web hardening)** per the reordered §18.
+Top of the punchlist:
+- Schedule templates (preset rules + user-defined).
+- Web push notifications via the PWA service worker.
+- Device list + revoke from the SPA.
+- Workers Analytics Engine dashboards (cron lag, ack latency).
+- Rate-limit the auth endpoints.
+- Option B avatars (round photo + urgency ring).
+
+After Phase 2 → **Phase 3** (Playwright happy paths + observability +
+the 7-day stability gate). Only then does device firmware (Phase 4+)
+become an active surface again.
 
 **What's left in Phase 0:**
 
