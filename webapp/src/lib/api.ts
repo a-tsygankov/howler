@@ -211,6 +211,12 @@ export interface UpdateTaskInput {
   resultTypeId?: string | null;
   isPrivate?: boolean;
   assignees?: string[];
+  // Schedule rule edits — server expects UTC times; the SPA must
+  // localToUTC() before passing them in. Only the field matching
+  // the task's kind has effect; the others are ignored.
+  times?: string[];
+  intervalDays?: number;
+  deadlineHint?: number | null;
 }
 
 export const fetchTasks = async (): Promise<Task[]> =>
@@ -356,6 +362,33 @@ export const fetchTaskExecutions = async (
     .object({ executions: z.array(ExecutionSchema) })
     .parse(await callJson("GET", `/tasks/${taskId}/executions?limit=${limit}`))
     .executions;
+
+// ── Schedule (per-task) ────────────────────────────────────────────
+
+const ScheduleRuleSchema = z.discriminatedUnion("kind", [
+  z.object({
+    version: z.literal(1),
+    kind: z.literal("DAILY"),
+    times: z.array(z.string()),
+  }),
+  z.object({
+    version: z.literal(1),
+    kind: z.literal("PERIODIC"),
+    intervalDays: z.number().int().positive(),
+  }),
+  z.object({ version: z.literal(1), kind: z.literal("ONESHOT") }),
+]);
+const TaskScheduleSchema = z.object({
+  id: Hex32,
+  taskId: Hex32,
+  rule: ScheduleRuleSchema,
+  tz: z.string(),
+  nextFireAt: z.number().int().nullable(),
+});
+export type TaskSchedule = z.infer<typeof TaskScheduleSchema>;
+
+export const fetchTaskSchedule = async (taskId: string): Promise<TaskSchedule> =>
+  TaskScheduleSchema.parse(await callJson("GET", `/tasks/${taskId}/schedule`));
 
 export const fetchTask = async (id: string): Promise<Task & { assignees: string[] }> => {
   const data = (await callJson("GET", `/tasks/${id}`)) as unknown;

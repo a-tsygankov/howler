@@ -78,6 +78,11 @@ export const UpdateTaskSchema = z.object({
   resultTypeId: Hex32.nullable().optional(),
   isPrivate: z.boolean().optional(),
   assignees: z.array(Hex32).optional(),
+  // Schedule rule fields — only meaningful for the matching kind.
+  // Times are UTC "HH:MM" (the SPA converts from local before sending).
+  times: z.array(z.string().regex(/^\d{2}:\d{2}$/)).optional(),
+  intervalDays: z.number().int().positive().optional(),
+  deadlineHint: z.number().int().nullable().optional(),
 });
 export type UpdateTaskInput = z.infer<typeof UpdateTaskSchema>;
 

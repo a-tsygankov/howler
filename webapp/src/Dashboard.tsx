@@ -45,6 +45,13 @@ import { Sheet } from "./components/Sheet.tsx";
 import { Btn } from "./components/Buttons.tsx";
 import { DayRibbonRow } from "./components/DayRibbonRow.tsx";
 import { ResultSlider } from "./components/ResultSlider.tsx";
+import {
+  DailyTimePicker,
+  getLocalTimezone,
+  localToUTC,
+  utcToLocal,
+} from "./components/daily-time-picker";
+import { fetchTaskSchedule } from "./lib/api.ts";
 
 type GroupBy = "time" | "label";
 
@@ -655,7 +662,8 @@ const CreateTaskForm = ({
 }) => {
   const [title, setTitle] = useState("");
   const [kind, setKind] = useState<TaskKind>("DAILY");
-  const [times, setTimes] = useState("09:00");
+  // Local-timezone "HH:MM" strings; converted to UTC on submit.
+  const [localTimes, setLocalTimes] = useState<string[]>(["09:00"]);
   const [intervalDays, setIntervalDays] = useState(7);
   const [deadlineMins, setDeadlineMins] = useState(60);
   const [labelId, setLabelId] = useState("");
@@ -689,8 +697,12 @@ const CreateTaskForm = ({
       return;
     }
     if (kind === "DAILY") {
-      const arr = times.split(/[, ]+/).map((s) => s.trim()).filter(Boolean);
-      create.mutate({ ...common, kind, times: arr });
+      // Times displayed/edited locally; persisted as UTC.
+      const utc = localTimes
+        .map((t) => localToUTC(t))
+        .filter((t): t is string => !!t);
+      if (utc.length === 0) return setError("at least one time required");
+      create.mutate({ ...common, kind, times: utc });
     } else if (kind === "PERIODIC") {
       create.mutate({ ...common, kind, intervalDays });
     } else {
@@ -763,15 +775,16 @@ const CreateTaskForm = ({
         )}
       </div>
       {!templateId && kind === "DAILY" && (
-        <label className="mt-2 block text-xs">
-          <span className="cap mb-1 block">Times (UTC HH:MM, comma-separated)</span>
-          <input
-            value={times}
-            onChange={(e) => setTimes(e.target.value)}
-            placeholder="08:00, 14:00, 22:00"
-            className="w-full rounded-md border border-line bg-paper px-3 py-2 text-sm focus:border-ink focus:outline-none"
+        <div className="mt-2">
+          <span className="cap mb-1 block">
+            Times <span className="opacity-60">({getLocalTimezone()})</span>
+          </span>
+          <DailyTimePicker
+            value={localTimes}
+            onChange={setLocalTimes}
+            maxSlots={6}
           />
-        </label>
+        </div>
       )}
       {!templateId && kind === "PERIODIC" && (
         <label className="mt-2 block text-xs">
@@ -863,16 +876,60 @@ const TaskRow = ({
   const [priority, setPriority] = useState(task.priority);
   const [labelId, setLabelId] = useState<string | null>(task.labelId);
   const [resultTypeId, setResultTypeId] = useState<string | null>(task.resultTypeId);
+  // DAILY-only: local-time strings populated when edit mode opens.
+  // null until the schedule fetch resolves.
+  const [localTimes, setLocalTimes] = useState<string[] | null>(null);
+  const [intervalDays, setIntervalDays] = useState<number | null>(null);
+
+  // Lazy-load the schedule when the user enters edit mode.
+  const scheduleQ = useQuery({
+    queryKey: ["task-schedule", task.id],
+    queryFn: () => fetchTaskSchedule(task.id),
+    enabled: editing,
+  });
+  // Hydrate local state once the fetch resolves (only on first run
+  // for this edit session).
+  if (
+    scheduleQ.data &&
+    localTimes === null &&
+    scheduleQ.data.rule.kind === "DAILY"
+  ) {
+    setLocalTimes(
+      scheduleQ.data.rule.times
+        .map((t) => utcToLocal(t))
+        .filter((t): t is string => !!t),
+    );
+  }
+  if (
+    scheduleQ.data &&
+    intervalDays === null &&
+    scheduleQ.data.rule.kind === "PERIODIC"
+  ) {
+    setIntervalDays(scheduleQ.data.rule.intervalDays);
+  }
+
   const m = useMutation({
-    mutationFn: () =>
-      updateTask(task.id, {
+    mutationFn: () => {
+      const patch: Parameters<typeof updateTask>[1] = {
         title: title.trim(),
         priority,
         labelId,
         resultTypeId,
-      }),
+      };
+      if (task.kind === "DAILY" && localTimes && localTimes.length > 0) {
+        patch.times = localTimes
+          .map((t) => localToUTC(t))
+          .filter((t): t is string => !!t);
+      }
+      if (task.kind === "PERIODIC" && intervalDays !== null) {
+        patch.intervalDays = intervalDays;
+      }
+      return updateTask(task.id, patch);
+    },
     onSuccess: () => {
       setEditing(false);
+      setLocalTimes(null);
+      setIntervalDays(null);
       onSaved();
     },
   });
@@ -920,6 +977,39 @@ const TaskRow = ({
             ))}
           </select>
         </div>
+
+        {task.kind === "DAILY" && (
+          <div className="mt-3">
+            <span className="cap mb-1 block">
+              Times <span className="opacity-60">({getLocalTimezone()})</span>
+            </span>
+            {localTimes === null ? (
+              <p className="cap py-2">Loading…</p>
+            ) : (
+              <DailyTimePicker
+                value={localTimes}
+                onChange={setLocalTimes}
+                maxSlots={6}
+              />
+            )}
+          </div>
+        )}
+        {task.kind === "PERIODIC" && (
+          <label className="mt-3 block text-xs">
+            <span className="cap mb-1 block">Every N days</span>
+            <input
+              type="number"
+              min={1}
+              value={intervalDays ?? ""}
+              onChange={(e) =>
+                setIntervalDays(parseInt(e.target.value, 10) || 1)
+              }
+              className="w-24 rounded-md border border-line bg-paper px-2 py-1.5 text-sm focus:border-ink focus:outline-none"
+              disabled={intervalDays === null}
+            />
+          </label>
+        )}
+
         <div className="mt-2 flex justify-end gap-2">
           <Btn variant="ghost" size="pillSm" onClick={() => setEditing(false)}>
             Cancel

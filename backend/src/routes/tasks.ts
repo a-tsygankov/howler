@@ -157,6 +157,41 @@ export const tasksRouter = new Hono<{
     return c.json(result.value);
   })
 
+  // The schedule attached to a task — its current rule + tz +
+  // next_fire_at. Used by the SPA to populate the daily-time-picker
+  // when entering edit mode for a task.
+  .get("/:id/schedule", async (c) => {
+    const callerHomeId = c.get("user").homeId;
+    const id = c.req.param("id");
+    const task = await c.env.DB
+      .prepare("SELECT home_id FROM tasks WHERE id = ? AND is_deleted = 0")
+      .bind(id)
+      .first<{ home_id: string }>();
+    if (!task || task.home_id !== callerHomeId) {
+      return c.json({ error: "not-found" }, 404);
+    }
+    const row = await c.env.DB
+      .prepare(
+        "SELECT id, task_id, rule_json, tz, next_fire_at FROM schedules WHERE task_id = ? AND is_deleted = 0",
+      )
+      .bind(id)
+      .first<{
+        id: string;
+        task_id: string;
+        rule_json: string;
+        tz: string;
+        next_fire_at: number | null;
+      }>();
+    if (!row) return c.json({ error: "not-found" }, 404);
+    return c.json({
+      id: row.id,
+      taskId: row.task_id,
+      rule: JSON.parse(row.rule_json),
+      tz: row.tz,
+      nextFireAt: row.next_fire_at,
+    });
+  })
+
   // Per-task execution history. Append-only `task_executions` rows
   // (plan §6.5) are the dashboard's data source for sparklines and
   // aggregates ("avg daily grams over the last 7 days"). Limit
