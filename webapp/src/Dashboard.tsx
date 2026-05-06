@@ -5,20 +5,39 @@ import {
   apiLogout,
   apiMe,
   apiPairConfirm,
+  avatarUrl,
   createTask,
+  createUser,
   deleteTask,
+  deleteUser,
+  fetchDevices,
   fetchLabels,
   fetchPending,
+  fetchScheduleTemplates,
   fetchTaskResults,
   fetchTasks,
+  fetchUsers,
+  renameUser,
+  revokeDevice,
+  updateHome,
   updateTask,
+  uploadAvatar,
+  type Device,
   type Label,
   type Occurrence,
+  type ScheduleTemplate,
   type Task,
   type TaskKind,
   type TaskResultDef,
+  type User,
 } from "./lib/api.ts";
 import type { SessionInfo } from "./lib/session.ts";
+import {
+  currentPermission,
+  isPushSupported,
+  subscribePush,
+  unsubscribePush,
+} from "./lib/push.ts";
 
 const fmtDue = (dueAt: number): string => {
   const ms = dueAt * 1000;
@@ -52,6 +71,9 @@ export const Dashboard = ({ session, onLogout }: Props) => {
   });
   const labels = useQuery({ queryKey: ["labels"], queryFn: fetchLabels });
   const taskResults = useQuery({ queryKey: ["taskResults"], queryFn: fetchTaskResults });
+  const users = useQuery({ queryKey: ["users"], queryFn: fetchUsers });
+  const devices = useQuery({ queryKey: ["devices"], queryFn: fetchDevices });
+  const templates = useQuery({ queryKey: ["templates"], queryFn: fetchScheduleTemplates });
 
   const [ackTarget, setAckTarget] = useState<Occurrence | null>(null);
 
@@ -99,10 +121,16 @@ export const Dashboard = ({ session, onLogout }: Props) => {
           display: "flex",
           alignItems: "center",
           justifyContent: "space-between",
-          marginBottom: 16,
+          marginBottom: 8,
         }}
       >
-        <h1 style={{ margin: 0 }}>{me.data?.homeDisplayName ?? "Howler"}</h1>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <HomeAvatar
+            avatarId={me.data?.homeAvatarId ?? null}
+            onChanged={() => qc.invalidateQueries({ queryKey: ["me"] })}
+          />
+          <h1 style={{ margin: 0 }}>{me.data?.homeDisplayName ?? "Howler"}</h1>
+        </div>
         <div style={{ fontSize: 13, opacity: 0.7 }}>
           {me.data?.userDisplayName ?? session.userId.slice(0, 8) + "…"}
           <button
@@ -122,6 +150,9 @@ export const Dashboard = ({ session, onLogout }: Props) => {
           </button>
         </div>
       </header>
+
+      <PushToggle />
+
 
       <section style={{ marginTop: 8 }}>
         <h2 style={{ fontSize: 16, margin: "0 0 8px" }}>Pending</h2>
@@ -149,6 +180,8 @@ export const Dashboard = ({ session, onLogout }: Props) => {
         <CreateTaskForm
           labels={labels.data ?? []}
           taskResults={taskResults.data ?? []}
+          templates={templates.data ?? []}
+          users={users.data ?? []}
           onCreated={() => {
             void qc.invalidateQueries({ queryKey: ["tasks"] });
             void qc.invalidateQueries({ queryKey: ["pending"] });
@@ -175,7 +208,20 @@ export const Dashboard = ({ session, onLogout }: Props) => {
         ))}
       </section>
 
-      <PairDevice />
+      <UsersSection
+        users={users.data ?? []}
+        sessionUserId={session.userId}
+        onChanged={() => qc.invalidateQueries({ queryKey: ["users"] })}
+      />
+
+      <DevicesSection
+        devices={devices.data ?? []}
+        onChanged={() => qc.invalidateQueries({ queryKey: ["devices"] })}
+      />
+
+      <PairDevice
+        onPaired={() => qc.invalidateQueries({ queryKey: ["devices"] })}
+      />
 
       {ackTarget && (
         <AckModal
@@ -472,10 +518,14 @@ const AckModal = ({
 const CreateTaskForm = ({
   labels,
   taskResults,
+  templates,
+  users,
   onCreated,
 }: {
   labels: Label[];
   taskResults: TaskResultDef[];
+  templates: ScheduleTemplate[];
+  users: User[];
   onCreated: () => void;
 }) => {
   const [title, setTitle] = useState("");
@@ -485,6 +535,9 @@ const CreateTaskForm = ({
   const [deadlineMins, setDeadlineMins] = useState(60);
   const [labelId, setLabelId] = useState("");
   const [resultTypeId, setResultTypeId] = useState("");
+  const [templateId, setTemplateId] = useState("");
+  const [assigneeId, setAssigneeId] = useState("");
+  const [isPrivate, setIsPrivate] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const create = useMutation({
@@ -499,20 +552,26 @@ const CreateTaskForm = ({
 
   const submit = () => {
     if (!title.trim()) return setError("title required");
-    const base = {
+    const common = {
       title: title.trim(),
-      kind,
       labelId: labelId || null,
       resultTypeId: resultTypeId || null,
+      isPrivate,
+      ...(assigneeId ? { assignees: [assigneeId] } : {}),
     };
+    if (templateId) {
+      // Template overrides kind + rule fields server-side.
+      create.mutate({ ...common, kind, templateId });
+      return;
+    }
     if (kind === "DAILY") {
       const arr = times.split(/[, ]+/).map((s) => s.trim()).filter(Boolean);
-      create.mutate({ ...base, times: arr });
+      create.mutate({ ...common, kind, times: arr });
     } else if (kind === "PERIODIC") {
-      create.mutate({ ...base, intervalDays });
+      create.mutate({ ...common, kind, intervalDays });
     } else {
       const due = Math.floor(Date.now() / 1000) + deadlineMins * 60;
-      create.mutate({ ...base, deadlineHint: due });
+      create.mutate({ ...common, kind, deadlineHint: due });
     }
   };
 
@@ -553,7 +612,7 @@ const CreateTaskForm = ({
         ))}
       </div>
 
-      <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+      <div style={{ display: "flex", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
         <Select
           value={labelId}
           onChange={setLabelId}
@@ -573,9 +632,35 @@ const CreateTaskForm = ({
             })),
           ]}
         />
+        {users.length > 1 && (
+          <Select
+            value={assigneeId}
+            onChange={setAssigneeId}
+            options={[
+              { value: "", label: "— anyone —" },
+              ...users.map((u) => ({ value: u.id, label: u.displayName })),
+            ]}
+          />
+        )}
+        <Select
+          value={templateId}
+          onChange={setTemplateId}
+          options={[
+            { value: "", label: "— custom schedule —" },
+            ...templates.map((t) => ({ value: t.id, label: t.displayName })),
+          ]}
+        />
       </div>
+      <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, opacity: 0.8, marginBottom: 6 }}>
+        <input
+          type="checkbox"
+          checked={isPrivate}
+          onChange={(e) => setIsPrivate(e.target.checked)}
+        />
+        Private (only assignees + creator see)
+      </label>
 
-      {kind === "DAILY" && (
+      {!templateId && kind === "DAILY" && (
         <div className="meta" style={{ marginBottom: 6 }}>
           Times (UTC HH:MM, comma-separated)
           <input
@@ -586,7 +671,7 @@ const CreateTaskForm = ({
           />
         </div>
       )}
-      {kind === "PERIODIC" && (
+      {!templateId && kind === "PERIODIC" && (
         <div className="meta" style={{ marginBottom: 6 }}>
           Every
           <input
@@ -599,7 +684,7 @@ const CreateTaskForm = ({
           days
         </div>
       )}
-      {kind === "ONESHOT" && (
+      {!templateId && kind === "ONESHOT" && (
         <div className="meta" style={{ marginBottom: 6 }}>
           Remind in
           <input
@@ -637,7 +722,211 @@ const CreateTaskForm = ({
   );
 };
 
-const PairDevice = () => {
+const UsersSection = ({
+  users,
+  sessionUserId,
+  onChanged,
+}: {
+  users: User[];
+  sessionUserId: string;
+  onChanged: () => void;
+}) => {
+  const [adding, setAdding] = useState(false);
+  const [name, setName] = useState("");
+  const add = useMutation({
+    mutationFn: () => createUser({ displayName: name.trim() }),
+    onSuccess: () => {
+      setAdding(false);
+      setName("");
+      onChanged();
+    },
+  });
+  const rename = useMutation({
+    mutationFn: (args: { id: string; displayName: string }) =>
+      renameUser(args.id, args.displayName),
+    onSuccess: onChanged,
+  });
+  const remove = useMutation({
+    mutationFn: deleteUser,
+    onSuccess: onChanged,
+  });
+  return (
+    <section style={{ marginTop: 24 }}>
+      <h2 style={{ fontSize: 16, margin: "0 0 8px" }}>Users in this home</h2>
+      {users.map((u) => (
+        <UserRow
+          key={u.id}
+          user={u}
+          isSelf={u.id === sessionUserId}
+          onRename={(displayName) => rename.mutate({ id: u.id, displayName })}
+          onRemove={() => {
+            if (confirm(`Remove ${u.displayName}? Private tasks where they're the only assignee will be deleted.`)) {
+              remove.mutate(u.id);
+            }
+          }}
+          removing={remove.isPending && remove.variables === u.id}
+        />
+      ))}
+      {adding ? (
+        <div className="task" style={{ display: "flex", gap: 8 }}>
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="Display name"
+            style={{ ...inputStyle, marginTop: 0 }}
+          />
+          <button type="button" onClick={() => setAdding(false)} style={iconBtn}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            disabled={add.isPending || !name.trim()}
+            onClick={() => add.mutate()}
+            style={{ ...iconBtn, color: "#22c55e", borderColor: "#15803d" }}
+          >
+            {add.isPending ? "…" : "Add"}
+          </button>
+        </div>
+      ) : (
+        <button type="button" onClick={() => setAdding(true)} style={iconBtn}>
+          + Add user
+        </button>
+      )}
+    </section>
+  );
+};
+
+const UserRow = ({
+  user,
+  isSelf,
+  onRename,
+  onRemove,
+  removing,
+}: {
+  user: User;
+  isSelf: boolean;
+  onRename: (displayName: string) => void;
+  onRemove: () => void;
+  removing: boolean;
+}) => {
+  const [editing, setEditing] = useState(false);
+  const [name, setName] = useState(user.displayName);
+  return (
+    <div
+      className="task"
+      style={{
+        display: "flex",
+        gap: 8,
+        alignItems: "center",
+        justifyContent: "space-between",
+      }}
+    >
+      {editing ? (
+        <input
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          style={{ ...inputStyle, marginTop: 0 }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              onRename(name.trim());
+              setEditing(false);
+            }
+          }}
+        />
+      ) : (
+        <div>
+          {user.displayName}
+          {isSelf && <span className="meta"> · you</span>}
+        </div>
+      )}
+      <div style={{ display: "flex", gap: 6 }}>
+        {editing ? (
+          <>
+            <button type="button" onClick={() => setEditing(false)} style={iconBtn}>
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                onRename(name.trim());
+                setEditing(false);
+              }}
+              style={{ ...iconBtn, color: "#22c55e", borderColor: "#15803d" }}
+            >
+              Save
+            </button>
+          </>
+        ) : (
+          <>
+            <button type="button" onClick={() => setEditing(true)} style={iconBtn}>
+              Rename
+            </button>
+            {!isSelf && (
+              <button
+                type="button"
+                disabled={removing}
+                onClick={onRemove}
+                style={{ ...iconBtn, color: "#f87171" }}
+              >
+                Remove
+              </button>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+};
+
+const DevicesSection = ({
+  devices,
+  onChanged,
+}: {
+  devices: Device[];
+  onChanged: () => void;
+}) => {
+  const m = useMutation({ mutationFn: revokeDevice, onSuccess: onChanged });
+  const fmtSeen = (ts: number | null) => {
+    if (ts === null) return "never";
+    const dMin = Math.round((Date.now() / 1000 - ts) / 60);
+    if (dMin < 1) return "just now";
+    if (dMin < 60) return `${dMin} min ago`;
+    return `${Math.round(dMin / 60)} h ago`;
+  };
+  if (devices.length === 0) return null;
+  return (
+    <section style={{ marginTop: 24 }}>
+      <h2 style={{ fontSize: 16, margin: "0 0 8px" }}>Paired devices</h2>
+      {devices.map((d) => (
+        <div
+          key={d.id}
+          className="task"
+          style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}
+        >
+          <div>
+            <div>{d.hwModel || "Unnamed device"}</div>
+            <div className="meta">
+              {d.id.slice(0, 8)}… · last seen {fmtSeen(d.lastSeenAt)}
+              {d.fwVersion && ` · fw ${d.fwVersion}`}
+            </div>
+          </div>
+          <button
+            type="button"
+            disabled={m.isPending && m.variables === d.id}
+            onClick={() => {
+              if (confirm("Revoke this device?")) m.mutate(d.id);
+            }}
+            style={{ ...iconBtn, color: "#f87171" }}
+          >
+            Revoke
+          </button>
+        </div>
+      ))}
+    </section>
+  );
+};
+
+const PairDevice = ({ onPaired }: { onPaired: () => void }) => {
   const [code, setCode] = useState("");
   const [msg, setMsg] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
   const m = useMutation({
@@ -645,6 +934,7 @@ const PairDevice = () => {
     onSuccess: () => {
       setMsg({ kind: "ok", text: "Device paired." });
       setCode("");
+      onPaired();
     },
     onError: (e) =>
       setMsg({ kind: "error", text: e instanceof Error ? e.message : String(e) }),
@@ -695,6 +985,139 @@ const PairDevice = () => {
         </div>
       )}
     </section>
+  );
+};
+
+const HomeAvatar = ({
+  avatarId,
+  onChanged,
+}: {
+  avatarId: string | null;
+  onChanged: () => void;
+}) => {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const url = avatarUrl(avatarId);
+  const onPick = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const { id } = await uploadAvatar(file);
+      await updateHome({ avatarId: id });
+      onChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+      e.target.value = "";
+    }
+  };
+  return (
+    <label
+      style={{
+        cursor: busy ? "default" : "pointer",
+        opacity: busy ? 0.6 : 1,
+        position: "relative",
+      }}
+      title={error ?? "Click to change home avatar"}
+    >
+      <input
+        type="file"
+        accept="image/jpeg,image/png,image/webp"
+        onChange={onPick}
+        disabled={busy}
+        style={{ display: "none" }}
+      />
+      {url ? (
+        <img
+          src={url}
+          alt=""
+          width={48}
+          height={48}
+          style={{
+            borderRadius: "50%",
+            objectFit: "cover",
+            border: "2px solid #1e293b",
+          }}
+        />
+      ) : (
+        <div
+          style={{
+            width: 48,
+            height: 48,
+            borderRadius: "50%",
+            background: "#1e293b",
+            display: "grid",
+            placeItems: "center",
+            fontSize: 20,
+            border: "2px dashed #334155",
+            color: "#94a3b8",
+          }}
+        >
+          +
+        </div>
+      )}
+    </label>
+  );
+};
+
+const PushToggle = () => {
+  const [perm, setPerm] = useState(currentPermission());
+  const [enabling, setEnabling] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  if (!isPushSupported()) return null;
+
+  const enable = async () => {
+    setEnabling(true);
+    setError(null);
+    const r = await subscribePush();
+    if (!r.ok) {
+      setError(
+        r.reason === "vapid-not-configured"
+          ? "Push not configured on the server yet (Phase 2.6b)"
+          : r.reason ?? "failed",
+      );
+    } else {
+      setPerm(currentPermission());
+    }
+    setEnabling(false);
+  };
+  const disable = async () => {
+    await unsubscribePush();
+    setPerm(currentPermission());
+  };
+
+  if (perm === "granted") {
+    return (
+      <div className="meta" style={{ marginBottom: 8, opacity: 0.7 }}>
+        Notifications enabled.{" "}
+        <button type="button" onClick={disable} style={{ ...iconBtn, marginLeft: 6 }}>
+          Disable
+        </button>
+      </div>
+    );
+  }
+  if (perm === "denied") {
+    return (
+      <div className="meta" style={{ marginBottom: 8, opacity: 0.6 }}>
+        Notifications blocked in browser settings.
+      </div>
+    );
+  }
+  return (
+    <div style={{ marginBottom: 8 }}>
+      <button
+        type="button"
+        onClick={enable}
+        disabled={enabling}
+        style={{ ...iconBtn, fontSize: 13 }}
+      >
+        {enabling ? "…" : "Enable notifications"}
+      </button>
+      {error && <span className="error" style={{ marginLeft: 8 }}>{error}</span>}
+    </div>
   );
 };
 

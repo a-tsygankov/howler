@@ -172,6 +172,23 @@ export const occurrences = sqliteTable(
   }),
 );
 
+export const scheduleTemplates = sqliteTable(
+  "schedule_templates",
+  {
+    id: text("id").primaryKey(),
+    homeId: text("home_id").references(() => homes.id),
+    displayName: text("display_name").notNull(),
+    description: text("description"),
+    ruleJson: text("rule_json").notNull(),
+    system: integer("system").notNull().default(0),
+    sortOrder: integer("sort_order").notNull().default(0),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+    isDeleted: integer("is_deleted").notNull().default(0),
+  },
+  (t) => ({ byHome: index("schedule_templates_home_idx").on(t.homeId) }),
+);
+
 export const taskExecutions = sqliteTable(
   "task_executions",
   {

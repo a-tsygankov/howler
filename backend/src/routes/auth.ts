@@ -22,6 +22,7 @@ import {
   SetupSchema,
 } from "../shared/schemas.ts";
 import { requireAuth, requireUser, type AuthVars } from "../middleware/auth.ts";
+import { rateLimit } from "../middleware/rate-limit.ts";
 import { seedHomeDefaults } from "../services/home-seed.ts";
 
 const QR_TOKEN_TTL_SEC = 60;
@@ -87,6 +88,8 @@ const directUserResponse = async (
 
 export const authRouter = new Hono<{ Bindings: Bindings; Variables: AuthVars }>()
   // ── POST /api/auth/setup { login, pin, tz? } ───────────────────────
+  // Rate-limited by IP — a hostile client could otherwise create
+  // unlimited transparent homes.
   // Creates a brand-new HOME + first USER. Defaults:
   //   home.display_name = login
   //   home.login = login        (globally unique)
@@ -94,7 +97,7 @@ export const authRouter = new Hono<{ Bindings: Bindings; Variables: AuthVars }>(
   //   user.display_name = "User 1"
   //   user.login = NULL  (per-user logins added later)
   // Seeds the four default labels and five default TaskResults.
-  .post("/setup", zValidator("json", SetupSchema), async (c) => {
+  .post("/setup", rateLimit("setup"), zValidator("json", SetupSchema), async (c) => {
     const start = Date.now();
     const { login, pin, tz } = c.req.valid("json");
     const taken = await c.env.DB.prepare(
@@ -132,7 +135,16 @@ export const authRouter = new Hono<{ Bindings: Bindings; Variables: AuthVars }>(
   // Resolves login → home, verifies the home-level PIN, and EITHER:
   //   - returns a UserToken (if the home has exactly one user), or
   //   - returns { selectorToken, users[] } so the SPA can show a picker.
-  .post("/login", zValidator("json", LoginSchema), async (c) => {
+  // Rate-limited by login string so brute force on one account
+  // doesn't leak to others.
+  .post("/login", rateLimit("login", async (c) => {
+    try {
+      const body = (await c.req.json()) as { login?: unknown };
+      return typeof body.login === "string" ? body.login : null;
+    } catch {
+      return null;
+    }
+  }), zValidator("json", LoginSchema), async (c) => {
     const start = Date.now();
     const { login, pin } = c.req.valid("json");
     const home = await c.env.DB.prepare(
@@ -212,7 +224,7 @@ export const authRouter = new Hono<{ Bindings: Bindings; Variables: AuthVars }>(
   // Creates a TRANSPARENT home (no PIN) + first user atomically. If
   // pairCode is supplied and matches a fresh pending_pairings row,
   // claim that device for the new home.
-  .post("/quick-setup", zValidator("json", QuickSetupSchema), async (c) => {
+  .post("/quick-setup", rateLimit("quick-setup"), zValidator("json", QuickSetupSchema), async (c) => {
     const start = Date.now();
     const { pairCode, displayName, tz } = c.req.valid("json");
     const homeId = newUuid();
@@ -302,26 +314,28 @@ export const authRouter = new Hono<{ Bindings: Bindings; Variables: AuthVars }>(
   .post("/me", requireAuth(), requireUser(), async (c) => {
     const u = c.get("user");
     const home = await c.env.DB.prepare(
-      `SELECT id, display_name, login, pin_salt, pin_hash, tz FROM homes
+      `SELECT id, display_name, login, pin_salt, pin_hash, tz, avatar_id FROM homes
        WHERE id = ? AND is_deleted = 0`,
     )
       .bind(u.homeId)
-      .first<HomeRow>();
+      .first<HomeRow & { avatar_id: string | null }>();
     const user = await c.env.DB.prepare(
-      `SELECT id, home_id, display_name, login FROM users
+      `SELECT id, home_id, display_name, login, avatar_id FROM users
        WHERE id = ? AND is_deleted = 0`,
     )
       .bind(u.userId)
-      .first<UserRow>();
+      .first<UserRow & { avatar_id: string | null }>();
     if (!home || !user) return c.json({ error: "session orphan" }, 404);
     return c.json({
       homeId: home.id,
       homeDisplayName: home.display_name,
       homeLogin: home.login,
+      homeAvatarId: home.avatar_id,
       tz: home.tz,
       hasPin: !isTransparentUser({ pinSalt: home.pin_salt, pinHash: home.pin_hash }),
       userId: user.id,
       userDisplayName: user.display_name,
+      userAvatarId: user.avatar_id,
     });
   })
 
@@ -388,7 +402,7 @@ export const authRouter = new Hono<{ Bindings: Bindings; Variables: AuthVars }>(
   // ── POST /api/auth/login-qr { deviceId, token } ────────────────────
   // Returns either a direct UserToken (single user) or a selector +
   // user list (multi-user). Per plan §6.2.
-  .post("/login-qr", zValidator("json", LoginQrSchema), async (c) => {
+  .post("/login-qr", rateLimit("login-qr"), zValidator("json", LoginQrSchema), async (c) => {
     const start = Date.now();
     const { deviceId, token } = c.req.valid("json");
     const row = await c.env.DB.prepare(

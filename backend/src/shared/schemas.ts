@@ -89,6 +89,7 @@ export const CreateTaskSchema = z.object({
   deadlineHint: z.number().int().nullish(),
   times: z.array(z.string().regex(/^\d{2}:\d{2}$/)).optional(),
   intervalDays: z.number().int().positive().optional(),
+  templateId: Hex32.optional(),
   tz: z.string().min(1).max(64).optional(),
   labelId: Hex32.nullish(),
   resultTypeId: Hex32.nullish(),

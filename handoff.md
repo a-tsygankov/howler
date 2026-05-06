@@ -5,7 +5,7 @@
 > question in [`docs/plan.md`](docs/plan.md) §17, or discovers a new risk.
 > If this grows past one page it's wrong — move detail into `docs/`.
 
-**Last updated:** 2026-05-06 — Phase 2.0 (home-centric model) live on `dev-2`.
+**Last updated:** 2026-05-06 — Phase 2 complete (incl. 2.6b push delivery + 2.7 analytics instrumentation).
 
 ## Live URLs
 
@@ -74,17 +74,31 @@ tabs for Quick-start / Log in / Sign up, the QR-landing path, a
 pending-occurrences list with Done buttons, and a kind-aware
 create-task form (DAILY times / PERIODIC interval / ONESHOT remind-in).
 
-Next: **Phase 2 (server + web hardening)** per the reordered §18.
-Top of the punchlist:
-- Schedule templates (preset rules + user-defined).
-- Web push notifications via the PWA service worker.
-- Device list + revoke from the SPA.
-- Workers Analytics Engine dashboards (cron lag, ack latency).
-- Rate-limit the auth endpoints.
-- Option B avatars (round photo + urgency ring).
+**Phase 2 status (per plan §18):**
 
-After Phase 2 → **Phase 3** (Playwright happy paths + observability +
-the 7-day stability gate). Only then does device firmware (Phase 4+)
+- ✅ 2.0 home-centric model rework
+- ✅ 2.1 users CRUD (add/rename/remove + private-task cleanup)
+- ✅ 2.2 device list + revoke
+- ✅ 2.3 rate-limiting on /setup, /login, /login-qr, /quick-setup, /pair/confirm
+- ✅ 2.4 schedule templates (5 seeded per home; tasks accept templateId)
+- ✅ 2.5 Option B avatars (R2 uploader + home avatar in dashboard)
+- ✅ 2.6 web push **plumbing** — endpoints, table, SW, permission flow
+- ✅ 2.6b web push **delivery** — VAPID JWT (RFC 8292, ES256) +
+  AES128GCM payload encryption (RFC 8291) implemented in
+  `services/push.ts` with `crypto.subtle`. `consumeFireQueue` calls
+  `dispatchPushForOccurrence` which fans out per-subscription. Dead
+  subscriptions tombstone on 404/410. VAPID keypair generated with
+  `node scripts/gen-vapid.mjs`; public key in `wrangler.toml [vars]`,
+  private uploaded as Worker secret.
+- ✅ 2.7 Workers Analytics Engine — `observability.ts` instruments
+  cron lag, ack latency, auth events, and push delivery; binding is
+  commented out in `wrangler.toml` because the account doesn't have
+  Analytics Engine enabled yet (one dashboard click + uncomment +
+  redeploy and dashboards light up). SQL queries for the standard
+  dashboards are documented in `docs/observability.md`.
+
+**Next:** Phase 3 — Playwright happy paths + observability + the
+7-day stability gate. Only then does device firmware (Phase 4+)
 become an active surface again.
 
 **What's left in Phase 0:**

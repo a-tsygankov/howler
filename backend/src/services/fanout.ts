@@ -18,18 +18,25 @@ import {
   asScheduleId,
   newUuid,
 } from "../domain/ids.ts";
+import { dispatchPushForOccurrence } from "./push.ts";
+import { recordCronTick, recordOccurrenceFired } from "../observability.ts";
 
 const FANOUT_BATCH = 100;
 
 export const scheduledFanout = async (env: Bindings): Promise<number> => {
+  const startMs = Date.now();
   const uow = new D1UnitOfWork(env.DB);
-  const nowSec = Math.floor(Date.now() / 1000);
+  const nowSec = Math.floor(startMs / 1000);
   const due = await uow.schedules.findMany(dueBefore(nowSec, FANOUT_BATCH));
-  if (due.length === 0) return 0;
+  if (due.length === 0) {
+    recordCronTick(env, 0, Date.now() - startMs);
+    return 0;
+  }
   const messages: MessageSendRequest<OccurrenceFireMessage>[] = due.map((s) => ({
     body: { scheduleId: s.id, dueAt: s.nextFireAt ?? nowSec },
   }));
   await env.OCCURRENCE_QUEUE.sendBatch(messages);
+  recordCronTick(env, due.length, Date.now() - startMs);
   return due.length;
 };
 
@@ -53,12 +60,13 @@ const fireOne = async (
   body: OccurrenceFireMessage,
 ): Promise<void> => {
   const uow = new D1UnitOfWork(env.DB);
+  let firedTaskId: string | null = null;
+  let firedOccId: string | null = null;
   await uow.run(async (tx) => {
     const schedule = await tx.schedules.findById(asScheduleId(body.scheduleId));
     if (!schedule) return; // schedule deleted between cron pick and consume
     if (schedule.nextFireAt === null) return; // already advanced past
 
-    // Materialise the occurrence.
     const nowMs = Date.now();
     const occId = asOccurrenceId(newUuid());
     await tx.occurrences.add({
@@ -76,20 +84,26 @@ const fireOne = async (
       updatedAt: nowMs,
       isDeleted: false,
     });
+    firedTaskId = schedule.taskId;
+    firedOccId = occId;
+    recordOccurrenceFired(env, schedule.taskId, schedule.id, body.dueAt, nowMs);
 
-    // Advance the schedule. ONESHOT advances to null (won't fire
-    // again); DAILY/PERIODIC compute the next slot.
     const nowSec = Math.floor(nowMs / 1000);
-    const nextFireAt = computeNextFireAt(
-      schedule.rule,
-      nowSec,
-      // ONESHOT past-fire: pass null so it returns null.
-      null,
-    );
+    const nextFireAt = computeNextFireAt(schedule.rule, nowSec, null);
     await tx.schedules.update({
       ...schedule,
       nextFireAt,
       updatedAt: nowMs,
     });
   });
+
+  // Push fanout happens *after* the UoW commits — we don't want a
+  // failed push to roll back the occurrence write. Best-effort.
+  if (firedTaskId && firedOccId) {
+    try {
+      await dispatchPushForOccurrence(env, firedTaskId, firedOccId);
+    } catch (e) {
+      console.warn("[fanout] push dispatch failed:", e);
+    }
+  }
 };
