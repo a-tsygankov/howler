@@ -119,6 +119,10 @@ recommendations; if you disagree, raise it before Phase 1 starts.
   replay rejection + deviceId mismatch, task RBAC across two users,
   ack idempotency). Migrations applied to in-memory D1 via
   `?raw` SQL imports. **29/29 backend tests green.**
+- 2026-05-06 — Webapp CRUD complete-the-loop. `DELETE /api/tasks/:id`
+  (soft delete, owner-checked) + Delete buttons on every task; a
+  Pair-a-device tile on the dashboard that POSTs `/api/pair/confirm`
+  so the SPA can drive the full pair flow without leaving the page.
 
 ## Open questions (synced with plan §17)
 

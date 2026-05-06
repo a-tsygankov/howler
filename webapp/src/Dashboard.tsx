@@ -3,7 +3,9 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ackOccurrence,
   apiLogout,
+  apiPairConfirm,
   createTask,
+  deleteTask,
   fetchPending,
   fetchTasks,
   type Occurrence,
@@ -45,6 +47,13 @@ export const Dashboard = ({ user, onLogout }: Props) => {
   const ack = useMutation({
     mutationFn: ackOccurrence,
     onSuccess: () => qc.invalidateQueries({ queryKey: ["pending"] }),
+  });
+  const del = useMutation({
+    mutationFn: deleteTask,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["tasks"] });
+      void qc.invalidateQueries({ queryKey: ["pending"] });
+    },
   });
 
   const handleLogout = async () => {
@@ -121,15 +130,115 @@ export const Dashboard = ({ user, onLogout }: Props) => {
         {tasks.isLoading && <div className="empty">Loading…</div>}
         {tasks.data?.length === 0 && <div className="empty">No tasks yet.</div>}
         {tasks.data?.map((t) => (
-          <div className="task" key={t.id}>
-            <div>{t.title}</div>
-            <div className="meta">
-              {kindLabel(t.kind)} · priority {t.priority}
+          <div
+            className="task"
+            key={t.id}
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+            }}
+          >
+            <div>
+              <div>{t.title}</div>
+              <div className="meta">
+                {kindLabel(t.kind)} · priority {t.priority}
+              </div>
             </div>
+            <button
+              type="button"
+              onClick={() => {
+                if (confirm(`Delete "${t.title}"?`)) del.mutate(t.id);
+              }}
+              disabled={del.isPending && del.variables === t.id}
+              style={{
+                background: "transparent",
+                border: "1px solid #1e293b",
+                color: "#f87171",
+                borderRadius: 6,
+                padding: "4px 10px",
+                cursor: "pointer",
+                fontSize: 12,
+              }}
+            >
+              Delete
+            </button>
           </div>
         ))}
       </section>
+
+      <PairDevice />
     </main>
+  );
+};
+
+const PairDevice = () => {
+  const [code, setCode] = useState("");
+  const [msg, setMsg] = useState<{ kind: "ok" | "error"; text: string } | null>(
+    null,
+  );
+  const m = useMutation({
+    mutationFn: apiPairConfirm,
+    onSuccess: () => {
+      setMsg({ kind: "ok", text: "Device paired." });
+      setCode("");
+    },
+    onError: (e) =>
+      setMsg({ kind: "error", text: e instanceof Error ? e.message : String(e) }),
+  });
+  return (
+    <section style={{ marginTop: 24 }}>
+      <h2 style={{ fontSize: 16, margin: "0 0 8px" }}>Pair a device</h2>
+      <div
+        style={{
+          padding: 12,
+          border: "1px solid #1e293b",
+          borderRadius: 12,
+          background: "#111827",
+          display: "flex",
+          gap: 8,
+        }}
+      >
+        <input
+          value={code}
+          onChange={(e) => setCode(e.target.value)}
+          placeholder="6-digit code shown on your dial"
+          style={{
+            flex: 1,
+            padding: "8px 10px",
+            borderRadius: 8,
+            border: "1px solid #1e293b",
+            background: "#0f172a",
+            color: "inherit",
+          }}
+        />
+        <button
+          type="button"
+          onClick={() => m.mutate(code.trim())}
+          disabled={m.isPending || code.trim().length === 0}
+          style={{
+            padding: "8px 14px",
+            borderRadius: 8,
+            border: "none",
+            background: "#2563eb",
+            color: "white",
+            fontWeight: 600,
+            cursor: m.isPending ? "default" : "pointer",
+            opacity: m.isPending ? 0.6 : 1,
+          }}
+        >
+          {m.isPending ? "…" : "Pair"}
+        </button>
+      </div>
+      {msg && (
+        <div
+          className={msg.kind === "ok" ? "meta" : "error"}
+          style={{ marginTop: 6 }}
+        >
+          {msg.text}
+        </div>
+      )}
+    </section>
   );
 };
 

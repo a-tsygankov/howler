@@ -128,6 +128,19 @@ export interface CreateTaskInput {
 export const createTask = async (input: CreateTaskInput): Promise<Task> =>
   TaskSchema.parse(await api.post("/tasks", input));
 
+export const deleteTask = async (id: string): Promise<void> => {
+  const res = await fetch(`/api/tasks/${id}`, {
+    method: "DELETE",
+    headers: baseHeaders(),
+    credentials: "include",
+  });
+  if (!res.ok && res.status !== 204) throw new Error(`delete: HTTP ${res.status}`);
+};
+
+export const apiPairConfirm = async (pairCode: string): Promise<void> => {
+  await api.post("/pair/confirm", { pairCode });
+};
+
 // ── Occurrences ────────────────────────────────────────────────────
 
 const OccurrenceSchema = z.object({
