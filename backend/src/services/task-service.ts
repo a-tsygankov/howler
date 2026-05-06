@@ -9,7 +9,7 @@ import {
 } from "../domain/ids.ts";
 import type { Task } from "../domain/task.ts";
 import type { Schedule, ScheduleRule } from "../domain/schedule.ts";
-import type { CreateTaskInput, TaskDto } from "../shared/schemas.ts";
+import type { CreateTaskInput, TaskDto, UpdateTaskInput } from "../shared/schemas.ts";
 import { type Result, ok, err } from "../result.ts";
 import { computeNextFireAt } from "./firing.ts";
 
@@ -42,6 +42,30 @@ export const getTask = async (
   const t = await uow.tasks.findById(asTaskId(id));
   return t ? ok(toDto(t)) : err("not-found");
 };
+
+export type UpdateTaskError = "not-found" | "wrong-user";
+
+export const updateTask = async (
+  uow: IUnitOfWork,
+  id: string,
+  callerUserId: string,
+  patch: UpdateTaskInput,
+): Promise<Result<TaskDto, UpdateTaskError>> =>
+  uow.run(async (tx) => {
+    const t = await tx.tasks.findById(asTaskId(id));
+    if (!t) return err("not-found");
+    if (t.userId !== callerUserId) return err("wrong-user");
+    const next: Task = {
+      ...t,
+      title: patch.title ?? t.title,
+      description: patch.description === undefined ? t.description : patch.description,
+      priority: (patch.priority as Task["priority"]) ?? t.priority,
+      active: patch.active ?? t.active,
+      updatedAt: Date.now(),
+    };
+    await tx.tasks.update(next);
+    return ok(toDto(next));
+  });
 
 const ruleFor = (input: CreateTaskInput): ScheduleRule => {
   switch (input.kind) {

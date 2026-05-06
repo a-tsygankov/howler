@@ -2,8 +2,8 @@ import { Hono } from "hono";
 import { zValidator } from "@hono/zod-validator";
 import type { Bindings } from "../env.ts";
 import { D1UnitOfWork } from "../repos/d1/unit-of-work.ts";
-import { CreateTaskSchema } from "../shared/schemas.ts";
-import { createTask, getTask, listTasks } from "../services/task-service.ts";
+import { CreateTaskSchema, UpdateTaskSchema } from "../shared/schemas.ts";
+import { createTask, getTask, listTasks, updateTask } from "../services/task-service.ts";
 import { asTaskId, asUserId } from "../domain/ids.ts";
 import { requireAuth, requireUser, type AuthVars } from "../middleware/auth.ts";
 
@@ -30,6 +30,17 @@ export const tasksRouter = new Hono<{ Bindings: Bindings; Variables: AuthVars }>
     const uow = new D1UnitOfWork(c.env.DB);
     const dto = await createTask(uow, userId, c.req.valid("json"));
     return c.json(dto, 201);
+  })
+  .patch("/:id", zValidator("json", UpdateTaskSchema), async (c) => {
+    const callerId = c.get("auth").userId;
+    const id = c.req.param("id");
+    const uow = new D1UnitOfWork(c.env.DB);
+    const result = await updateTask(uow, id, callerId, c.req.valid("json"));
+    if (!result.ok) {
+      const status = result.error === "not-found" ? 404 : 403;
+      return c.json({ error: result.error }, status);
+    }
+    return c.json(result.value);
   })
   .delete("/:id", async (c) => {
     const callerId = c.get("auth").userId;

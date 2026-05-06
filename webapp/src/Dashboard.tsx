@@ -8,6 +8,7 @@ import {
   deleteTask,
   fetchPending,
   fetchTasks,
+  updateTask,
   type Occurrence,
   type Task,
   type TaskKind,
@@ -130,40 +131,15 @@ export const Dashboard = ({ user, onLogout }: Props) => {
         {tasks.isLoading && <div className="empty">Loading…</div>}
         {tasks.data?.length === 0 && <div className="empty">No tasks yet.</div>}
         {tasks.data?.map((t) => (
-          <div
-            className="task"
+          <TaskRow
             key={t.id}
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
+            task={t}
+            onDelete={() => {
+              if (confirm(`Delete "${t.title}"?`)) del.mutate(t.id);
             }}
-          >
-            <div>
-              <div>{t.title}</div>
-              <div className="meta">
-                {kindLabel(t.kind)} · priority {t.priority}
-              </div>
-            </div>
-            <button
-              type="button"
-              onClick={() => {
-                if (confirm(`Delete "${t.title}"?`)) del.mutate(t.id);
-              }}
-              disabled={del.isPending && del.variables === t.id}
-              style={{
-                background: "transparent",
-                border: "1px solid #1e293b",
-                color: "#f87171",
-                borderRadius: 6,
-                padding: "4px 10px",
-                cursor: "pointer",
-                fontSize: 12,
-              }}
-            >
-              Delete
-            </button>
-          </div>
+            deleting={del.isPending && del.variables === t.id}
+            onSaved={() => qc.invalidateQueries({ queryKey: ["tasks"] })}
+          />
         ))}
       </section>
 
@@ -240,6 +216,129 @@ const PairDevice = () => {
       )}
     </section>
   );
+};
+
+const TaskRow = ({
+  task,
+  onDelete,
+  deleting,
+  onSaved,
+}: {
+  task: Task;
+  onDelete: () => void;
+  deleting: boolean;
+  onSaved: () => void;
+}) => {
+  const [editing, setEditing] = useState(false);
+  const [title, setTitle] = useState(task.title);
+  const [priority, setPriority] = useState(task.priority);
+  const m = useMutation({
+    mutationFn: () =>
+      updateTask(task.id, { title: title.trim(), priority }),
+    onSuccess: () => {
+      setEditing(false);
+      onSaved();
+    },
+  });
+
+  if (editing) {
+    return (
+      <div
+        className="task"
+        style={{ display: "grid", gap: 6 }}
+      >
+        <input
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          style={{
+            padding: "6px 8px",
+            borderRadius: 6,
+            border: "1px solid #1e293b",
+            background: "#0f172a",
+            color: "inherit",
+          }}
+        />
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span className="meta">priority</span>
+          <select
+            value={priority}
+            onChange={(e) => setPriority(parseInt(e.target.value, 10))}
+            style={{
+              padding: "4px 6px",
+              borderRadius: 6,
+              border: "1px solid #1e293b",
+              background: "#0f172a",
+              color: "inherit",
+            }}
+          >
+            {[0, 1, 2, 3].map((p) => (
+              <option key={p} value={p}>
+                {p}
+              </option>
+            ))}
+          </select>
+          <span style={{ flex: 1 }} />
+          <button
+            type="button"
+            onClick={() => setEditing(false)}
+            style={iconBtn}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={() => m.mutate()}
+            disabled={m.isPending}
+            style={{ ...iconBtn, color: "#22c55e", borderColor: "#15803d" }}
+          >
+            {m.isPending ? "…" : "Save"}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="task"
+      style={{
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "center",
+      }}
+    >
+      <div>
+        <div>{task.title}</div>
+        <div className="meta">
+          {kindLabel(task.kind)} · priority {task.priority}
+          {!task.active && " · paused"}
+        </div>
+      </div>
+      <div style={{ display: "flex", gap: 6 }}>
+        <button type="button" onClick={() => setEditing(true)} style={iconBtn}>
+          Edit
+        </button>
+        <button
+          type="button"
+          onClick={onDelete}
+          disabled={deleting}
+          style={{ ...iconBtn, color: "#f87171" }}
+        >
+          Delete
+        </button>
+      </div>
+    </div>
+  );
+};
+
+const iconBtn: React.CSSProperties = {
+  background: "transparent",
+  border: "1px solid #1e293b",
+  color: "inherit",
+  borderRadius: 6,
+  padding: "4px 10px",
+  cursor: "pointer",
+  fontSize: 12,
 };
 
 const PendingCard = ({

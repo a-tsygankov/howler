@@ -123,6 +123,11 @@ recommendations; if you disagree, raise it before Phase 1 starts.
   (soft delete, owner-checked) + Delete buttons on every task; a
   Pair-a-device tile on the dashboard that POSTs `/api/pair/confirm`
   so the SPA can drive the full pair flow without leaving the page.
+- 2026-05-06 — Task EDIT. `PATCH /api/tasks/:id` for
+  `{title, description, priority, active}` (kind changes still go via
+  delete-and-recreate — schedule rebuild is non-trivial). Inline-
+  edit row in the dashboard. **30/30 backend tests green** (added
+  the PATCH happy-path + non-owner 403).
 
 ## Open questions (synced with plan §17)
 

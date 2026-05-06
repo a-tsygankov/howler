@@ -241,6 +241,45 @@ describe("tasks + occurrences", () => {
     expect(tasks[0]?.kind).toBe("DAILY");
   });
 
+  it("PATCH updates title + priority and rejects non-owner", async () => {
+    const a = await auth();
+    const b = await auth();
+    const create = await SELF.fetch("https://t/api/tasks", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${a.token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ title: "old title", kind: "ONESHOT", priority: 1 }),
+    });
+    const t = (await json(create)) as { id: string };
+
+    const ok = await SELF.fetch(`https://t/api/tasks/${t.id}`, {
+      method: "PATCH",
+      headers: {
+        authorization: `Bearer ${a.token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ title: "new title", priority: 3 }),
+    });
+    expect(ok.status).toBe(200);
+    const okBody = await json(ok);
+    expect(okBody["title"]).toBe("new title");
+    expect(okBody["priority"]).toBe(3);
+
+    // user B can't edit user A's task — gets 403 (wrong-user) once
+    // we look it up. (404 first if id is unknown.)
+    const forbidden = await SELF.fetch(`https://t/api/tasks/${t.id}`, {
+      method: "PATCH",
+      headers: {
+        authorization: `Bearer ${b.token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ title: "stolen" }),
+    });
+    expect(forbidden.status).toBe(403);
+  });
+
   it("user A can't see user B's tasks", async () => {
     const a = await auth();
     const b = await auth();

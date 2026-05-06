@@ -59,6 +59,14 @@ export type ScheduleRule = z.infer<typeof ScheduleRuleSchema>;
 
 export const TaskKindSchema = z.enum(["DAILY", "PERIODIC", "ONESHOT"]);
 
+export const UpdateTaskSchema = z.object({
+  title: z.string().min(1).max(200).optional(),
+  description: z.string().max(2000).nullable().optional(),
+  priority: z.number().int().min(0).max(3).optional(),
+  active: z.boolean().optional(),
+});
+export type UpdateTaskInput = z.infer<typeof UpdateTaskSchema>;
+
 export const CreateTaskSchema = z.object({
   title: z.string().min(1).max(200),
   description: z.string().max(2000).nullish(),

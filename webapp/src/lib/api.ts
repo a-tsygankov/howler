@@ -128,6 +128,26 @@ export interface CreateTaskInput {
 export const createTask = async (input: CreateTaskInput): Promise<Task> =>
   TaskSchema.parse(await api.post("/tasks", input));
 
+export interface UpdateTaskInput {
+  title?: string;
+  description?: string | null;
+  priority?: number;
+  active?: boolean;
+}
+
+export const updateTask = async (
+  id: string,
+  patch: UpdateTaskInput,
+): Promise<Task> => {
+  const res = await fetch(`/api/tasks/${id}`, {
+    method: "PATCH",
+    headers: baseHeaders(),
+    credentials: "include",
+    body: JSON.stringify(patch),
+  });
+  return TaskSchema.parse(await handle(res));
+};
+
 export const deleteTask = async (id: string): Promise<void> => {
   const res = await fetch(`/api/tasks/${id}`, {
     method: "DELETE",
