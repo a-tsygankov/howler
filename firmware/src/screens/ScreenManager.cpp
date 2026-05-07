@@ -50,6 +50,11 @@ void ScreenManager::begin(TFT_eSPI& tft) {
     g_tft = &tft;
     lv_init();
 
+    // LVGL 9 dropped the LV_TICK_CUSTOM compile-time macro from
+    // lv_conf — set the tick getter explicitly so lv_timer_handler
+    // sees real wall-clock progress and processes input events.
+    lv_tick_set_cb([]() -> uint32_t { return millis(); });
+
     auto* disp = lv_display_create(kScreenW, kScreenH);
     lv_display_set_flush_cb(disp, flush_cb);
     lv_display_set_buffers(disp, g_drawBuf, nullptr,

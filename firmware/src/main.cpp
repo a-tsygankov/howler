@@ -125,5 +125,16 @@ void loop() {
     const uint32_t now = millis();
     if (g_app)     g_app->tick(now);
     if (g_screens) g_screens->tick(now);
+
+#ifdef HOWLER_DEBUG_INPUT
+    // 1 Hz "alive" heartbeat so a frozen UI is distinguishable from
+    // a stalled main loop in the serial log.
+    static uint32_t lastBeatMs = 0;
+    if (now - lastBeatMs > 1000) {
+        Serial.printf("[loop] alive ms=%lu\n", (unsigned long)now);
+        lastBeatMs = now;
+    }
+#endif
+
     delay(5);
 }

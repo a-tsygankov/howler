@@ -21,11 +21,14 @@ void ScreenManager::buildPair() {
 
 #if LV_USE_QRCODE
     if (state.phase == PairPhase::Started || state.phase == PairPhase::Pending) {
-        // Encode the deep-link the SPA understands. The user opens
-        // the link on their phone, which lands on /pair?code=… and
-        // calls /api/pair/confirm with the user token.
-        char url[96];
-        snprintf(url, sizeof(url), "https://howler.app/pair?code=%s", state.pairCode.c_str());
+        // Encode the SPA URL with the pair code as a query param.
+        // The dashboard's PairTile reads ?pair=CODE on mount and
+        // pre-fills the input — user lands logged-in on their phone,
+        // taps Pair, done. Fall-back if they're not logged in: the
+        // landing screen still has a manual "Pair a new dial" tile.
+        char url[128];
+        snprintf(url, sizeof(url),
+            "https://howler-webapp.pages.dev/?pair=%s", state.pairCode.c_str());
         auto* qr = lv_qrcode_create(root_);
         lv_qrcode_set_size(qr, 120);
         lv_qrcode_set_dark_color(qr, lv_color_black());
@@ -38,8 +41,9 @@ void ScreenManager::buildPair() {
     if (state.pairCode.empty()) {
         // No code yet — either we're between attempts or pair-start
         // failed. The status label below carries the explanation;
-        // an em-dash here keeps the layout stable.
-        lv_label_set_text(code, "—");
+        // ASCII placeholder keeps the layout stable across font sets
+        // (default Montserrat 14 doesn't include em-dash / ellipsis).
+        lv_label_set_text(code, "------");
     } else {
         // Render as "123 456" — easier to read aloud.
         char fmt[16];
@@ -58,9 +62,9 @@ void ScreenManager::buildPair() {
         case PairPhase::Started:   lv_label_set_text(status, "scan QR or enter code"); break;
         case PairPhase::Pending:   lv_label_set_text(status, "waiting for confirm..."); break;
         case PairPhase::Confirmed: lv_label_set_text(status, "paired!"); break;
-        case PairPhase::Expired:   lv_label_set_text(status, "code expired — retrying"); break;
+        case PairPhase::Expired:   lv_label_set_text(status, "code expired - retrying"); break;
         case PairPhase::Cancelled: lv_label_set_text(status, "cancelled"); break;
-        case PairPhase::Failed:    lv_label_set_text(status, "no wifi — long-press for settings"); break;
+        case PairPhase::Failed:    lv_label_set_text(status, "no wifi - tap to set up"); break;
         case PairPhase::Idle:      lv_label_set_text(status, "starting..."); break;
     }
     lv_obj_set_style_text_color(status, lv_color_make(0x7A, 0x70, 0x60), 0);

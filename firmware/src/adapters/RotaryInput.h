@@ -56,6 +56,19 @@ public:
                 digitalRead(kPinB),
                 digitalRead(kPinButton));
         }
+        // Raw-pin watchdog: print whenever the *raw* state of any
+        // input pin changes, even if we didn't classify it as an
+        // event. Gives a "did the pin actually move?" answer without
+        // staring at logic-analyser output.
+        const uint8_t curState = readState();
+        const int curBtn = digitalRead(kPinButton);
+        if (curState != lastDebugState_ || curBtn != lastDebugBtn_) {
+            Serial.printf("[input] raw A=%d B=%d SW=%d  (was A=%d B=%d SW=%d)\n",
+                (curState >> 1) & 1, curState & 1, curBtn,
+                (lastDebugState_ >> 1) & 1, lastDebugState_ & 1, lastDebugBtn_);
+            lastDebugState_ = curState;
+            lastDebugBtn_ = curBtn;
+        }
 #endif
         return out;
     }
@@ -65,6 +78,10 @@ private:
     int8_t accumulator_ = 0;
     bool wasPressed_ = false;
     uint32_t pressStartedMs_ = 0;
+#ifdef HOWLER_DEBUG_INPUT
+    uint8_t lastDebugState_ = 3;
+    int     lastDebugBtn_   = 1;
+#endif
 
     Event pollImpl() {
         // 1. Decode rotation.
