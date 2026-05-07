@@ -301,6 +301,93 @@ export const tasksRouter = new Hono<{
     });
   })
 
+  // Direct task completion — independent of the cron→queue→
+  // occurrence pipeline. The client posts a stable execution id
+  // (UUID) so this endpoint is naturally idempotent: replaying the
+  // same id from a retry queue is a no-op. resultValue / notes /
+  // ts are optional; when omitted the server stamps `now` for ts.
+  // See webapp/src/lib/executionQueue.ts for the offline queue
+  // that drives this.
+  .post("/:id/complete", async (c) => {
+    const auth = c.get("user");
+    const taskId = c.req.param("id");
+    const body = (await c.req.json().catch(() => ({}))) as {
+      id?: string;
+      userId?: string;
+      resultValue?: number | null;
+      notes?: string | null;
+      ts?: number;
+    };
+    if (!body.id || !/^[0-9a-f]{32}$/.test(body.id)) {
+      return c.json({ error: "id required (32-hex)" }, 400);
+    }
+    const task = await c.env.DB
+      .prepare(
+        "SELECT home_id, label_id, result_type_id FROM tasks WHERE id = ? AND is_deleted = 0",
+      )
+      .bind(taskId)
+      .first<{ home_id: string; label_id: string | null; result_type_id: string | null }>();
+    if (!task || task.home_id !== auth.homeId) {
+      return c.json({ error: "not-found" }, 404);
+    }
+    // Optional userId override — for shared-device contexts where
+    // the session is generic but the actual completer is a
+    // specific home member. Validate same-home before trusting.
+    let actorUserId = auth.userId;
+    if (body.userId && /^[0-9a-f]{32}$/.test(body.userId)) {
+      const u = await c.env.DB
+        .prepare(
+          "SELECT id FROM users WHERE id = ? AND home_id = ? AND is_deleted = 0",
+        )
+        .bind(body.userId, auth.homeId)
+        .first<{ id: string }>();
+      if (!u) return c.json({ error: "user not in this home" }, 403);
+      actorUserId = body.userId;
+    }
+    let unit: string | null = null;
+    if (task.result_type_id) {
+      const rt = await c.env.DB
+        .prepare("SELECT unit_name FROM task_results WHERE id = ?")
+        .bind(task.result_type_id)
+        .first<{ unit_name: string }>();
+      unit = rt?.unit_name ?? null;
+    }
+    const ts = body.ts && Number.isFinite(body.ts) ? body.ts : clock().nowSec();
+    // INSERT OR IGNORE keys off the PRIMARY KEY — duplicate id
+    // from a retry collapses to a no-op. Tag the existing row by
+    // re-reading after the insert so the response carries the
+    // canonical timestamp regardless of which call won.
+    await c.env.DB
+      .prepare(
+        `INSERT OR IGNORE INTO task_executions
+           (id, home_id, task_id, occurrence_id, user_id, device_id,
+            label_id, result_type_id, result_value, result_unit, notes, ts)
+         VALUES (?, ?, ?, NULL, ?, NULL, ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(
+        body.id,
+        auth.homeId,
+        taskId,
+        actorUserId,
+        task.label_id,
+        task.result_type_id,
+        body.resultValue ?? null,
+        unit,
+        body.notes ?? null,
+        ts,
+      )
+      .run();
+    return c.json({
+      id: body.id,
+      taskId,
+      userId: actorUserId,
+      ts,
+      resultValue: body.resultValue ?? null,
+      resultUnit: unit,
+      notes: body.notes ?? null,
+    });
+  })
+
   .delete("/:id", async (c) => {
     const auth = c.get("user");
     const id = c.req.param("id");

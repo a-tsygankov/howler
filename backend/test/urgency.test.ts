@@ -91,6 +91,27 @@ describe("computeUrgency — DAILY", () => {
     });
     expect(r.isMissed).toBe(false);
   });
+
+  it("cycle-done shifts the urgency window forward", () => {
+    // [08, 16, 00] — 8 h gaps. At 15:00 (1 h before 16:00) the row
+    // is normally URGENT (12 % of an 8-h gap remains). But if the
+    // user already executed at 14:00 (between 08:00 and 16:00),
+    // the current cycle is satisfied — the row should jump to the
+    // 16:00 → 00:00 window, where 9 h remains of an 8 h gap →
+    // HIDDEN.
+    const r = computeUrgency({
+      rule,
+      scheduleModifiedAt: T0 - DAY,
+      oneshotDeadline: null,
+      lastExecutionAt: T0 + 14 * HOUR,
+      nowSec: T0 + 15 * HOUR,
+    });
+    expect(r.urgency).toBe("HIDDEN");
+    expect(r.isMissed).toBe(false);
+    // prev / next reflect the *shifted* window.
+    expect(r.prevDeadline).toBe(T0 + 16 * HOUR);
+    expect(r.nextDeadline).toBe(T0 + 24 * HOUR);
+  });
 });
 
 describe("computeUrgency — PERIODIC", () => {
