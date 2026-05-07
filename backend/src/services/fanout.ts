@@ -17,6 +17,7 @@ import { computeNextFireAt } from "./firing.ts";
 import {
   asOccurrenceId,
   asScheduleId,
+  asTaskId,
   newUuid,
 } from "../domain/ids.ts";
 import { dispatchPushForOccurrence } from "./push.ts";
@@ -89,8 +90,16 @@ const fireOne = async (
     firedOccId = occId;
     recordOccurrenceFired(env, schedule.taskId, schedule.id, body.dueAt, nowMs);
 
+    // For ONESHOT-with-cadence we need the absolute deadline so
+    // the next fire is bounded; pull it from the task once. Pure
+    // PERIODIC / DAILY don't depend on it.
+    let oneshotAt: number | null = null;
+    if (schedule.rule.kind === "ONESHOT") {
+      const t = await tx.tasks.findById(asTaskId(schedule.taskId));
+      oneshotAt = t?.deadlineHint ?? null;
+    }
     const nowSec = Math.floor(nowMs / 1000);
-    const nextFireAt = computeNextFireAt(schedule.rule, nowSec, null);
+    const nextFireAt = computeNextFireAt(schedule.rule, nowSec, oneshotAt);
     await tx.schedules.update({
       ...schedule,
       nextFireAt,

@@ -1,4 +1,12 @@
 import { avatarUrl } from "../lib/api.ts";
+import { Icon, type IconName } from "./Icon.tsx";
+
+// "icon:<name>" prefix carves out a no-network branch for the
+// avatarId field — labels and tasks can carry an icon-set choice
+// in the same column an uploaded R2 UUID would normally occupy.
+const ICON_PREFIX = "icon:";
+const isIconAvatar = (id: string | null | undefined): id is string =>
+  typeof id === "string" && id.startsWith(ICON_PREFIX);
 
 // Round photo + colored urgency ring (Option B from plan §13).
 // CVD redundancy per design handoff: each urgency level pairs the
@@ -63,12 +71,22 @@ export const HowlerAvatar = ({
   size = 38,
   className = "",
 }: HowlerAvatarProps) => {
-  const url = avatarUrl(avatarId);
   const ring = RING_CLASS[urgency];
   const glyph = GLYPH[urgency];
 
-  const inner =
-    url ? (
+  let inner: React.ReactNode;
+  if (isIconAvatar(avatarId)) {
+    const iconName = avatarId.slice(ICON_PREFIX.length) as IconName;
+    inner = (
+      <div
+        className={`grid h-full w-full place-items-center rounded-full ${bgFromSeed(seed ?? avatarId)} text-paper`}
+      >
+        <Icon name={iconName} size={Math.round(size * 0.55)} color="#fff" />
+      </div>
+    );
+  } else {
+    const url = avatarUrl(avatarId);
+    inner = url ? (
       <img
         src={url}
         alt=""
@@ -82,6 +100,7 @@ export const HowlerAvatar = ({
         {initialsFor(initials ?? seed)}
       </div>
     );
+  }
 
   return (
     <div

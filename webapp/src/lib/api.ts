@@ -14,7 +14,11 @@ const ScheduleRuleSchema = z.discriminatedUnion("kind", [
     kind: z.literal("PERIODIC"),
     intervalDays: z.number().int().positive(),
   }),
-  z.object({ version: z.literal(1), kind: z.literal("ONESHOT") }),
+  z.object({
+    version: z.literal(1),
+    kind: z.literal("ONESHOT"),
+    intervalDays: z.number().int().positive().optional(),
+  }),
 ]);
 export type ScheduleRule = z.infer<typeof ScheduleRuleSchema>;
 
@@ -214,6 +218,9 @@ export interface CreateTaskInput {
   templateId?: string;
   labelId?: string | null;
   resultTypeId?: string | null;
+  // Avatar — "icon:<name>" for an icon-set choice or an R2 UUID.
+  // Omit to let the server fall back to the selected label's icon.
+  avatarId?: string | null;
   isPrivate?: boolean;
   assignees?: string[];
 }
@@ -225,6 +232,7 @@ export interface UpdateTaskInput {
   active?: boolean;
   labelId?: string | null;
   resultTypeId?: string | null;
+  avatarId?: string | null;
   isPrivate?: boolean;
   assignees?: string[];
   // Schedule rule edits — server expects UTC times; the SPA must
@@ -249,6 +257,29 @@ export const updateTask = async (
 export const deleteTask = async (id: string): Promise<void> => {
   await callJson("DELETE", `/tasks/${id}`);
 };
+
+// ── Dashboard (urgent / non-urgent groups, server-computed) ────────
+
+const DashboardItemSchema = z.object({
+  task: TaskSchema,
+  rule: ScheduleRuleSchema.nullable(),
+  urgency: z.enum(["URGENT", "NON_URGENT"]),
+  prevDeadline: z.number().int().nullable(),
+  nextDeadline: z.number().int().nullable(),
+  periodSec: z.number().int().nullable(),
+  isMissed: z.boolean(),
+  secondsUntilNext: z.number().int().nullable(),
+});
+export type DashboardItem = z.infer<typeof DashboardItemSchema>;
+
+const DashboardResponseSchema = z.object({
+  now: z.number().int(),
+  tasks: z.array(DashboardItemSchema),
+});
+export type DashboardResponse = z.infer<typeof DashboardResponseSchema>;
+
+export const fetchDashboard = async (): Promise<DashboardResponse> =>
+  DashboardResponseSchema.parse(await callJson("GET", "/dashboard"));
 
 // ── Occurrences ────────────────────────────────────────────────────
 
@@ -286,6 +317,9 @@ const LabelSchema = z.object({
   homeId: Hex32,
   displayName: z.string(),
   color: z.string().nullable(),
+  // Icon name from the Icon barrel — see webapp/src/components/Icon.tsx.
+  // Null falls back to initials in the renderer.
+  icon: z.string().nullable().optional(),
   system: z.boolean(),
   sortOrder: z.number().int(),
   createdAt: z.number().int(),
@@ -293,11 +327,32 @@ const LabelSchema = z.object({
 });
 export type Label = z.infer<typeof LabelSchema>;
 
+export interface UpsertLabelInput {
+  displayName?: string;
+  color?: string | null;
+  icon?: string | null;
+  sortOrder?: number;
+}
+
 export const fetchLabels = async (): Promise<Label[]> =>
   z
     .object({ labels: z.array(LabelSchema) })
     .parse(await callJson("GET", "/labels"))
     .labels;
+
+export const createLabel = async (input: UpsertLabelInput): Promise<Label> =>
+  LabelSchema.parse(await callJson("POST", "/labels", input));
+
+export const updateLabel = async (
+  id: string,
+  patch: UpsertLabelInput,
+): Promise<void> => {
+  await callJson("PATCH", `/labels/${id}`, patch);
+};
+
+export const deleteLabel = async (id: string): Promise<void> => {
+  await callJson("DELETE", `/labels/${id}`);
+};
 
 // ── TaskResults ────────────────────────────────────────────────────
 

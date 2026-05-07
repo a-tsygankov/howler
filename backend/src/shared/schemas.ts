@@ -63,6 +63,13 @@ export const ScheduleRuleSchema = z.discriminatedUnion("kind", [
   z.object({
     version: z.literal(1),
     kind: z.literal("ONESHOT"),
+    // Optional reminder cadence — when set, the dashboard surfaces
+    // the task every `intervalDays` between creation and the
+    // deadline so the user is nudged on a periodic basis instead of
+    // only seeing it once it's about to expire. The deadline itself
+    // still lives on `tasks.deadline_hint`; the rule only carries
+    // the cadence.
+    intervalDays: z.number().int().positive().optional(),
   }),
 ]);
 export type ScheduleRule = z.infer<typeof ScheduleRuleSchema>;
@@ -76,6 +83,9 @@ export const UpdateTaskSchema = z.object({
   active: z.boolean().optional(),
   labelId: Hex32.nullable().optional(),
   resultTypeId: Hex32.nullable().optional(),
+  // Avatar can be either an icon-set choice ("icon:paw") or an R2
+  // UUID for an uploaded image. Backend stays opaque to the format.
+  avatarId: z.string().max(80).nullable().optional(),
   isPrivate: z.boolean().optional(),
   assignees: z.array(Hex32).optional(),
   // Schedule rule fields — only meaningful for the matching kind.
@@ -98,6 +108,9 @@ export const CreateTaskSchema = z.object({
   tz: z.string().min(1).max(64).optional(),
   labelId: Hex32.nullish(),
   resultTypeId: Hex32.nullish(),
+  // Avatar — see UpdateTaskSchema.avatarId. When omitted, the
+  // service falls back to the selected label's icon.
+  avatarId: z.string().max(80).nullish(),
   isPrivate: z.boolean().optional(),
   assignees: z.array(Hex32).optional(),
 });

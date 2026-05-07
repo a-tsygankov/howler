@@ -66,7 +66,9 @@ const ruleFor = (input: CreateTaskInput): ScheduleRule => {
         intervalDays: input.intervalDays ?? 7,
       };
     case "ONESHOT":
-      return { version: 1, kind: "ONESHOT" };
+      return input.intervalDays
+        ? { version: 1, kind: "ONESHOT", intervalDays: input.intervalDays }
+        : { version: 1, kind: "ONESHOT" };
   }
 };
 
@@ -99,7 +101,7 @@ export const createTask = async (
       priority: input.priority as Task["priority"],
       kind: input.kind,
       deadlineHint: input.deadlineHint ?? null,
-      avatarId: null,
+      avatarId: input.avatarId ?? null,
       labelId: input.labelId ? asLabelId(input.labelId) : null,
       resultTypeId: input.resultTypeId ? asTaskResultId(input.resultTypeId) : null,
       isPrivate: input.isPrivate ?? false,
@@ -155,6 +157,7 @@ export const updateTask = async (
         : patch.resultTypeId === null
           ? null
           : asTaskResultId(patch.resultTypeId),
+      avatarId: patch.avatarId === undefined ? t.avatarId : patch.avatarId,
       isPrivate: patch.isPrivate ?? t.isPrivate,
       updatedAt: clock().nowMs(),
     };
@@ -196,9 +199,19 @@ export const updateTask = async (
                   : 7),
             };
             break;
-          case "ONESHOT":
-            rule = { version: 1, kind: "ONESHOT" };
+          case "ONESHOT": {
+            // Cadence on ONESHOT may be edited; preserve the
+            // existing one if the patch didn't touch it.
+            const intervalDays =
+              patch.intervalDays ??
+              (schedule.rule.kind === "ONESHOT"
+                ? schedule.rule.intervalDays
+                : undefined);
+            rule = intervalDays
+              ? { version: 1, kind: "ONESHOT", intervalDays }
+              : { version: 1, kind: "ONESHOT" };
             break;
+          }
         }
         const nowMs = clock().nowMs();
         const nowSec = Math.floor(nowMs / 1000);

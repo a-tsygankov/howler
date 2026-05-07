@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { DailyTimePickerProps } from "./types";
 
 // ─── TimePickerModal ──────────────────────────────────────────────────────────
@@ -8,11 +8,65 @@ interface TimePickerModalProps {
   onCancel: () => void;
 }
 
+// The hour column repeats 0–23 five times (120 entries) so the
+// scroll has "infinite-feel" margin in either direction without
+// needing real virtualised wrap-around. Default lands at "09" in
+// the middle (3rd) set so the user can scroll a comfortable
+// distance up or down before hitting an edge.
+const HOUR_REPEATS = 5;
+const HOURS_PER_SET = 24;
+const HOUR_SLOTS = HOUR_REPEATS * HOURS_PER_SET;       // 120
+const DEFAULT_HOUR_INDEX = 2 * HOURS_PER_SET + 9;      // 57 → "09" in set #3
+
 function TimePickerModal({ onConfirm, onCancel }: TimePickerModalProps) {
-  const [hour, setHour] = useState(9);
+  const [hourIndex, setHourIndex] = useState(DEFAULT_HOUR_INDEX);
   const [minute, setMinute] = useState(0);
   const MINUTE_STEPS = [0, 15, 30, 45];
   const fmt2 = (n: number) => String(n).padStart(2, "0");
+  const hour = hourIndex % HOURS_PER_SET;
+
+  // Lock body scroll while the modal is open. The backdrop is
+  // `position: fixed` and visually covers the page, but without
+  // this the user can still scroll the dashboard behind it — and
+  // since the backdrop is only 45 % opaque, that scrolling content
+  // shows through and looks like the modal itself is leaking.
+  useEffect(() => {
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, []);
+
+  // Scroll the hour column so the active item is centered. The
+  // items' offsetParent is the modal-backdrop (the nearest
+  // positioned ancestor), not the scroll column itself, so we
+  // can't use offsetTop directly — we measure with bounding rects
+  // and current scrollTop. We also re-run on animationend because
+  // the modal's `dtpSlideUp` keyframe applies a `scale(0.96)`
+  // that shifts measured positions while it runs.
+  const hourColRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const col = hourColRef.current;
+    if (!col) return;
+    const center = () => {
+      const active = col.querySelector<HTMLButtonElement>(
+        ".dtp-scroll-item.active",
+      );
+      if (!active) return;
+      const colRect = col.getBoundingClientRect();
+      const itemRect = active.getBoundingClientRect();
+      const itemTopInContent = itemRect.top - colRect.top + col.scrollTop;
+      col.scrollTop =
+        itemTopInContent + itemRect.height / 2 - col.clientHeight / 2;
+    };
+    center();
+    const modal = col.closest<HTMLDivElement>(".dtp-modal");
+    if (!modal) return;
+    const onEnd = () => center();
+    modal.addEventListener("animationend", onEnd, { once: true });
+    return () => modal.removeEventListener("animationend", onEnd);
+  }, []);
 
   return (
     <>
@@ -31,14 +85,14 @@ function TimePickerModal({ onConfirm, onCancel }: TimePickerModalProps) {
             <div className="dtp-col-label">Hour</div>
             <div className="dtp-col-label">Minute</div>
 
-            <div className="dtp-scroll-col">
-              {Array.from({ length: 24 }, (_, h) => (
+            <div className="dtp-scroll-col" ref={hourColRef}>
+              {Array.from({ length: HOUR_SLOTS }, (_, i) => (
                 <button
-                  key={h}
-                  className={`dtp-scroll-item${h === hour ? " active" : ""}`}
-                  onClick={() => setHour(h)}
+                  key={i}
+                  className={`dtp-scroll-item${i === hourIndex ? " active" : ""}`}
+                  onClick={() => setHourIndex(i)}
                 >
-                  {fmt2(h)}
+                  {fmt2(i % HOURS_PER_SET)}
                 </button>
               ))}
             </div>

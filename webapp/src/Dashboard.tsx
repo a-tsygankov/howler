@@ -1,18 +1,19 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  ackOccurrence,
   apiLogout,
   apiMe,
   apiPairConfirm,
+  createLabel,
   createTask,
   createUser,
+  deleteLabel,
   deleteTask,
   deleteUser,
+  fetchDashboard,
   fetchDevices,
   fetchLabels,
-  fetchPending,
   fetchScheduleTemplates,
   fetchTaskResults,
   fetchTasks,
@@ -20,11 +21,12 @@ import {
   renameUser,
   revokeDevice,
   updateHome,
+  updateLabel,
   updateTask,
   uploadAvatar,
+  type DashboardItem,
   type Device,
   type Label,
-  type Occurrence,
   type ScheduleTemplate,
   type Task,
   type TaskKind,
@@ -39,12 +41,8 @@ import {
   unsubscribePush,
 } from "./lib/push.ts";
 import { HowlerAvatar } from "./components/HowlerAvatar.tsx";
-import { ProgressBar } from "./components/ProgressBar.tsx";
-import { SegBtn } from "./components/SegBtn.tsx";
-import { Sheet } from "./components/Sheet.tsx";
+import { Icon, type IconName } from "./components/Icon.tsx";
 import { Btn } from "./components/Buttons.tsx";
-import { DayRibbonRow } from "./components/DayRibbonRow.tsx";
-import { ResultSlider } from "./components/ResultSlider.tsx";
 import {
   DailyTimePicker,
   getLocalTimezone,
@@ -52,15 +50,6 @@ import {
   utcToLocal,
 } from "./components/daily-time-picker";
 import { fetchTaskSchedule } from "./lib/api.ts";
-
-type GroupBy = "time" | "label";
-
-const GROUPBY_KEY = "howler.home.groupBy";
-
-const loadGroupBy = (): GroupBy => {
-  if (typeof localStorage === "undefined") return "time";
-  return localStorage.getItem(GROUPBY_KEY) === "label" ? "label" : "time";
-};
 
 const fmtDayCaps = (d: Date): string =>
   d
@@ -76,14 +65,22 @@ interface Props {
   onLogout: () => void;
 }
 
+// Dashboard polls every 5 min while open; mutations (create/edit/
+// delete task, edit schedule) invalidate ["dashboard"] alongside
+// ["tasks"] so the urgency view refreshes immediately on user
+// action. Spec: m-2026-05-06 (single source of truth, identical
+// across web + dial).
+const DASHBOARD_POLL_MS = 5 * 60 * 1000;
+
 export const Dashboard = ({ session, onLogout }: Props) => {
   const qc = useQueryClient();
   const me = useQuery({ queryKey: ["me"], queryFn: apiMe });
   const tasks = useQuery({ queryKey: ["tasks"], queryFn: fetchTasks });
-  const pending = useQuery({
-    queryKey: ["pending"],
-    queryFn: fetchPending,
-    refetchInterval: 15_000,
+  const dashboard = useQuery({
+    queryKey: ["dashboard"],
+    queryFn: fetchDashboard,
+    refetchInterval: DASHBOARD_POLL_MS,
+    refetchOnWindowFocus: true,
   });
   const labels = useQuery({ queryKey: ["labels"], queryFn: fetchLabels });
   const taskResults = useQuery({
@@ -97,49 +94,11 @@ export const Dashboard = ({ session, onLogout }: Props) => {
     queryFn: fetchScheduleTemplates,
   });
 
-  const [groupBy, setGroupByState] = useState<GroupBy>(loadGroupBy);
-  const setGroupBy = (g: GroupBy) => {
-    setGroupByState(g);
-    try {
-      localStorage.setItem(GROUPBY_KEY, g);
-    } catch {
-      /* ignore */
-    }
-  };
-
-  const [ackTarget, setAckTarget] = useState<Occurrence | null>(null);
-  const [recentlyAcked, setRecentlyAcked] = useState<Set<string>>(new Set());
-
-  const ack = useMutation({
-    mutationFn: (args: {
-      id: string;
-      resultValue?: number | null;
-      notes?: string | null;
-    }) => {
-      const body: { resultValue?: number | null; notes?: string | null } = {};
-      if (args.resultValue !== undefined) body.resultValue = args.resultValue;
-      if (args.notes !== undefined) body.notes = args.notes;
-      return ackOccurrence(args.id, body);
-    },
-    onSuccess: (_data, vars) => {
-      setAckTarget(null);
-      setRecentlyAcked((s) => new Set(s).add(vars.id));
-      setTimeout(() => {
-        void qc.invalidateQueries({ queryKey: ["pending"] });
-        setRecentlyAcked((s) => {
-          const next = new Set(s);
-          next.delete(vars.id);
-          return next;
-        });
-      }, 350);
-    },
-  });
-
   const del = useMutation({
     mutationFn: deleteTask,
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["tasks"] });
-      void qc.invalidateQueries({ queryKey: ["pending"] });
+      void qc.invalidateQueries({ queryKey: ["dashboard"] });
     },
   });
 
@@ -151,15 +110,9 @@ export const Dashboard = ({ session, onLogout }: Props) => {
     }
   };
 
-  const handleAckClick = (occ: Occurrence) => {
-    const task = (tasks.data ?? []).find((t) => t.id === occ.taskId);
-    if (task?.resultTypeId) setAckTarget(occ);
-    else ack.mutate({ id: occ.id });
-  };
-
-  const todayPending = pending.data ?? [];
-  const totalToday = todayPending.length + recentlyAcked.size;
-  const doneToday = recentlyAcked.size;
+  const dashboardItems = dashboard.data?.tasks ?? [];
+  const urgent = dashboardItems.filter((it) => it.urgency === "URGENT");
+  const nonUrgent = dashboardItems.filter((it) => it.urgency === "NON_URGENT");
 
   return (
     <main data-testid="dashboard" className="paper-grain mx-auto min-h-screen max-w-md lg:max-w-2xl">
@@ -171,37 +124,32 @@ export const Dashboard = ({ session, onLogout }: Props) => {
         onAvatarChanged={() => qc.invalidateQueries({ queryKey: ["me"] })}
         onHomeRenamed={() => qc.invalidateQueries({ queryKey: ["me"] })}
         onLogout={handleLogout}
-        leftCount={todayPending.length}
+        leftCount={urgent.length}
       />
 
-      <section className="px-5 pb-3 pt-1">
-        <ProgressBar done={doneToday} total={Math.max(totalToday, 1)} />
-      </section>
-
-      <section className="flex items-center justify-between px-5 pb-2">
-        <SegBtn
-          options={[
-            { value: "time" as const, label: "By time" },
-            { value: "label" as const, label: "By label" },
-          ]}
-          value={groupBy}
-          onChange={setGroupBy}
-        />
+      <section className="flex items-center justify-end px-5 pb-2 pt-1">
         <PushPill />
       </section>
 
-      <PendingGroups
-        groupBy={groupBy}
-        pending={todayPending}
-        tasks={tasks.data ?? []}
-        labels={labels.data ?? []}
-        recentlyAcked={recentlyAcked}
-        onAckClick={handleAckClick}
-        ackBusyId={ack.isPending ? ack.variables?.id ?? null : null}
-      />
-      {pending.isLoading && <Empty>Loading…</Empty>}
-      {!pending.isLoading && todayPending.length === 0 && (
-        <Empty>Nothing due. Quiet day.</Empty>
+      {urgent.length > 0 && (
+        <UrgencyGroup
+          title="Urgent"
+          items={urgent}
+          labels={labels.data ?? []}
+          serverNow={dashboard.data?.now}
+        />
+      )}
+      {nonUrgent.length > 0 && (
+        <UrgencyGroup
+          title="Coming up"
+          items={nonUrgent}
+          labels={labels.data ?? []}
+          serverNow={dashboard.data?.now}
+        />
+      )}
+      {dashboard.isLoading && <Empty>Loading…</Empty>}
+      {!dashboard.isLoading && dashboardItems.length === 0 && (
+        <Empty>Nothing urgent. All caught up.</Empty>
       )}
 
       <section className="px-5 py-6">
@@ -213,7 +161,7 @@ export const Dashboard = ({ session, onLogout }: Props) => {
           users={users.data ?? []}
           onCreated={() => {
             void qc.invalidateQueries({ queryKey: ["tasks"] });
-            void qc.invalidateQueries({ queryKey: ["pending"] });
+            void qc.invalidateQueries({ queryKey: ["dashboard"] });
           }}
         />
       </section>
@@ -233,6 +181,16 @@ export const Dashboard = ({ session, onLogout }: Props) => {
         </p>
       </section>
 
+      <Section title="Labels">
+        <LabelsBlock
+          labels={labels.data ?? []}
+          onChanged={() => {
+            void qc.invalidateQueries({ queryKey: ["labels"] });
+            void qc.invalidateQueries({ queryKey: ["dashboard"] });
+          }}
+        />
+      </Section>
+
       <Section title="All tasks">
         {tasks.isLoading && <Empty>Loading…</Empty>}
         {tasks.data?.length === 0 && <Empty>No tasks yet.</Empty>}
@@ -246,7 +204,10 @@ export const Dashboard = ({ session, onLogout }: Props) => {
               if (confirm(`Delete "${t.title}"?`)) del.mutate(t.id);
             }}
             deleting={del.isPending && del.variables === t.id}
-            onSaved={() => qc.invalidateQueries({ queryKey: ["tasks"] })}
+            onSaved={() => {
+              void qc.invalidateQueries({ queryKey: ["tasks"] });
+              void qc.invalidateQueries({ queryKey: ["dashboard"] });
+            }}
           />
         ))}
       </Section>
@@ -269,27 +230,6 @@ export const Dashboard = ({ session, onLogout }: Props) => {
         />
       </Section>
 
-      {ackTarget && (
-        <AckSheet
-          occurrence={ackTarget}
-          task={
-            (tasks.data ?? []).find((t) => t.id === ackTarget.taskId)!
-          }
-          taskResults={taskResults.data ?? []}
-          onCancel={() => setAckTarget(null)}
-          onSubmit={(value, notes) => {
-            const args: {
-              id: string;
-              resultValue?: number | null;
-              notes?: string | null;
-            } = { id: ackTarget.id };
-            if (value !== undefined) args.resultValue = value;
-            if (notes !== undefined) args.notes = notes;
-            ack.mutate(args);
-          }}
-          busy={ack.isPending}
-        />
-      )}
     </main>
   );
 };
@@ -492,122 +432,124 @@ const PushPill = () => {
 
 // ── Pending grouped ────────────────────────────────────────────────
 
-const TIME_GROUPS = [
-  { id: "morning",   label: "Morning",   hours: [0, 11] as const,  caps: "07:00–11:00" },
-  { id: "afternoon", label: "Afternoon", hours: [12, 16] as const, caps: "12:00–17:00" },
-  { id: "evening",   label: "Evening",   hours: [17, 23] as const, caps: "17:00–22:00" },
-] as const;
-
-const PendingGroups = ({
-  groupBy,
-  pending,
-  tasks,
+// Renders an urgency-classified group of dashboard items. Each row
+// shows the task title, schedule summary, and a relative
+// "in 14 m / 2 h overdue" hint computed against the server's `now`
+// (passed in from the dashboard query). Server-driven so the dial
+// firmware will render the same rows.
+const UrgencyGroup = ({
+  title,
+  items,
   labels,
-  recentlyAcked,
-  onAckClick,
-  ackBusyId,
+  serverNow,
 }: {
-  groupBy: GroupBy;
-  pending: Occurrence[];
-  tasks: Task[];
+  title: string;
+  items: DashboardItem[];
   labels: Label[];
-  recentlyAcked: Set<string>;
-  onAckClick: (o: Occurrence) => void;
-  ackBusyId: string | null;
+  serverNow: number | undefined;
 }) => {
-  const taskById = useMemo(
-    () => new Map(tasks.map((t) => [t.id, t])),
-    [tasks],
-  );
-  const labelById = useMemo(
-    () => new Map(labels.map((l) => [l.id, l])),
-    [labels],
-  );
-
-  if (groupBy === "time") {
-    const groups = TIME_GROUPS.map((g) => ({
-      ...g,
-      items: pending.filter((o) => {
-        const h = new Date(o.dueAt * 1000).getHours();
-        return h >= g.hours[0] && h <= g.hours[1];
-      }),
-    })).filter((g) => g.items.length > 0);
-
-    return (
-      <>
-        {groups.map((g) => (
-          <section key={g.id} className="mt-4">
-            <header className="flex items-baseline justify-between px-5 pb-1">
-              <h3 className="font-serif text-base">{g.label}</h3>
-              <span className="cap">{g.caps}</span>
-              <span className="font-mono text-xs text-ink-3 tabular-nums">
-                {g.items.length}
-              </span>
-            </header>
-            {g.items.map((o) => (
-              <DayRibbonRow
-                key={o.id}
-                occurrence={o}
-                task={taskById.get(o.taskId)}
-                label={labelById.get(taskById.get(o.taskId)?.labelId ?? "")}
-                acked={recentlyAcked.has(o.id)}
-                busy={ackBusyId === o.id}
-                onAck={() => onAckClick(o)}
-              />
-            ))}
-          </section>
-        ))}
-      </>
-    );
-  }
-
-  const byLabel = new Map<string | null, Occurrence[]>();
-  for (const o of pending) {
-    const t = taskById.get(o.taskId);
-    const k = t?.labelId ?? null;
-    const arr = byLabel.get(k) ?? [];
-    arr.push(o);
-    byLabel.set(k, arr);
-  }
-
+  const labelById = new Map(labels.map((l) => [l.id, l]));
   return (
-    <>
-      {[...byLabel.entries()].map(([labelId, items]) => {
-        const label = labelId ? labelById.get(labelId) : undefined;
-        const swatchColor = label?.color ?? "#7A7060";
-        return (
-          <section key={labelId ?? "unlabeled"} className="mt-4">
-            <header className="flex items-center justify-between px-5 pb-1">
-              <div className="flex items-center gap-2">
-                <span
-                  className="inline-block h-2 w-2 rounded-full"
-                  style={{ background: swatchColor }}
-                  aria-hidden
-                />
-                <h3 className="font-serif text-base">
-                  {label?.displayName ?? "No label"}
-                </h3>
-              </div>
-              <span className="font-mono text-xs text-ink-3 tabular-nums">
-                {items.length}
-              </span>
-            </header>
-            {items.map((o) => (
-              <DayRibbonRow
-                key={o.id}
-                occurrence={o}
-                task={taskById.get(o.taskId)}
-                label={label}
-                acked={recentlyAcked.has(o.id)}
-                busy={ackBusyId === o.id}
-                onAck={() => onAckClick(o)}
-              />
-            ))}
-          </section>
-        );
-      })}
-    </>
+    <section className="mt-3">
+      <header className="flex items-baseline justify-between px-5 pb-1">
+        <h3 className="font-serif text-base">{title}</h3>
+        <span className="font-mono text-xs text-ink-3 tabular-nums">
+          {items.length}
+        </span>
+      </header>
+      {items.map((it) => (
+        <UrgentTaskRow
+          key={it.task.id}
+          item={it}
+          label={it.task.labelId ? labelById.get(it.task.labelId) : undefined}
+          serverNow={serverNow}
+        />
+      ))}
+    </section>
   );
+};
+
+const UrgentTaskRow = ({
+  item,
+  label,
+  serverNow,
+}: {
+  item: DashboardItem;
+  label: Label | undefined;
+  serverNow: number | undefined;
+}) => {
+  const { task, urgency, isMissed, prevDeadline, nextDeadline, secondsUntilNext } = item;
+  const ringUrgency = isMissed ? 3 : urgency === "URGENT" ? 2 : 1;
+  return (
+    <Link
+      to={`/tasks/${task.id}`}
+      className="flex items-center gap-3 border-t border-line-soft px-5 py-2.5 hover:bg-paper-2"
+    >
+      <HowlerAvatar
+        avatarId={task.avatarId}
+        seed={task.id}
+        initials={task.title.slice(0, 2).toUpperCase()}
+        urgency={ringUrgency}
+        size={38}
+      />
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-[15px] font-medium">{task.title}</div>
+        <div className="mt-0.5 flex items-center gap-2 text-xs text-ink-3">
+          <span className="font-mono">
+            {fmtDeadline(item, serverNow)}
+          </span>
+          {label && (
+            <span style={{ color: label.color ?? "#7A7060" }}>
+              · {label.displayName}
+            </span>
+          )}
+        </div>
+      </div>
+    </Link>
+  );
+};
+
+// Relative time rendering for the dashboard rows. The unit picked
+// depends on the schedule's period — a 3-days-cycle task shows
+// "1 d overdue", a half-hour cycle shows "12 m overdue" — so the
+// number stays meaningful for the rhythm of the task. Server's
+// `now` drives the math so all clients agree even if device
+// clocks drift. Spec: m-2026-05-06.
+const fmtDeadline = (
+  item: DashboardItem,
+  serverNow: number | undefined,
+): string => {
+  const { isMissed, prevDeadline, secondsUntilNext, periodSec } = item;
+  if (isMissed) {
+    if (prevDeadline !== null && serverNow !== undefined) {
+      const delta = serverNow - prevDeadline;
+      return delta > 0 ? `${formatForPeriod(delta, periodSec)} overdue` : "overdue";
+    }
+    return "overdue";
+  }
+  if (secondsUntilNext === null || secondsUntilNext < 0) return "—";
+  return `in ${formatForPeriod(secondsUntilNext, periodSec)}`;
+};
+
+// Period-driven unit selection. Thresholds match the user's spec:
+// > 1 day → days, > 1 hour → hours, > 1 minute → minutes, else
+// seconds. Fall back to magnitude-based formatting when periodSec
+// isn't available (e.g. malformed rule).
+const formatForPeriod = (
+  deltaSec: number,
+  periodSec: number | null,
+): string => {
+  const abs = Math.max(0, Math.round(deltaSec));
+  if (periodSec !== null && periodSec > 0) {
+    if (periodSec > 86400) return `${Math.max(1, Math.round(abs / 86400))} d`;
+    if (periodSec > 3600) return `${Math.max(1, Math.round(abs / 3600))} h`;
+    if (periodSec > 60) return `${Math.max(1, Math.round(abs / 60))} m`;
+    return `${abs} s`;
+  }
+  if (abs < 60) return `${abs} s`;
+  if (abs < 3600) return `${Math.round(abs / 60)} m`;
+  if (abs < 86400) return `${Math.round(abs / 3600)} h`;
+  return `${Math.round(abs / 86400)} d`;
 };
 
 const Empty = ({ children }: { children: React.ReactNode }) => (
@@ -628,79 +570,6 @@ const Section = ({
     {children}
   </section>
 );
-
-// ── Ack sheet (Slider variant B) ──────────────────────────────────
-
-const AckSheet = ({
-  occurrence,
-  task,
-  taskResults,
-  onCancel,
-  onSubmit,
-  busy,
-}: {
-  occurrence: Occurrence;
-  task: Task;
-  taskResults: TaskResultDef[];
-  onCancel: () => void;
-  onSubmit: (value: number | undefined, notes: string | undefined) => void;
-  busy: boolean;
-}) => {
-  const rt = taskResults.find((r) => r.id === task.resultTypeId);
-  const [value, setValue] = useState<number | null>(null);
-  const [notes, setNotes] = useState("");
-  const fmtDue = new Date(occurrence.dueAt * 1000).toLocaleTimeString([], {
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  });
-
-  return (
-    <Sheet open onClose={onCancel} ariaLabel={`Mark "${task.title}" done`}>
-      <div className="flex items-center gap-3">
-        <HowlerAvatar
-          avatarId={task.avatarId}
-          seed={task.id}
-          initials={task.title.slice(0, 2).toUpperCase()}
-          size={44}
-        />
-        <div className="min-w-0 flex-1">
-          <div className="cap">due {fmtDue}</div>
-          <div className="font-serif text-lg leading-tight">{task.title}</div>
-        </div>
-      </div>
-
-      {rt && (
-        <div className="mt-5">
-          <ResultSlider result={rt} onChange={setValue} />
-        </div>
-      )}
-
-      <label className="mt-4 block">
-        <div className="cap mb-1">Notes (optional)</div>
-        <input
-          value={notes}
-          onChange={(e) => setNotes(e.target.value)}
-          className="w-full rounded-md border border-line bg-paper-2 px-3 py-2 text-sm focus:border-ink focus:outline-none"
-        />
-      </label>
-
-      <div className="mt-5 flex gap-2">
-        <Btn variant="outline" onClick={onCancel} disabled={busy}>
-          Skip value
-        </Btn>
-        <Btn
-          variant="primary"
-          onClick={() => onSubmit(value ?? undefined, notes.trim() || undefined)}
-          disabled={busy}
-          className="flex-1"
-        >
-          {busy ? "…" : "Mark done"}
-        </Btn>
-      </div>
-    </Sheet>
-  );
-};
 
 // ── Create task form ──────────────────────────────────────────────
 
@@ -728,13 +597,31 @@ const CreateTaskForm = ({
   // Local-timezone "HH:MM" strings; converted to UTC on submit.
   const [localTimes, setLocalTimes] = useState<string[]>(["09:00"]);
   const [intervalDays, setIntervalDays] = useState(7);
-  const [deadlineMins, setDeadlineMins] = useState(60);
+  // ONESHOT: pick a deadline date + an optional reminder cadence
+  // (so the dashboard nudges the user every N days until the
+  // deadline). Default 7 days from now, no cadence.
+  const todayIso = new Date(Date.now() + 7 * 86_400_000)
+    .toISOString()
+    .slice(0, 10);
+  const [oneshotDate, setOneshotDate] = useState(todayIso);
+  const [oneshotCadence, setOneshotCadence] = useState(0); // 0 = no cadence
   const [labelId, setLabelId] = useState("");
   const [resultTypeId, setResultTypeId] = useState("");
   const [templateId, setTemplateId] = useState("");
   const [assigneeId, setAssigneeId] = useState("");
   const [isPrivate, setIsPrivate] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Task avatar — "icon:<name>" or null. When null we let the
+  // server fall back to the selected label's icon. The user can
+  // override via the picker (and a manual override sticks even if
+  // they later change the label).
+  const [avatarOverride, setAvatarOverride] = useState<string | null>(null);
+  // Mirror of the picker's "default from label" state — when true
+  // we render a faded preview of the label's icon and submit
+  // avatarId: undefined so the server picks it up.
+  const labelPick = labels.find((l) => l.id === labelId);
+  const effectiveAvatar =
+    avatarOverride ?? (labelPick?.icon ? `icon:${labelPick.icon}` : null);
 
   const create = useMutation({
     mutationFn: createTask,
@@ -753,6 +640,7 @@ const CreateTaskForm = ({
       labelId: labelId || null,
       resultTypeId: resultTypeId || null,
       isPrivate,
+      ...(avatarOverride !== null ? { avatarId: avatarOverride } : {}),
       ...(assigneeId ? { assignees: [assigneeId] } : {}),
     };
     if (templateId) {
@@ -769,8 +657,19 @@ const CreateTaskForm = ({
     } else if (kind === "PERIODIC") {
       create.mutate({ ...common, kind, intervalDays });
     } else {
-      const due = Math.floor(Date.now() / 1000) + deadlineMins * 60;
-      create.mutate({ ...common, kind, deadlineHint: due });
+      // ONESHOT — `oneshotDate` is local-tz YYYY-MM-DD; convert to
+      // an end-of-day epoch so the deadline is "by midnight" of the
+      // chosen day. `oneshotCadence > 0` adds a reminder cadence.
+      const dt = new Date(`${oneshotDate}T23:59:59`);
+      if (Number.isNaN(dt.getTime())) return setError("invalid deadline date");
+      const due = Math.floor(dt.getTime() / 1000);
+      const payload: Parameters<typeof createTask>[0] = {
+        ...common,
+        kind,
+        deadlineHint: due,
+      };
+      if (oneshotCadence > 0) payload.intervalDays = oneshotCadence;
+      create.mutate(payload);
     }
   };
 
@@ -837,6 +736,19 @@ const CreateTaskForm = ({
           />
         )}
       </div>
+      <div className="mt-2">
+        <span className="cap mb-1 block">
+          Avatar{" "}
+          {avatarOverride === null && labelPick?.icon && (
+            <span className="opacity-60">(from label · {labelPick.displayName})</span>
+          )}
+        </span>
+        <TaskAvatarPicker
+          value={effectiveAvatar}
+          inheritedFromLabel={avatarOverride === null && !!labelPick?.icon}
+          onPick={setAvatarOverride}
+        />
+      </div>
       {!templateId && kind === "DAILY" && (
         <div className="mt-2">
           <span className="cap mb-1 block">
@@ -862,16 +774,28 @@ const CreateTaskForm = ({
         </label>
       )}
       {!templateId && kind === "ONESHOT" && (
-        <label className="mt-2 block text-xs">
-          <span className="cap mb-1 block">Remind in (minutes)</span>
-          <input
-            type="number"
-            min={1}
-            value={deadlineMins}
-            onChange={(e) => setDeadlineMins(parseInt(e.target.value, 10) || 1)}
-            className="w-24 rounded-md border border-line bg-paper px-3 py-2 text-sm focus:border-ink focus:outline-none"
-          />
-        </label>
+        <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
+          <label className="block">
+            <span className="cap mb-1 block">Deadline</span>
+            <input
+              type="date"
+              value={oneshotDate}
+              onChange={(e) => setOneshotDate(e.target.value)}
+              className="w-full rounded-md border border-line bg-paper px-3 py-2 text-sm focus:border-ink focus:outline-none"
+            />
+          </label>
+          <label className="block">
+            <span className="cap mb-1 block">Remind every (days)</span>
+            <input
+              type="number"
+              min={0}
+              value={oneshotCadence}
+              onChange={(e) => setOneshotCadence(Math.max(0, parseInt(e.target.value, 10) || 0))}
+              placeholder="0 = no reminders"
+              className="w-full rounded-md border border-line bg-paper px-3 py-2 text-sm focus:border-ink focus:outline-none"
+            />
+          </label>
+        </div>
       )}
       <label className="mt-2 flex items-center gap-2 text-xs text-ink-2">
         <input
@@ -934,7 +858,14 @@ const describeSchedule = (task: Task): string => {
   if (task.rule.kind === "PERIODIC") {
     return `every ${task.rule.intervalDays} day${task.rule.intervalDays === 1 ? "" : "s"}`;
   }
-  return "one-time";
+  // ONESHOT
+  const dueLabel = task.deadlineHint
+    ? `by ${new Date(task.deadlineHint * 1000).toLocaleDateString()}`
+    : "one-time";
+  if (task.rule.intervalDays && task.rule.intervalDays > 0) {
+    return `${dueLabel} · every ${task.rule.intervalDays}d`;
+  }
+  return dueLabel;
 };
 
 const TaskRow = ({
@@ -1140,6 +1071,281 @@ const TaskRow = ({
           disabled={deleting}
         >
           Delete
+        </Btn>
+      </div>
+    </div>
+  );
+};
+
+// ── Labels (per-home; system + custom) ────────────────────────────
+
+// Curated subset of the Icon barrel surfaced in the picker. We
+// don't expose every name — chevrons / trash / edit etc. are UI
+// chrome, not category icons.
+const LABEL_ICON_CHOICES: IconName[] = [
+  "paw", "dog", "cat", "broom", "home", "bowl",
+  "heart", "sparkle", "star", "plant", "flame", "bell",
+  "briefcase", "book", "run", "pill", "tooth", "clock",
+  "calendar", "check",
+];
+
+const IconPicker = ({
+  value,
+  onChange,
+}: {
+  value: string | null | undefined;
+  onChange: (next: string | null) => void;
+}) => (
+  <div className="grid grid-cols-10 gap-1">
+    <button
+      type="button"
+      title="No icon"
+      onClick={() => onChange(null)}
+      className={`flex h-7 w-7 items-center justify-center rounded-md border text-[10px] ${
+        value ? "border-line text-ink-3 hover:border-ink" : "border-ink bg-paper-3 text-ink"
+      }`}
+    >
+      —
+    </button>
+    {LABEL_ICON_CHOICES.map((name) => {
+      const active = value === name;
+      return (
+        <button
+          key={name}
+          type="button"
+          title={name}
+          onClick={() => onChange(name)}
+          className={`flex h-7 w-7 items-center justify-center rounded-md border ${
+            active
+              ? "border-ink bg-paper-3 text-ink"
+              : "border-line text-ink-3 hover:border-ink hover:text-ink"
+          }`}
+        >
+          <Icon name={name} size={16} />
+        </button>
+      );
+    })}
+  </div>
+);
+
+// Task-side avatar picker. Same icon-set surface as labels, plus a
+// "use label's icon" reset button. Photo upload + AI conversion is
+// stubbed: clicking the upload button surfaces a clear "coming soon"
+// message rather than silently uploading something we don't yet
+// know how to convert into an icon.
+const TaskAvatarPicker = ({
+  value,
+  inheritedFromLabel,
+  onPick,
+}: {
+  value: string | null;
+  inheritedFromLabel: boolean;
+  onPick: (next: string | null) => void;
+}) => {
+  return (
+    <div className="space-y-2">
+      <div className="grid grid-cols-10 gap-1">
+        <button
+          type="button"
+          title={inheritedFromLabel ? "Currently inherited from label" : "Use label's icon"}
+          onClick={() => onPick(null)}
+          className={`flex h-7 w-7 items-center justify-center rounded-md border text-[10px] ${
+            value === null
+              ? "border-ink bg-paper-3 text-ink"
+              : "border-line text-ink-3 hover:border-ink"
+          }`}
+        >
+          ↺
+        </button>
+        {LABEL_ICON_CHOICES.map((name) => {
+          const id = `icon:${name}`;
+          const active = value === id;
+          return (
+            <button
+              key={name}
+              type="button"
+              title={name}
+              onClick={() => onPick(id)}
+              className={`flex h-7 w-7 items-center justify-center rounded-md border ${
+                active
+                  ? "border-ink bg-paper-3 text-ink"
+                  : "border-line text-ink-3 hover:border-ink hover:text-ink"
+              } ${inheritedFromLabel && value === id ? "opacity-60" : ""}`}
+            >
+              <Icon name={name} size={16} />
+            </button>
+          );
+        })}
+      </div>
+      <p className="text-[11px] text-ink-3">
+        Upload a photo →{" "}
+        <span className="italic">
+          AI conversion to icon coming soon (Phase 7).
+        </span>
+      </p>
+    </div>
+  );
+};
+
+const LabelsBlock = ({
+  labels,
+  onChanged,
+}: {
+  labels: Label[];
+  onChanged: () => void;
+}) => {
+  const [adding, setAdding] = useState(false);
+  return (
+    <div>
+      {labels.length === 0 && <p className="cap py-2">No labels yet.</p>}
+      {labels.map((l) => (
+        <LabelRow key={l.id} label={l} onChanged={onChanged} />
+      ))}
+      {adding ? (
+        <LabelEditor
+          initial={{ displayName: "", color: "#7A7060", icon: null }}
+          isNew
+          onCancel={() => setAdding(false)}
+          onSave={async (patch) => {
+            await createLabel(patch);
+            setAdding(false);
+            onChanged();
+          }}
+        />
+      ) : (
+        <Btn
+          variant="outline"
+          size="pillSm"
+          className="mt-2"
+          onClick={() => setAdding(true)}
+        >
+          + Add label
+        </Btn>
+      )}
+    </div>
+  );
+};
+
+const LabelRow = ({
+  label,
+  onChanged,
+}: {
+  label: Label;
+  onChanged: () => void;
+}) => {
+  const [editing, setEditing] = useState(false);
+  const remove = useMutation({
+    mutationFn: () => deleteLabel(label.id),
+    onSuccess: onChanged,
+  });
+  if (editing) {
+    return (
+      <LabelEditor
+        initial={{
+          displayName: label.displayName,
+          color: label.color ?? "#7A7060",
+          icon: label.icon ?? null,
+        }}
+        isNew={false}
+        onCancel={() => setEditing(false)}
+        onSave={async (patch) => {
+          await updateLabel(label.id, patch);
+          setEditing(false);
+          onChanged();
+        }}
+      />
+    );
+  }
+  return (
+    <div className="flex items-center justify-between border-t border-line-soft py-2">
+      <div className="flex min-w-0 items-center gap-2">
+        <span
+          className="flex h-7 w-7 items-center justify-center rounded-full"
+          style={{ background: label.color ?? "#7A7060", color: "#fff" }}
+        >
+          {label.icon ? (
+            <Icon name={label.icon as IconName} size={14} color="#fff" />
+          ) : (
+            <span className="font-mono text-[10px]">
+              {label.displayName.slice(0, 2).toUpperCase()}
+            </span>
+          )}
+        </span>
+        <span className="truncate text-sm">{label.displayName}</span>
+        {label.system && <span className="cap">default</span>}
+      </div>
+      <div className="flex gap-1">
+        <Btn variant="ghost" size="pillSm" onClick={() => setEditing(true)}>
+          Edit
+        </Btn>
+        {!label.system && (
+          <Btn
+            variant="danger"
+            size="pillSm"
+            disabled={remove.isPending}
+            onClick={() => {
+              if (confirm(`Delete label "${label.displayName}"?`)) remove.mutate();
+            }}
+          >
+            Delete
+          </Btn>
+        )}
+      </div>
+    </div>
+  );
+};
+
+const LabelEditor = ({
+  initial,
+  isNew,
+  onCancel,
+  onSave,
+}: {
+  initial: { displayName: string; color: string; icon: string | null };
+  isNew: boolean;
+  onCancel: () => void;
+  onSave: (patch: { displayName: string; color: string; icon: string | null }) => Promise<void>;
+}) => {
+  const [name, setName] = useState(initial.displayName);
+  const [color, setColor] = useState(initial.color);
+  const [icon, setIcon] = useState<string | null>(initial.icon);
+  const [busy, setBusy] = useState(false);
+  const submit = async () => {
+    if (!name.trim()) return;
+    setBusy(true);
+    try {
+      await onSave({ displayName: name.trim(), color, icon });
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="border-t border-line-soft py-3">
+      <div className="flex flex-wrap items-center gap-2 text-xs">
+        <input
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="Display name"
+          className="flex-1 rounded-md border border-line bg-paper px-3 py-1.5 text-sm focus:border-ink focus:outline-none"
+        />
+        <input
+          type="color"
+          value={color}
+          onChange={(e) => setColor(e.target.value)}
+          aria-label="Label color"
+          className="h-7 w-9 cursor-pointer rounded-md border border-line"
+        />
+      </div>
+      <div className="mt-2">
+        <span className="cap mb-1 block">Icon</span>
+        <IconPicker value={icon} onChange={setIcon} />
+      </div>
+      <div className="mt-2 flex justify-end gap-2">
+        <Btn variant="ghost" size="pillSm" onClick={onCancel} disabled={busy}>
+          Cancel
+        </Btn>
+        <Btn variant="sage" size="pillSm" onClick={submit} disabled={busy || !name.trim()}>
+          {busy ? "…" : isNew ? "Add" : "Save"}
         </Btn>
       </div>
     </div>
