@@ -188,7 +188,12 @@ jobs:
   webapp-deploy:
     name: Webapp deploy
     needs: [changes, webapp-build]
-    if: github.event_name == 'push' && needs.changes.outputs.webapp == 'true'
+    # Same path-filter + dispatch escape hatch as backend-deploy
+    # (PR #11) — without this, manually-dispatched runs only deploy
+    # the backend half and the SPA falls out of sync.
+    if: |
+      (github.event_name == 'push' && needs.changes.outputs.webapp == 'true') ||
+      github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     defaults: { run: { working-directory: webapp } }
     steps:
