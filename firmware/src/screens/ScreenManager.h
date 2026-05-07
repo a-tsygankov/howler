@@ -3,8 +3,10 @@
 #include "../application/App.h"
 #include "../application/Ports.h"
 #include "../domain/LongPressArc.h"
+#include "../domain/RoundMenuModel.h"
 #include "../domain/Router.h"
 #include "components/LongPressArcWidget.h"
+#include "components/RoundMenu.h"
 
 #include <Arduino.h>
 #include <TFT_eSPI.h>
@@ -68,6 +70,20 @@ private:
     /// rebuilding the whole screen tree (which would flicker on
     /// every detent of the encoder). Cleared in teardownScreen().
     lv_obj_t* resultValueLabel_ = nullptr;
+
+    /// Round-menu state. Each screen that opts into the watch-style
+    /// carousel layout (Settings, UserPicker, Wi-Fi) populates the
+    /// model with items + an activate callback during build*; the
+    /// ScreenManager event router translates rotation/tap into
+    /// `menu_.onRotate()` / `menu_.fireActivate()`. The model lives
+    /// here so cursor doesn't reset when an inner screen pops back
+    /// to its caller.
+    domain::RoundMenuModel menuModel_;
+    components::RoundMenu  menu_;
+    /// True between build* and teardown for screens that registered
+    /// menu_ — ScreenManager::onEvent reads this to decide whether
+    /// to forward events to the menu.
+    bool menuActive_ = false;
 
     void rebuildScreen();
     void teardownScreen();

@@ -3,6 +3,7 @@
 // framework concerns. LVGL 9 API.
 
 #include "ScreenManager.h"
+#include "../application/PairCoordinator.h"
 
 namespace howler::screens {
 
@@ -118,10 +119,11 @@ void ScreenManager::teardownScreen() {
         lv_obj_del(root_);
         root_ = nullptr;
     }
-    // The arc widget cached a pointer into root_'s subtree; that
-    // memory is gone now, so clear before any next frame can read it.
+    // Cached pointers into root_'s subtree are now dangling. Clear
+    // them before any next frame can read them.
     longPressArcWidget_.reset();
     resultValueLabel_ = nullptr;
+    menuActive_ = false;
 }
 
 void ScreenManager::rebuildScreen() {
@@ -169,6 +171,16 @@ void ScreenManager::onEvent(int rotateDelta, bool tap, bool doubleTap, bool long
     if (rendered_ == ScreenId::Pair && (tap || longPress || rotateDelta != 0)) {
         router.push(ScreenId::Settings);
         return;
+    }
+
+    // ── RoundMenu screens (Settings, UserPicker, Wi-Fi list) ────
+    // Forward the rotary delta and tap to the menu component;
+    // long-press is handled per-screen below for any destructive
+    // confirm. Build* sets menuActive_ when this routing should
+    // engage.
+    if (menuActive_) {
+        if (rotateDelta != 0) menu_.onRotate(rotateDelta);
+        if (tap) menu_.fireActivate();
     }
 
     switch (rendered_) {
@@ -220,14 +232,27 @@ void ScreenManager::onEvent(int rotateDelta, bool tap, bool doubleTap, bool long
             break;
         }
         case ScreenId::UserPicker: {
-            // Per-button taps are handled by LVGL event callbacks
-            // in screen_pickers.cpp; long-press = "skip user
-            // attribution and commit", a one-press path for the
-            // common case where the user doesn't care who logged it.
+            // Tap activation handled by the round menu activate
+            // callback (forwarded earlier in this function via
+            // menuActive_). LongPress = quick "skip user, commit".
             if (longPress) {
                 app.pendingDone().userId = "";
                 app.commitPendingDone();
                 router.replaceRoot(ScreenId::Dashboard);
+            }
+            break;
+        }
+        case ScreenId::Settings: {
+            // Long-press on the Unpair item performs the destructive
+            // action. Round menu shows the accent border on items
+            // marked destructive so users can tell.
+            if (longPress) {
+                const auto* sel = menuModel_.selected();
+                if (sel && sel->id == "unpair") {
+                    application::PairCoordinator::clearToken(app.storage());
+                    router.replaceRoot(ScreenId::Pair);
+                    app.pair().start(app.deviceId());
+                }
             }
             break;
         }

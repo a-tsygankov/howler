@@ -67,10 +67,16 @@ export const dashboardRouter = new Hono<{
   Bindings: Bindings;
   Variables: AuthVars;
 }>()
-  .use("*", requireAuth(), requireUser())
+  // Accept BOTH user and device tokens. The device firmware needs
+  // the dashboard to render the on-screen task list — gating this
+  // behind requireUser() left the dial showing empty even when its
+  // device token was valid for the home. The auth info already
+  // carries homeId for both shapes; we read that directly instead
+  // of the narrowed `user` view.
+  .use("*", requireAuth())
 
   .get("/", async (c) => {
-    const homeId = c.get("user").homeId;
+    const homeId = c.get("auth").homeId;
     const nowSec = clock().nowSec();
 
     const { results: tasks } = await c.env.DB

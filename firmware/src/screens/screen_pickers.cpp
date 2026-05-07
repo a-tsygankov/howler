@@ -122,61 +122,44 @@ void ScreenManager::buildUserPicker() {
         auto* title = lv_label_create(root_);
         lv_label_set_text(title, "who did it?");
         lv_obj_set_style_text_color(title, Palette::ink2(), 0);
-        lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 16);
+        lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 12);
     }
 
-    // Round-cropped list. LVGL's lv_list is rectangular but on a
-    // 240x240 disc the corner items get clipped — the visible region
-    // (about 200×140 inset) is plenty for 3-4 entries plus the
-    // always-on-top "skip" row.
-    auto* list = lv_list_create(root_);
-    lv_obj_set_size(list, 200, 130);
-    lv_obj_align(list, LV_ALIGN_CENTER, 0, 6);
-    lv_obj_set_style_bg_color(list, Palette::paper2(), 0);
-    lv_obj_set_style_radius(list, 14, 0);
-    lv_obj_set_style_border_color(list, Palette::lineSoft(), 0);
-    lv_obj_set_style_border_width(list, 1, 0);
-    lv_obj_set_style_pad_all(list, 4, 0);
-
-    // First row is always "skip" so the user can commit without
-    // attribution in one tap. Long-press anywhere on the screen
-    // also commits-and-skips (handled in ScreenManager::onEvent).
-    auto* skip = lv_list_add_btn(list, LV_SYMBOL_MINUS, "skip");
-    if (group_) {
-        lv_group_add_obj(group_, skip);
-        lv_group_focus_obj(skip);
+    // Round-menu carousel: "skip" pinned first (so the most-common
+    // action is one tap from entry), then each home user. The id
+    // "skip" routes to a userId-empty commit; non-skip ids ARE the
+    // userId.
+    std::vector<domain::RoundMenuItem> items;
+    items.reserve(1 + app_.users().size());
+    {
+        domain::RoundMenuItem skip;
+        skip.id = "skip";
+        skip.title = "skip";
+        skip.subtitle = "no attribution";
+        items.push_back(std::move(skip));
     }
-    lv_obj_add_event_cb(skip, [](lv_event_t* e) {
-        if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
-        auto* mgr = static_cast<ScreenManager*>(lv_event_get_user_data(e));
-        mgr->app().pendingDone().userId.clear();
-        mgr->app().commitPendingDone();
-        mgr->app().router().replaceRoot(domain::ScreenId::Dashboard);
-    }, LV_EVENT_CLICKED, this);
-
     for (const auto& u : app_.users()) {
-        auto* btn = lv_list_add_btn(list, LV_SYMBOL_OK,
-            u.displayName.empty() ? u.id.c_str() : u.displayName.c_str());
-        if (group_) lv_group_add_obj(group_, btn);
-        auto* idCopy = static_cast<char*>(lv_malloc(u.id.size() + 1));
-        memcpy(idCopy, u.id.c_str(), u.id.size() + 1);
-        lv_obj_set_user_data(btn, idCopy);
-        lv_obj_add_event_cb(btn, [](lv_event_t* e) {
-            if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
-            auto* mgr = static_cast<ScreenManager*>(lv_event_get_user_data(e));
-            auto* btn = lv_event_get_target_obj(e);
-            const char* uid = static_cast<const char*>(lv_obj_get_user_data(btn));
-            mgr->app().pendingDone().userId = uid ? uid : "";
-            mgr->app().commitPendingDone();
-            mgr->app().router().replaceRoot(domain::ScreenId::Dashboard);
-        }, LV_EVENT_CLICKED, this);
+        domain::RoundMenuItem it;
+        it.id = u.id;
+        it.title = u.displayName.empty() ? u.id : u.displayName;
+        if (!u.login.empty()) it.subtitle = u.login;
+        items.push_back(std::move(it));
     }
+    menuModel_.replace(std::move(items));
+    menu_.build(root_, menuModel_);
+    menu_.refresh();
+    menu_.setOnActivate([this](const domain::RoundMenuItem& it) {
+        auto& app = this->app();
+        app.pendingDone().userId = (it.id == "skip") ? std::string{} : it.id;
+        app.commitPendingDone();
+        app.router().replaceRoot(domain::ScreenId::Dashboard);
+    });
+    menuActive_ = true;
 
-    // Footer: gestures legend.
     auto* hint = lv_label_create(root_);
-    lv_label_set_text(hint, "tap pick · hold skip · double back");
+    lv_label_set_text(hint, "rotate · tap pick · hold skip");
     lv_obj_set_style_text_color(hint, Palette::ink3(), 0);
-    lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -8);
+    lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -10);
 }
 
 }  // namespace howler::screens
