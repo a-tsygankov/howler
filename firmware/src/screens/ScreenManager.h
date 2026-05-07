@@ -2,7 +2,9 @@
 
 #include "../application/App.h"
 #include "../application/Ports.h"
+#include "../domain/LongPressArc.h"
 #include "../domain/Router.h"
+#include "components/LongPressArcWidget.h"
 
 #include <Arduino.h>
 #include <TFT_eSPI.h>
@@ -16,10 +18,13 @@ namespace howler::screens {
 /// — they call `app.router().push(…)` and let the manager rebuild on
 /// the next frame.
 ///
-/// LVGL's encoder group ties tab order into rotary movement. Each
-/// screen registers its focusable widgets into `group_` on entry and
-/// clears it on exit; this lets the framework handle "which widget
-/// has focus" without per-screen bookkeeping.
+/// Interaction model (matches IInputDevice docs):
+///   Press      — tap → enter / activate
+///   DoubleTap  — quick double click → back / cancel
+///   LongPress  — held past threshold → confirm; the perimeter arc
+///                fills as the finger / knob is held so the user has
+///                a visual cue
+///   Rotate     — knob CW/CCW or touch swipe
 class ScreenManager {
 public:
     ScreenManager(application::App& app, application::IInputDevice& input);
@@ -37,6 +42,12 @@ public:
     /// the lambdas isn't possible).
     application::App& app() { return app_; }
 
+    /// `screen_dashboard.cpp` reads this to format "in 14m" / "due
+    /// 2h" labels relative to the server's idea of "now" (delivered
+    /// alongside the dashboard payload). 0 means "we haven't synced
+    /// yet" — screens fall back to a static "scheduled" label.
+    int64_t lastServerNowSec() const { return lastServerNowSec_; }
+
 private:
     application::App& app_;
     application::IInputDevice& input_;
@@ -44,15 +55,23 @@ private:
     lv_obj_t* root_ = nullptr;
     lv_group_t* group_ = nullptr;
 
-    // ── per-screen reactive state (kept on the manager so it survives
-    //    the screen rebuild on dashboard refresh) ──
-    int rotaryDeltaSinceFrame_ = 0;
-    bool pressPending_ = false;
-    bool longPressPending_ = false;
+    /// Owned long-press visual state. The arc widget is rebuilt by
+    /// each screen that wants to show it (it lives inside that
+    /// screen's LVGL tree); the model is global so the fill survives
+    /// the brief reconstruction window.
+    domain::LongPressArc longPressArc_;
+    components::LongPressArcWidget longPressArcWidget_;
+    int64_t lastServerNowSec_ = 0;
+
+    /// Cached pointer to the ResultPicker's big number label so the
+    /// rotation-handler in onEvent can refresh it in place without
+    /// rebuilding the whole screen tree (which would flicker on
+    /// every detent of the encoder). Cleared in teardownScreen().
+    lv_obj_t* resultValueLabel_ = nullptr;
 
     void rebuildScreen();
     void teardownScreen();
-    void pollAndDispatch();
+    void pollAndDispatch(uint32_t millisNow);
 
     // Per-screen builders defined in their respective .cpp files.
     void buildBoot();
@@ -70,9 +89,9 @@ private:
     void buildLoginQr();
     void buildOfflineNotice();
 
-    // Per-screen event dispatch — called with at most one of:
-    // {rotateDelta != 0, press, longPress}.
-    void onEvent(int rotateDelta, bool press, bool longPress);
+    // Per-screen event dispatch — at most one of these is non-zero
+    // per call: rotateDelta != 0, tap, doubleTap, longPress.
+    void onEvent(int rotateDelta, bool tap, bool doubleTap, bool longPress);
 };
 
 }  // namespace howler::screens

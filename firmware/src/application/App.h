@@ -11,6 +11,7 @@
 #include "../domain/DashboardModel.h"
 #include "../domain/MarkDoneQueue.h"
 #include "../domain/OccurrenceList.h"
+#include "../domain/ResultEditModel.h"
 #include "../domain/ResultType.h"
 #include "../domain/Router.h"
 #include "../domain/Settings.h"
@@ -55,6 +56,10 @@ public:
     SyncService& sync() { return sync_; }
     MarkDoneService& markDone() { return markDoneSvc_; }
     PairCoordinator& pair() { return pairCoord_; }
+    /// Server's notion of "now" at the most recent dashboard fetch.
+    /// 0 until the first sync round succeeds. Screens render relative
+    /// time labels ("in 14 m") from this rather than the local clock.
+    int64_t serverNowSec() const { return watermark_.serverNowSec; }
     const std::string& deviceId() const { return deviceId_; }
     IStorage& storage() { return storage_; }
     IWifi& wifi() { return wifi_; }
@@ -82,6 +87,32 @@ public:
     PendingDone& pendingDone() { return pendingDone_; }
     const PendingDone& pendingDone() const { return pendingDone_; }
     void clearPendingDone() { pendingDone_ = {}; }
+
+    /// In-progress numeric result editor for the result picker. Mode
+    /// transitions: `prepareResultEdit()` seeds it from the selected
+    /// task's result type + last-known execution value, then the
+    /// screen drives `nudge()` from rotation events; `commit()` is
+    /// implicit when the user taps to advance. Pure value type;
+    /// safe to keep on the App across screen rebuilds.
+    howler::domain::ResultEditModel& resultEdit() { return resultEdit_; }
+
+    /// Look up the result type matching `id` from the synced list.
+    /// Returns nullptr if not found (defensive — should never fire
+    /// if the dashboard payload was consistent with /api/task-results).
+    const howler::domain::ResultType* findResultType(const std::string& id) const;
+
+    /// Snapshot of the last execution value for a given task, used to
+    /// pre-seed the result picker. Read from the per-task last-value
+    /// cache that SyncService populates alongside the dashboard fetch
+    /// (we use the dashboard's own last-execution lookup; if it isn't
+    /// available the picker falls back to the type's default/min).
+    bool lastValueForTask(const howler::domain::TaskId& id, double& outValue) const;
+
+    /// Cache the last numeric result for `taskId`. Called after every
+    /// successful commitPendingDone so the next picker pre-fills with
+    /// the value the user just entered. Bounded to ~32 entries; older
+    /// entries fall off so this can't grow unbounded.
+    void rememberLastValue(const howler::domain::TaskId& id, double value);
 
     /// Commit the accumulated pendingDone — enqueues + drops the
     /// dashboard row optimistically. Caller decides what to do with
@@ -111,6 +142,17 @@ private:
     SyncService sync_;
     MarkDoneService markDoneSvc_;
     PairCoordinator pairCoord_;
+
+    howler::domain::ResultEditModel resultEdit_;
+
+    /// Bounded cache of last entered values per task. Pairs of
+    /// (taskHex, value); flush oldest on overflow.
+    struct LastValue {
+        std::string taskHex;
+        double      value;
+    };
+    static constexpr size_t kLastValueCap = 32;
+    std::vector<LastValue> lastValues_;
 
     std::string deviceId_;
 

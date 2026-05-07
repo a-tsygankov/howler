@@ -40,6 +40,28 @@ void test_snap_clamps_to_range();
 void test_snap_aligns_to_step();
 void test_snap_with_offset_min();
 
+// test_result_edit_model.cpp
+void test_result_edit_seeds_from_last_when_useLastValue_true();
+void test_result_edit_falls_through_to_default_when_no_last();
+void test_result_edit_falls_through_to_min_when_no_default();
+void test_result_edit_useLast_false_ignores_lastValue();
+void test_result_edit_nudge_clamps_to_range();
+void test_result_edit_nudge_aligns_to_step();
+void test_result_edit_format_decimals_from_step();
+void test_result_edit_commit_marks();
+
+// test_round_menu_model.cpp
+void test_round_menu_replace_resets_cursor_when_oob();
+void test_round_menu_replace_preserving_cursor_keeps_id();
+void test_round_menu_move_cursor_wraps();
+void test_round_menu_remove_by_id_keeps_cursor_valid();
+void test_round_menu_empty_handles_gracefully();
+
+// test_long_press_arc.cpp
+void test_arc_idle_when_not_held();
+void test_arc_charges_then_fires();
+void test_arc_releases_before_threshold_resets();
+
 extern "C" void setUp(void) {}
 extern "C" void tearDown(void) {}
 
@@ -73,6 +95,25 @@ int main(int, char**) {
     RUN_TEST(test_snap_clamps_to_range);
     RUN_TEST(test_snap_aligns_to_step);
     RUN_TEST(test_snap_with_offset_min);
+
+    RUN_TEST(test_result_edit_seeds_from_last_when_useLastValue_true);
+    RUN_TEST(test_result_edit_falls_through_to_default_when_no_last);
+    RUN_TEST(test_result_edit_falls_through_to_min_when_no_default);
+    RUN_TEST(test_result_edit_useLast_false_ignores_lastValue);
+    RUN_TEST(test_result_edit_nudge_clamps_to_range);
+    RUN_TEST(test_result_edit_nudge_aligns_to_step);
+    RUN_TEST(test_result_edit_format_decimals_from_step);
+    RUN_TEST(test_result_edit_commit_marks);
+
+    RUN_TEST(test_round_menu_replace_resets_cursor_when_oob);
+    RUN_TEST(test_round_menu_replace_preserving_cursor_keeps_id);
+    RUN_TEST(test_round_menu_move_cursor_wraps);
+    RUN_TEST(test_round_menu_remove_by_id_keeps_cursor_valid);
+    RUN_TEST(test_round_menu_empty_handles_gracefully);
+
+    RUN_TEST(test_arc_idle_when_not_held);
+    RUN_TEST(test_arc_charges_then_fires);
+    RUN_TEST(test_arc_releases_before_threshold_resets);
 
     return UNITY_END();
 }

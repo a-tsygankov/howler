@@ -36,6 +36,7 @@ void SyncService::runRound() {
         const auto r = net_.fetchDashboard(items, serverNow);
         if (r.isOk()) {
             watermark_.dashboard = maxUpdatedAt(items);
+            if (serverNow > 0) watermark_.serverNowSec = serverNow;
             dashboard_.replace(std::move(items));
             anyOk = true;
         }

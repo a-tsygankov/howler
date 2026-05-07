@@ -104,6 +104,7 @@ void App::commitPendingDone() {
     if (p.taskId.empty()) return;
     markDoneSvc_.enqueue(p.taskId, p.occurrenceId, p.userId,
                          p.hasResultValue, p.resultValue);
+    if (p.hasResultValue) rememberLastValue(p.taskId, p.resultValue);
     // Optimistic UI: remove the row from the dashboard immediately
     // so the user sees feedback even if the network is offline.
     if (!p.occurrenceId.empty()) {
@@ -113,6 +114,39 @@ void App::commitPendingDone() {
     }
     sync_.requestSync();
     clearPendingDone();
+}
+
+const howler::domain::ResultType*
+App::findResultType(const std::string& id) const {
+    if (id.empty()) return nullptr;
+    for (const auto& t : resultTypes_) {
+        if (t.id == id) return &t;
+    }
+    return nullptr;
+}
+
+bool App::lastValueForTask(const howler::domain::TaskId& id,
+                           double& outValue) const {
+    for (const auto& lv : lastValues_) {
+        if (lv.taskHex == id.hex()) {
+            outValue = lv.value;
+            return true;
+        }
+    }
+    return false;
+}
+
+void App::rememberLastValue(const howler::domain::TaskId& id, double value) {
+    for (auto& lv : lastValues_) {
+        if (lv.taskHex == id.hex()) {
+            lv.value = value;
+            return;
+        }
+    }
+    if (lastValues_.size() >= kLastValueCap) {
+        lastValues_.erase(lastValues_.begin());
+    }
+    lastValues_.push_back({id.hex(), value});
 }
 
 void App::restoreSettings() {
