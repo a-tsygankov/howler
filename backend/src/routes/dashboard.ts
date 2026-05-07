@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import type { Bindings } from "../env.ts";
 import { clock } from "../clock.ts";
 import { computeUrgency, type UrgencyResult } from "../services/urgency.ts";
-import { requireAuth, requireUser, type AuthVars } from "../middleware/auth.ts";
+import { markDeviceAlive, requireAuth, type AuthVars } from "../middleware/auth.ts";
 import type { ScheduleRule } from "../shared/schemas.ts";
 
 // Unified dashboard endpoint. Every client (web, dial, future
@@ -72,8 +72,10 @@ export const dashboardRouter = new Hono<{
   // behind requireUser() left the dial showing empty even when its
   // device token was valid for the home. The auth info already
   // carries homeId for both shapes; we read that directly instead
-  // of the narrowed `user` view.
-  .use("*", requireAuth())
+  // of the narrowed `user` view. `markDeviceAlive` records that
+  // the dial reached the server so the webapp Settings page can
+  // show "last sync N min ago" without an extra heartbeat endpoint.
+  .use("*", requireAuth(), markDeviceAlive())
 
   .get("/", async (c) => {
     const homeId = c.get("auth").homeId;

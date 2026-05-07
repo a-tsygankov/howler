@@ -85,10 +85,20 @@ application::IInputDevice::Event Cst816Touch::poll() {
         longTouchFired_ = false;
         int x = -1, y = -1;
         if (readTouchPos(x, y)) {
+            lastTouchX_  = x;
+            lastTouchY_  = y;
+            touchStartX_ = x;
+            touchStartY_ = y;
+        }
+    } else if (touching && wasTouching_) {
+        // Update last-known position so swipe classification at
+        // release sees the most recent finger location, not the
+        // initial press.
+        int x = -1, y = -1;
+        if (readTouchPos(x, y)) {
             lastTouchX_ = x;
             lastTouchY_ = y;
         }
-    } else if (touching && wasTouching_) {
         // Held past threshold — fire LongPress eagerly while finger
         // is still down so the UI's arc-fill animation can react.
         if (!longTouchFired_ && (now - touchStartMs_) >= kLongTouchMs) {
@@ -98,8 +108,27 @@ application::IInputDevice::Event Cst816Touch::poll() {
         }
     } else if (!touching && wasTouching_) {
         wasTouching_ = false;
+        // Classify: Swipe (vertical travel exceeds threshold), or
+        // tap-class (existing logic). Swipe wins over LongPress only
+        // if LongPress hasn't fired yet — the lift after a confirmed
+        // long-press is silent regardless of finger travel.
+        const int dy = lastTouchY_ - touchStartY_;
+        const int dx = lastTouchX_ - touchStartX_;
+        const int absDy = dy < 0 ? -dy : dy;
+        const int absDx = dx < 0 ? -dx : dx;
+        const bool isVerticalSwipe =
+            !longTouchFired_ &&
+            touchStartY_ >= 0 &&
+            absDy >= kSwipeMinDy &&
+            absDx <= absDy * kSwipeMaxDxOverDy;
         if (longTouchFired_) {
             // already fired LongPress mid-hold; release is a no-op
+        } else if (isVerticalSwipe) {
+            // Touch coords on this panel: Y grows DOWNWARD, so a
+            // finger that moved toward the top of the screen has
+            // touchStartY_ > lastTouchY_  → dy < 0  → SwipeUp.
+            enqueue(dy < 0 ? Event::SwipeUp : Event::SwipeDown);
+            pendingTap_ = false;
         } else if (pendingTap_ && (now - lastTapEndMs_) < kDoubleTapMs) {
             enqueue(Event::DoubleTap);
             pendingTap_ = false;
@@ -108,6 +137,10 @@ application::IInputDevice::Event Cst816Touch::poll() {
             pendingTap_   = true;
             lastTapEndMs_ = now;
         }
+        // Reset start coords so a stale value doesn't leak into the
+        // next gesture if the I²C read at touch-down ever fails.
+        touchStartX_ = -1;
+        touchStartY_ = -1;
     }
 
     // Pending single tap that timed out → emit Press.

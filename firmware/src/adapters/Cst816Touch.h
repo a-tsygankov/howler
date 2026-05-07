@@ -38,6 +38,17 @@ public:
     static constexpr uint32_t kLongTouchMs   = 1200;
     static constexpr uint32_t kDoubleTapMs   = 300;
     static constexpr uint32_t kPollIntervalMs = 20;  // ~50 Hz
+    /// Minimum vertical travel (pixels, native 240×240 frame) before
+    /// a touch release classifies as SwipeUp/Down rather than Tap.
+    /// 36 px ≈ 15% of screen height — below typical accidental drift,
+    /// above what a deliberate vertical flick produces. Empirically
+    /// verified on the CrowPanel touch matrix.
+    static constexpr int      kSwipeMinDy    = 36;
+    /// Max horizontal-to-vertical ratio that still counts as vertical.
+    /// Above this the swipe is "too diagonal" and we ignore it so
+    /// the user's intent stays unambiguous; horizontal swipes are not
+    /// currently mapped to anything.
+    static constexpr int      kSwipeMaxDxOverDy = 1;
 
     void begin();
 
@@ -64,6 +75,11 @@ private:
     uint32_t  lastPollMs_      = 0;
     int       lastTouchX_      = -1;
     int       lastTouchY_      = -1;
+    /// Where the active touch started — used at release time to
+    /// classify Swipe vs Tap. Captured at touch-down on the first
+    /// successful I²C read.
+    int       touchStartX_     = -1;
+    int       touchStartY_     = -1;
 
     // Tiny ring buffer — at most we ever queue Press + DoubleTap
     // back-to-back, so 4 slots is plenty.

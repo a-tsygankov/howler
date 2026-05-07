@@ -57,3 +57,36 @@ export const requireDevice = (): MiddlewareHandler<{
     return undefined;
   };
 };
+
+/// Tiny middleware that bumps `devices.last_seen_at = now()` for any
+/// authenticated request bearing a device token. Fire-and-forget via
+/// executionCtx.waitUntil so we don't block the response — a one-row
+/// UPDATE on the devices table is cheap, but a request can hit the
+/// dashboard endpoint dozens of times an hour and we want zero
+/// latency cost. Webapp Settings reads `last_seen_at` to render the
+/// "device alive ___ ago" indicator.
+import { clock } from "../clock.ts";
+export const markDeviceAlive = (): MiddlewareHandler<{
+  Bindings: Bindings;
+  Variables: AuthVars;
+}> => {
+  return async (c, next) => {
+    const info = c.get("auth");
+    if (info && info.type === "device") {
+      const deviceId = info.deviceId;
+      const nowSec = clock().nowSec();
+      const p = c.env.DB
+        .prepare("UPDATE devices SET last_seen_at = ? WHERE id = ?")
+        .bind(nowSec, deviceId)
+        .run();
+      if (c.executionCtx && typeof c.executionCtx.waitUntil === "function") {
+        c.executionCtx.waitUntil(p);
+      } else {
+        // Tests don't have executionCtx; await is fine in that path.
+        await p.catch(() => {});
+      }
+    }
+    await next();
+    return undefined;
+  };
+};

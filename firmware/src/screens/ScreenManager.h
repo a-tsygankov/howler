@@ -105,9 +105,22 @@ private:
     void buildLoginQr();
     void buildOfflineNotice();
 
-    // Per-screen event dispatch — at most one of these is non-zero
-    // per call: rotateDelta != 0, tap, doubleTap, longPress.
-    void onEvent(int rotateDelta, bool tap, bool doubleTap, bool longPress);
+    // Per-screen event dispatch. `vertSwipe` is +1 for SwipeUp (next
+    // main screen / scroll forward) and -1 for SwipeDown (previous
+    // main screen / scroll back). At root level it cycles through
+    // mainScreenAt() entries; inside menu screens it nudges the
+    // cursor like a knob detent so touch-only users have parity
+    // with the rotary.
+    void onEvent(int rotateDelta, bool tap, bool doubleTap, bool longPress,
+                 int vertSwipe);
+
+    /// The list of "main" screens the user can swipe between at
+    /// root level. Order = the swipe-up cycle direction. Pair is
+    /// excluded; it's a setup screen, not a main one.
+    static constexpr domain::ScreenId kMainScreens[] = {
+        domain::ScreenId::Dashboard,
+        domain::ScreenId::TaskList,
+    };
 };
 
 }  // namespace howler::screens

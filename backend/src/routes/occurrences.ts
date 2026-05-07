@@ -8,14 +8,14 @@ import {
   listPendingForHome,
 } from "../services/occurrence-service.ts";
 import { asDeviceId, asHomeId } from "../domain/ids.ts";
-import { requireAuth, type AuthVars } from "../middleware/auth.ts";
+import { markDeviceAlive, requireAuth, type AuthVars } from "../middleware/auth.ts";
 import { AckOccurrenceSchema } from "../shared/schemas.ts";
 
 export const occurrencesRouter = new Hono<{
   Bindings: Bindings;
   Variables: AuthVars;
 }>()
-  .use("*", requireAuth())
+  .use("*", requireAuth(), markDeviceAlive())
 
   .get("/pending", async (c) => {
     const info = c.get("auth");
