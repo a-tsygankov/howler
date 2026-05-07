@@ -13,6 +13,9 @@ interface ScheduleRow {
   next_fire_at: number | null;
   created_at: number;
   updated_at: number;
+  // Added by migration 0008 — fall back to updated_at when the
+  // column is missing so a rolled-back deploy doesn't crash on read.
+  rule_modified_at: number | null;
   is_deleted: number;
 }
 
@@ -25,6 +28,9 @@ const rowToSchedule = (r: ScheduleRow): Schedule => ({
   nextFireAt: r.next_fire_at,
   createdAt: r.created_at,
   updatedAt: r.updated_at,
+  ruleModifiedAt: r.rule_modified_at && r.rule_modified_at > 0
+    ? r.rule_modified_at
+    : r.updated_at,
   isDeleted: r.is_deleted === 1,
 });
 
@@ -73,8 +79,8 @@ export class D1ScheduleRepository implements IRepository<Schedule, ScheduleId> {
         .prepare(
           `INSERT INTO schedules
              (id, task_id, template_id, rule_json, tz, next_fire_at,
-              created_at, updated_at, is_deleted)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              created_at, updated_at, rule_modified_at, is_deleted)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .bind(
           s.id,
@@ -85,6 +91,7 @@ export class D1ScheduleRepository implements IRepository<Schedule, ScheduleId> {
           s.nextFireAt,
           s.createdAt,
           s.updatedAt,
+          s.ruleModifiedAt,
           s.isDeleted ? 1 : 0,
         ),
     );
@@ -97,7 +104,7 @@ export class D1ScheduleRepository implements IRepository<Schedule, ScheduleId> {
         .prepare(
           `UPDATE schedules SET
              template_id = ?, rule_json = ?, tz = ?, next_fire_at = ?,
-             updated_at = ?, is_deleted = ?
+             updated_at = ?, rule_modified_at = ?, is_deleted = ?
            WHERE id = ?`,
         )
         .bind(
@@ -106,6 +113,7 @@ export class D1ScheduleRepository implements IRepository<Schedule, ScheduleId> {
           s.tz,
           s.nextFireAt,
           s.updatedAt,
+          s.ruleModifiedAt,
           s.isDeleted ? 1 : 0,
           s.id,
         ),

@@ -121,6 +121,10 @@ export const createTask = async (
       nextFireAt,
       createdAt: nowMs,
       updatedAt: nowMs,
+      // First creation IS a user-driven rule mutation, so this anchor
+      // points at "now" and the urgency calc treats every prior
+      // deadline as not-yet-due.
+      ruleModifiedAt: nowMs,
       isDeleted: false,
     };
     await tx.tasks.add(task);
@@ -225,6 +229,8 @@ export const updateTask = async (
           rule,
           nextFireAt,
           updatedAt: nowMs,
+          // Rule edit is a user-driven reset of the rhythm.
+          ruleModifiedAt: nowMs,
         });
       }
     }
