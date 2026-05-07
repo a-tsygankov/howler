@@ -88,26 +88,48 @@ export const dashboardRouter = new Hono<{
     const taskIds = tasks.map((t) => t.id);
     const placeholders = taskIds.map(() => "?").join(",");
 
-    // Pull schedules + most-recent execution per task in two batched
-    // queries so we don't fan out N+1 reads as the home grows.
-    const [{ results: scheduleRows }, { results: executionRows }] =
-      await Promise.all([
-        c.env.DB
-          .prepare(
-            `SELECT task_id, rule_json, updated_at FROM schedules
-             WHERE task_id IN (${placeholders}) AND is_deleted = 0`,
-          )
-          .bind(...taskIds)
-          .all<ScheduleRow>(),
-        c.env.DB
-          .prepare(
-            `SELECT task_id, MAX(ts) AS ts FROM task_executions
-             WHERE task_id IN (${placeholders})
-             GROUP BY task_id`,
-          )
-          .bind(...taskIds)
-          .all<ExecutionRow>(),
-      ]);
+    // Pull schedules + most-recent execution + every label icon
+    // referenced by these tasks in three batched queries so the
+    // home stays N+1-free. Labels lookup feeds the avatar fallback
+    // for tasks that have a label but null avatar_id.
+    const labelIds = [
+      ...new Set(tasks.map((t) => t.label_id).filter((x): x is string => !!x)),
+    ];
+    const [
+      { results: scheduleRows },
+      { results: executionRows },
+      labelIconRows,
+    ] = await Promise.all([
+      c.env.DB
+        .prepare(
+          `SELECT task_id, rule_json, updated_at FROM schedules
+           WHERE task_id IN (${placeholders}) AND is_deleted = 0`,
+        )
+        .bind(...taskIds)
+        .all<ScheduleRow>(),
+      c.env.DB
+        .prepare(
+          `SELECT task_id, MAX(ts) AS ts FROM task_executions
+           WHERE task_id IN (${placeholders})
+           GROUP BY task_id`,
+        )
+        .bind(...taskIds)
+        .all<ExecutionRow>(),
+      labelIds.length === 0
+        ? Promise.resolve({ results: [] as Array<{ id: string; icon: string | null }> })
+        : c.env.DB
+            .prepare(
+              `SELECT id, icon FROM labels
+               WHERE id IN (${labelIds.map(() => "?").join(",")})
+                 AND is_deleted = 0`,
+            )
+            .bind(...labelIds)
+            .all<{ id: string; icon: string | null }>(),
+    ]);
+    const labelIconById = new Map<string, string>();
+    for (const l of labelIconRows.results) {
+      if (l.icon) labelIconById.set(l.id, l.icon);
+    }
 
     const scheduleByTask = new Map<
       string,
@@ -146,7 +168,15 @@ export const dashboardRouter = new Hono<{
         nowSec,
       });
       if (urg.urgency === "HIDDEN") continue;
-      items.push({ task: taskDto(t), rule: sched.rule, urgency: urg });
+      // Effective avatar: explicit avatar_id wins; otherwise fall
+      // back to the label's icon under the "icon:" prefix so tasks
+      // that just have a label still get an icon on the dashboard.
+      const dto = taskDto(t);
+      if (!dto.avatarId && t.label_id) {
+        const ico = labelIconById.get(t.label_id);
+        if (ico) dto.avatarId = `icon:${ico}`;
+      }
+      items.push({ task: dto, rule: sched.rule, urgency: urg });
     }
 
     // Sort URGENT before NON_URGENT, then by next-deadline ascending
