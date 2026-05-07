@@ -70,7 +70,14 @@ jobs:
   backend-deploy:
     name: Backend deploy
     needs: [changes, backend-test]
-    if: github.event_name == 'push' && needs.changes.outputs.backend == 'true'
+    # Path filter handles the common case (push to main with
+    # backend/** changes). workflow_dispatch is the manual escape
+    # hatch for when migrations land via a workflow-only PR or a
+    # prior deploy failed before applying them — see PR #10 / #11
+    # context for the case that motivated this.
+    if: |
+      (github.event_name == 'push' && needs.changes.outputs.backend == 'true') ||
+      github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     defaults: { run: { working-directory: backend } }
     steps:
