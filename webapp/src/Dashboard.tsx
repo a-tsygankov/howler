@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -43,6 +43,13 @@ import {
 import { HowlerAvatar } from "./components/HowlerAvatar.tsx";
 import { Icon, type IconName } from "./components/Icon.tsx";
 import { Btn } from "./components/Buttons.tsx";
+import { Sheet } from "./components/Sheet.tsx";
+import { ResultSlider } from "./components/ResultSlider.tsx";
+import {
+  completeTask,
+  flushQueue,
+  listQueue,
+} from "./lib/executionQueue.ts";
 import {
   DailyTimePicker,
   getLocalTimezone,
@@ -114,6 +121,29 @@ export const Dashboard = ({ session, onLogout }: Props) => {
   const urgent = dashboardItems.filter((it) => it.urgency === "URGENT");
   const nonUrgent = dashboardItems.filter((it) => it.urgency === "NON_URGENT");
 
+  // Drain any queued executions (from a prior session that lost
+  // network mid-submit) on mount, then every 60 s while the
+  // dashboard stays open. Successful flushes invalidate the
+  // dashboard query so the row's missed/urgent state updates.
+  useEffect(() => {
+    let cancelled = false;
+    const tick = async () => {
+      const synced = await flushQueue();
+      if (!cancelled && synced > 0) {
+        void qc.invalidateQueries({ queryKey: ["dashboard"] });
+        void qc.invalidateQueries({ queryKey: ["task-executions"] });
+      }
+    };
+    void tick();
+    const id = window.setInterval(tick, 60_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [qc]);
+
+  const [completeTarget, setCompleteTarget] = useState<DashboardItem | null>(null);
+
   return (
     <main data-testid="dashboard" className="paper-grain mx-auto min-h-screen max-w-md lg:max-w-2xl">
       <Header
@@ -137,6 +167,7 @@ export const Dashboard = ({ session, onLogout }: Props) => {
           items={urgent}
           labels={labels.data ?? []}
           serverNow={dashboard.data?.now}
+          onMarkDone={setCompleteTarget}
         />
       )}
       {nonUrgent.length > 0 && (
@@ -145,6 +176,7 @@ export const Dashboard = ({ session, onLogout }: Props) => {
           items={nonUrgent}
           labels={labels.data ?? []}
           serverNow={dashboard.data?.now}
+          onMarkDone={setCompleteTarget}
         />
       )}
       {dashboard.isLoading && <Empty>Loading…</Empty>}
@@ -230,6 +262,18 @@ export const Dashboard = ({ session, onLogout }: Props) => {
         />
       </Section>
 
+      {completeTarget && (
+        <CompleteTaskSheet
+          item={completeTarget}
+          taskResults={taskResults.data ?? []}
+          onCancel={() => setCompleteTarget(null)}
+          onCompleted={() => {
+            setCompleteTarget(null);
+            void qc.invalidateQueries({ queryKey: ["dashboard"] });
+            void qc.invalidateQueries({ queryKey: ["task-executions"] });
+          }}
+        />
+      )}
     </main>
   );
 };
@@ -442,11 +486,13 @@ const UrgencyGroup = ({
   items,
   labels,
   serverNow,
+  onMarkDone,
 }: {
   title: string;
   items: DashboardItem[];
   labels: Label[];
   serverNow: number | undefined;
+  onMarkDone: (item: DashboardItem) => void;
 }) => {
   const labelById = new Map(labels.map((l) => [l.id, l]));
   return (
@@ -463,6 +509,7 @@ const UrgencyGroup = ({
           item={it}
           label={it.task.labelId ? labelById.get(it.task.labelId) : undefined}
           serverNow={serverNow}
+          onMarkDone={() => onMarkDone(it)}
         />
       ))}
     </section>
@@ -473,39 +520,49 @@ const UrgentTaskRow = ({
   item,
   label,
   serverNow,
+  onMarkDone,
 }: {
   item: DashboardItem;
   label: Label | undefined;
   serverNow: number | undefined;
+  onMarkDone: () => void;
 }) => {
-  const { task, urgency, isMissed, prevDeadline, nextDeadline, secondsUntilNext } = item;
+  const { task, urgency, isMissed } = item;
   const ringUrgency = isMissed ? 3 : urgency === "URGENT" ? 2 : 1;
   return (
-    <Link
-      to={`/tasks/${task.id}`}
-      className="flex items-center gap-3 border-t border-line-soft px-5 py-2.5 hover:bg-paper-2"
-    >
-      <HowlerAvatar
-        avatarId={task.avatarId}
-        seed={task.id}
-        initials={task.title.slice(0, 2).toUpperCase()}
-        urgency={ringUrgency}
-        size={38}
-      />
-      <div className="min-w-0 flex-1">
-        <div className="truncate text-[15px] font-medium">{task.title}</div>
-        <div className="mt-0.5 flex items-center gap-2 text-xs text-ink-3">
-          <span className="font-mono">
-            {fmtDeadline(item, serverNow)}
-          </span>
-          {label && (
-            <span style={{ color: label.color ?? "#7A7060" }}>
-              · {label.displayName}
+    <div className="flex items-center gap-3 border-t border-line-soft px-5 py-2.5 hover:bg-paper-2">
+      <Link to={`/tasks/${task.id}`} className="flex min-w-0 flex-1 items-center gap-3">
+        <HowlerAvatar
+          avatarId={task.avatarId}
+          seed={task.id}
+          initials={task.title.slice(0, 2).toUpperCase()}
+          urgency={ringUrgency}
+          size={38}
+        />
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-[15px] font-medium">{task.title}</div>
+          <div className="mt-0.5 flex items-center gap-2 text-xs text-ink-3">
+            <span className="font-mono">
+              {fmtDeadline(item, serverNow)}
             </span>
-          )}
+            {label && (
+              <span style={{ color: label.color ?? "#7A7060" }}>
+                · {label.displayName}
+              </span>
+            )}
+          </div>
         </div>
-      </div>
-    </Link>
+      </Link>
+      <button
+        type="button"
+        onClick={onMarkDone}
+        aria-label={`Mark "${task.title}" done`}
+        title="Mark done"
+        className="flex h-8 w-8 items-center justify-center rounded-full border border-line text-ink-3 hover:border-ink hover:text-ink"
+      >
+        <Icon name="check" size={16} />
+      </button>
+    </div>
   );
 };
 
@@ -570,6 +627,102 @@ const Section = ({
     {children}
   </section>
 );
+
+// ── Complete task sheet (offline-queued) ──────────────────────────
+
+const CompleteTaskSheet = ({
+  item,
+  taskResults,
+  onCancel,
+  onCompleted,
+}: {
+  item: DashboardItem;
+  taskResults: TaskResultDef[];
+  onCancel: () => void;
+  onCompleted: () => void;
+}) => {
+  const { task } = item;
+  const rt = taskResults.find((r) => r.id === task.resultTypeId);
+  const [value, setValue] = useState<number | null>(null);
+  const [notes, setNotes] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [statusHint, setStatusHint] = useState<string | null>(null);
+
+  const submit = async (skipValue: boolean) => {
+    setBusy(true);
+    setStatusHint(null);
+    const payload: Parameters<typeof completeTask>[0] = {
+      taskId: task.id,
+      taskTitle: task.title,
+      resultUnit: rt?.unitName ?? null,
+    };
+    if (!skipValue && value !== null) payload.resultValue = value;
+    if (notes.trim()) payload.notes = notes.trim();
+    const { status } = await completeTask(payload);
+    setStatusHint(status === "synced" ? null : "Saved locally — will retry on next sync");
+    // Even when queued, treat completion as done from the UI's
+    // POV: clear the urgent row immediately. The flusher will
+    // catch up the server.
+    setBusy(false);
+    onCompleted();
+  };
+
+  return (
+    <Sheet open onClose={onCancel} ariaLabel={`Mark "${task.title}" done`}>
+      <div className="flex items-center gap-3">
+        <HowlerAvatar
+          avatarId={task.avatarId}
+          seed={task.id}
+          initials={task.title.slice(0, 2).toUpperCase()}
+          size={44}
+        />
+        <div className="min-w-0 flex-1">
+          <div className="cap">
+            {item.isMissed
+              ? "overdue"
+              : item.nextDeadline
+                ? `due ${new Date(item.nextDeadline * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })}`
+                : ""}
+          </div>
+          <div className="font-serif text-lg leading-tight">{task.title}</div>
+        </div>
+      </div>
+
+      {rt && (
+        <div className="mt-5">
+          <ResultSlider result={rt} onChange={setValue} />
+        </div>
+      )}
+
+      <label className="mt-4 block">
+        <div className="cap mb-1">Notes (optional)</div>
+        <input
+          value={notes}
+          onChange={(e) => setNotes(e.target.value)}
+          className="w-full rounded-md border border-line bg-paper-2 px-3 py-2 text-sm focus:border-ink focus:outline-none"
+        />
+      </label>
+
+      {statusHint && (
+        <p className="mt-3 text-xs italic text-ink-3">{statusHint}</p>
+      )}
+
+      <div className="mt-5 flex gap-2">
+        <Btn variant="outline" onClick={() => submit(true)} disabled={busy}>
+          Skip value
+        </Btn>
+        <Btn
+          variant="primary"
+          onClick={() => submit(false)}
+          disabled={busy}
+          className="flex-1"
+        >
+          {busy ? "…" : "Mark done"}
+        </Btn>
+      </div>
+    </Sheet>
+  );
+};
 
 // ── Create task form ──────────────────────────────────────────────
 

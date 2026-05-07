@@ -10,6 +10,11 @@ import {
 import { HowlerAvatar } from "./components/HowlerAvatar.tsx";
 import { Sparkline } from "./components/Sparkline.tsx";
 import { Icon } from "./components/Icon.tsx";
+import {
+  isParked,
+  queuedForTask,
+  type QueuedExecution,
+} from "./lib/executionQueue.ts";
 
 const fmtTs = (sec: number): string => {
   const d = new Date(sec * 1000);
@@ -63,6 +68,15 @@ export const TaskDetail = () => {
 
   const executions = execsQ.data ?? [];
   const userById = new Map((usersQ.data ?? []).map((u) => [u.id, u]));
+  // Local queue: events the user has marked done but haven't
+  // synced yet. Surfaced inline at the top of History so the user
+  // sees their action took effect immediately.
+  const queued = queuedForTask(taskId);
+  // Filter out queued items that have already synced (server has
+  // them) — INSERT OR IGNORE keeps server idempotent so the queue
+  // and server lists overlap briefly mid-sync; dedupe by id.
+  const serverIds = new Set(executions.map((e) => e.id));
+  const pendingQueue = queued.filter((q) => !serverIds.has(q.id));
 
   return (
     <main
@@ -126,10 +140,15 @@ export const TaskDetail = () => {
 
       <section className="border-t border-line-soft px-5 py-4">
         <h2 className="cap mb-2">History</h2>
+        {pendingQueue.map((q) => (
+          <PendingExecutionRow key={q.id} ev={q} />
+        ))}
         {execsQ.isLoading && <p className="cap py-2">Loading…</p>}
-        {!execsQ.isLoading && executions.length === 0 && (
-          <p className="cap py-2">No executions yet.</p>
-        )}
+        {!execsQ.isLoading &&
+          executions.length === 0 &&
+          pendingQueue.length === 0 && (
+            <p className="cap py-2">No executions yet.</p>
+          )}
         {executions.map((e) => {
           const u = e.userId ? userById.get(e.userId) : undefined;
           const initials = (u?.displayName ?? "?")
@@ -163,5 +182,37 @@ export const TaskDetail = () => {
         })}
       </section>
     </main>
+  );
+};
+
+// Renders a queued (not-yet-synced) execution — same row layout as
+// the server-confirmed list, with a "queued" / "retrying…" /
+// "stalled" state hint. Parked rows (over the per-session attempt
+// cap) read "stalled — retry on next app start".
+const PendingExecutionRow = ({ ev }: { ev: QueuedExecution }) => {
+  const stalled = isParked(ev.id);
+  const stateLabel = stalled
+    ? "stalled — retries on next app start"
+    : ev.attempts > 0
+      ? `retrying (${ev.attempts})`
+      : "queued";
+  return (
+    <div className="flex items-start gap-3 border-t border-line-soft py-2.5 opacity-80">
+      <HowlerAvatar seed={ev.id} initials="•" size={28} />
+      <div className="min-w-0 flex-1">
+        <div className="flex items-baseline justify-between gap-2">
+          <span className="text-sm">
+            {ev.resultValue !== null && ev.resultValue !== undefined
+              ? `${ev.resultValue} ${ev.resultUnit ?? ""}`.trim()
+              : "✓"}
+          </span>
+          <span className="cap shrink-0">{fmtTs(ev.ts)}</span>
+        </div>
+        <p className="mt-0.5 text-xs italic text-ink-3">
+          {stateLabel}
+          {ev.notes ? ` · ${ev.notes}` : ""}
+        </p>
+      </div>
+    </div>
   );
 };

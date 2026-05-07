@@ -72,7 +72,7 @@ const handle = async (res: Response): Promise<unknown> => {
   return res.json();
 };
 
-const callJson = async (
+export const callJson = async (
   method: "GET" | "POST" | "PATCH" | "DELETE",
   path: string,
   body?: unknown,
