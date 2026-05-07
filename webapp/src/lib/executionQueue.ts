@@ -24,6 +24,11 @@ export interface QueuedExecution {
   ts: number; // epoch seconds
   resultValue?: number | null;
   notes?: string | null;
+  // Optional override — when the device is shared (kitchen tablet,
+  // dial) the session may be generic but the actual completer is
+  // a specific home member. Server validates same-home and falls
+  // back to the session user when omitted.
+  userId?: string;
   // Bookkeeping — never sent to the server.
   attempts: number;
   // Optional cached display fields so the UI can render the row
@@ -99,6 +104,7 @@ const sendOne = async (ev: QueuedExecution): Promise<void> => {
   const body = {
     id: ev.id,
     ts: ev.ts,
+    ...(ev.userId ? { userId: ev.userId } : {}),
     ...(ev.resultValue !== undefined ? { resultValue: ev.resultValue } : {}),
     ...(ev.notes !== undefined ? { notes: ev.notes } : {}),
   };
@@ -121,6 +127,7 @@ const bumpAttempts = (id: string): void => {
 // it eventually-done either way.
 export const completeTask = async (input: {
   taskId: string;
+  userId?: string;
   resultValue?: number | null;
   notes?: string | null;
   taskTitle?: string;
@@ -136,6 +143,7 @@ export const completeTask = async (input: {
     resultValue: input.resultValue ?? null,
     notes: input.notes ?? null,
     attempts: 0,
+    ...(input.userId ? { userId: input.userId } : {}),
     ...(input.taskTitle !== undefined ? { taskTitle: input.taskTitle } : {}),
     ...(input.resultUnit !== undefined ? { resultUnit: input.resultUnit } : {}),
   };

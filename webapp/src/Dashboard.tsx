@@ -142,7 +142,15 @@ export const Dashboard = ({ session, onLogout }: Props) => {
     };
   }, [qc]);
 
-  const [completeTarget, setCompleteTarget] = useState<DashboardItem | null>(null);
+  // Sheet target — either a DashboardItem (carries urgency / due
+  // hint) or a bare Task (from the All Tasks list). Wrapping it in
+  // a tagged union lets the sheet branch on whether to render the
+  // due-time line.
+  const [completeTarget, setCompleteTarget] = useState<
+    | { kind: "dashboard"; item: DashboardItem }
+    | { kind: "task"; task: Task }
+    | null
+  >(null);
 
   return (
     <main data-testid="dashboard" className="paper-grain mx-auto min-h-screen max-w-md lg:max-w-2xl">
@@ -167,7 +175,7 @@ export const Dashboard = ({ session, onLogout }: Props) => {
           items={urgent}
           labels={labels.data ?? []}
           serverNow={dashboard.data?.now}
-          onMarkDone={setCompleteTarget}
+          onMarkDone={(item) => setCompleteTarget({ kind: "dashboard", item })}
         />
       )}
       {nonUrgent.length > 0 && (
@@ -176,7 +184,7 @@ export const Dashboard = ({ session, onLogout }: Props) => {
           items={nonUrgent}
           labels={labels.data ?? []}
           serverNow={dashboard.data?.now}
-          onMarkDone={setCompleteTarget}
+          onMarkDone={(item) => setCompleteTarget({ kind: "dashboard", item })}
         />
       )}
       {dashboard.isLoading && <Empty>Loading…</Empty>}
@@ -235,6 +243,7 @@ export const Dashboard = ({ session, onLogout }: Props) => {
             onDelete={() => {
               if (confirm(`Delete "${t.title}"?`)) del.mutate(t.id);
             }}
+            onMarkDone={() => setCompleteTarget({ kind: "task", task: t })}
             deleting={del.isPending && del.variables === t.id}
             onSaved={() => {
               void qc.invalidateQueries({ queryKey: ["tasks"] });
@@ -264,13 +273,29 @@ export const Dashboard = ({ session, onLogout }: Props) => {
 
       {completeTarget && (
         <CompleteTaskSheet
-          item={completeTarget}
+          task={
+            completeTarget.kind === "dashboard"
+              ? completeTarget.item.task
+              : completeTarget.task
+          }
+          due={
+            completeTarget.kind === "dashboard"
+              ? completeTarget.item.isMissed
+                ? "overdue"
+                : completeTarget.item.nextDeadline
+                  ? `due ${new Date(completeTarget.item.nextDeadline * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })}`
+                  : null
+              : null
+          }
           taskResults={taskResults.data ?? []}
+          users={users.data ?? []}
+          sessionUserId={session.userId}
           onCancel={() => setCompleteTarget(null)}
           onCompleted={() => {
             setCompleteTarget(null);
             void qc.invalidateQueries({ queryKey: ["dashboard"] });
             void qc.invalidateQueries({ queryKey: ["task-executions"] });
+            void qc.invalidateQueries({ queryKey: ["executions"] });
           }}
         />
       )}
@@ -631,22 +656,33 @@ const Section = ({
 // ── Complete task sheet (offline-queued) ──────────────────────────
 
 const CompleteTaskSheet = ({
-  item,
+  task,
   taskResults,
+  users,
+  sessionUserId,
+  due,
   onCancel,
   onCompleted,
 }: {
-  item: DashboardItem;
+  task: Task;
   taskResults: TaskResultDef[];
+  users: User[];
+  sessionUserId: string;
+  // Optional context line — "due 14:00" / "overdue".
+  due: string | null;
   onCancel: () => void;
   onCompleted: () => void;
 }) => {
-  const { task } = item;
   const rt = taskResults.find((r) => r.id === task.resultTypeId);
   const [value, setValue] = useState<number | null>(null);
   const [notes, setNotes] = useState("");
+  const [actorId, setActorId] = useState<string>(sessionUserId);
   const [busy, setBusy] = useState(false);
   const [statusHint, setStatusHint] = useState<string | null>(null);
+
+  // Show the user picker only when the home actually has multiple
+  // members; for single-user homes the session user is unambiguous.
+  const multiUser = users.length > 1;
 
   const submit = async (skipValue: boolean) => {
     setBusy(true);
@@ -656,13 +692,13 @@ const CompleteTaskSheet = ({
       taskTitle: task.title,
       resultUnit: rt?.unitName ?? null,
     };
+    if (actorId !== sessionUserId) payload.userId = actorId;
     if (!skipValue && value !== null) payload.resultValue = value;
     if (notes.trim()) payload.notes = notes.trim();
     const { status } = await completeTask(payload);
-    setStatusHint(status === "synced" ? null : "Saved locally — will retry on next sync");
-    // Even when queued, treat completion as done from the UI's
-    // POV: clear the urgent row immediately. The flusher will
-    // catch up the server.
+    setStatusHint(
+      status === "synced" ? null : "Saved locally — will retry on next sync",
+    );
     setBusy(false);
     onCompleted();
   };
@@ -677,21 +713,39 @@ const CompleteTaskSheet = ({
           size={44}
         />
         <div className="min-w-0 flex-1">
-          <div className="cap">
-            {item.isMissed
-              ? "overdue"
-              : item.nextDeadline
-                ? `due ${new Date(item.nextDeadline * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })}`
-                : ""}
-          </div>
+          {due && <div className="cap">{due}</div>}
           <div className="font-serif text-lg leading-tight">{task.title}</div>
         </div>
       </div>
 
       {rt && (
         <div className="mt-5">
+          <div className="cap mb-2 flex items-baseline justify-between">
+            <span>{rt.displayName}</span>
+            <span>
+              {rt.minValue ?? 0}–{rt.maxValue ?? "∞"} {rt.unitName} · step {rt.step}
+            </span>
+          </div>
           <ResultSlider result={rt} onChange={setValue} />
         </div>
+      )}
+
+      {multiUser && (
+        <label className="mt-4 block">
+          <div className="cap mb-1">Completed by</div>
+          <select
+            value={actorId}
+            onChange={(e) => setActorId(e.target.value)}
+            className="w-full rounded-md border border-line bg-paper-2 px-3 py-2 text-sm focus:border-ink focus:outline-none"
+          >
+            {users.map((u) => (
+              <option key={u.id} value={u.id}>
+                {u.displayName}
+                {u.id === sessionUserId ? " (you)" : ""}
+              </option>
+            ))}
+          </select>
+        </label>
       )}
 
       <label className="mt-4 block">
@@ -1026,6 +1080,7 @@ const TaskRow = ({
   labels,
   taskResults,
   onDelete,
+  onMarkDone,
   deleting,
   onSaved,
 }: {
@@ -1033,6 +1088,7 @@ const TaskRow = ({
   labels: Label[];
   taskResults: TaskResultDef[];
   onDelete: () => void;
+  onMarkDone: () => void;
   deleting: boolean;
   onSaved: () => void;
 }) => {
@@ -1214,6 +1270,15 @@ const TaskRow = ({
         </div>
       </Link>
       <div className="flex gap-1">
+        <button
+          type="button"
+          onClick={onMarkDone}
+          aria-label={`Mark "${task.title}" done`}
+          title="Mark done"
+          className="flex h-7 w-7 items-center justify-center rounded-full border border-line text-ink-3 hover:border-ink hover:text-ink"
+        >
+          <Icon name="check" size={14} />
+        </button>
         <Btn variant="ghost" size="pillSm" onClick={() => setEditing(true)}>
           Edit
         </Btn>

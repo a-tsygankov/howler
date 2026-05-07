@@ -313,6 +313,7 @@ export const tasksRouter = new Hono<{
     const taskId = c.req.param("id");
     const body = (await c.req.json().catch(() => ({}))) as {
       id?: string;
+      userId?: string;
       resultValue?: number | null;
       notes?: string | null;
       ts?: number;
@@ -328,6 +329,20 @@ export const tasksRouter = new Hono<{
       .first<{ home_id: string; label_id: string | null; result_type_id: string | null }>();
     if (!task || task.home_id !== auth.homeId) {
       return c.json({ error: "not-found" }, 404);
+    }
+    // Optional userId override — for shared-device contexts where
+    // the session is generic but the actual completer is a
+    // specific home member. Validate same-home before trusting.
+    let actorUserId = auth.userId;
+    if (body.userId && /^[0-9a-f]{32}$/.test(body.userId)) {
+      const u = await c.env.DB
+        .prepare(
+          "SELECT id FROM users WHERE id = ? AND home_id = ? AND is_deleted = 0",
+        )
+        .bind(body.userId, auth.homeId)
+        .first<{ id: string }>();
+      if (!u) return c.json({ error: "user not in this home" }, 403);
+      actorUserId = body.userId;
     }
     let unit: string | null = null;
     if (task.result_type_id) {
@@ -353,7 +368,7 @@ export const tasksRouter = new Hono<{
         body.id,
         auth.homeId,
         taskId,
-        auth.userId,
+        actorUserId,
         task.label_id,
         task.result_type_id,
         body.resultValue ?? null,
@@ -365,6 +380,7 @@ export const tasksRouter = new Hono<{
     return c.json({
       id: body.id,
       taskId,
+      userId: actorUserId,
       ts,
       resultValue: body.resultValue ?? null,
       resultUnit: unit,
