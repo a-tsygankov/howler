@@ -44,16 +44,6 @@ void test_negative_due_is_least_urgent_within_priority() {
     TEST_ASSERT_EQUAL_STRING("vague", list.items()[1].id.c_str());
 }
 
-// Unity calls these around every RUN_TEST. Empty is fine — the
-// domain layer has no per-test setup. Must be C-linkage so the
-// pre-built libUnity.a finds them.
-extern "C" void setUp(void) {}
-extern "C" void tearDown(void) {}
-
-int main(int, char**) {
-    UNITY_BEGIN();
-    RUN_TEST(test_higher_priority_comes_first);
-    RUN_TEST(test_equal_priority_breaks_on_due_at);
-    RUN_TEST(test_negative_due_is_least_urgent_within_priority);
-    return UNITY_END();
-}
+// Tests are aggregated by `test/test_domain/runner.cpp` — only one
+// `main()` per Unity build, so we just expose the test functions
+// here and let the runner call RUN_TEST.
