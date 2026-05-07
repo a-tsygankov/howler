@@ -160,6 +160,17 @@ export const tasksRouter = new Hono<{
       };
     }
 
+    // If the caller didn't pick an explicit avatar, inherit it from
+    // the selected label's icon ("icon:<name>") so the dashboard
+    // row gets a visual right away. Spec m-2026-05-06.
+    if (!input.avatarId && input.labelId) {
+      const lbl = await c.env.DB
+        .prepare("SELECT icon FROM labels WHERE id = ? AND home_id = ? AND is_deleted = 0")
+        .bind(input.labelId, auth.homeId)
+        .first<{ icon: string | null }>();
+      if (lbl?.icon) input = { ...input, avatarId: `icon:${lbl.icon}` };
+    }
+
     const { dto, taskId } = await createTask(
       uow,
       { homeId: auth.homeId, creatorUserId: auth.userId, homeTz },

@@ -218,6 +218,9 @@ export interface CreateTaskInput {
   templateId?: string;
   labelId?: string | null;
   resultTypeId?: string | null;
+  // Avatar — "icon:<name>" for an icon-set choice or an R2 UUID.
+  // Omit to let the server fall back to the selected label's icon.
+  avatarId?: string | null;
   isPrivate?: boolean;
   assignees?: string[];
 }
@@ -229,6 +232,7 @@ export interface UpdateTaskInput {
   active?: boolean;
   labelId?: string | null;
   resultTypeId?: string | null;
+  avatarId?: string | null;
   isPrivate?: boolean;
   assignees?: string[];
   // Schedule rule edits — server expects UTC times; the SPA must

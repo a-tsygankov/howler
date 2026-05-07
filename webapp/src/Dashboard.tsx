@@ -611,6 +611,17 @@ const CreateTaskForm = ({
   const [assigneeId, setAssigneeId] = useState("");
   const [isPrivate, setIsPrivate] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Task avatar — "icon:<name>" or null. When null we let the
+  // server fall back to the selected label's icon. The user can
+  // override via the picker (and a manual override sticks even if
+  // they later change the label).
+  const [avatarOverride, setAvatarOverride] = useState<string | null>(null);
+  // Mirror of the picker's "default from label" state — when true
+  // we render a faded preview of the label's icon and submit
+  // avatarId: undefined so the server picks it up.
+  const labelPick = labels.find((l) => l.id === labelId);
+  const effectiveAvatar =
+    avatarOverride ?? (labelPick?.icon ? `icon:${labelPick.icon}` : null);
 
   const create = useMutation({
     mutationFn: createTask,
@@ -629,6 +640,7 @@ const CreateTaskForm = ({
       labelId: labelId || null,
       resultTypeId: resultTypeId || null,
       isPrivate,
+      ...(avatarOverride !== null ? { avatarId: avatarOverride } : {}),
       ...(assigneeId ? { assignees: [assigneeId] } : {}),
     };
     if (templateId) {
@@ -723,6 +735,19 @@ const CreateTaskForm = ({
             ]}
           />
         )}
+      </div>
+      <div className="mt-2">
+        <span className="cap mb-1 block">
+          Avatar{" "}
+          {avatarOverride === null && labelPick?.icon && (
+            <span className="opacity-60">(from label · {labelPick.displayName})</span>
+          )}
+        </span>
+        <TaskAvatarPicker
+          value={effectiveAvatar}
+          inheritedFromLabel={avatarOverride === null && !!labelPick?.icon}
+          onPick={setAvatarOverride}
+        />
       </div>
       {!templateId && kind === "DAILY" && (
         <div className="mt-2">
@@ -1102,6 +1127,65 @@ const IconPicker = ({
     })}
   </div>
 );
+
+// Task-side avatar picker. Same icon-set surface as labels, plus a
+// "use label's icon" reset button. Photo upload + AI conversion is
+// stubbed: clicking the upload button surfaces a clear "coming soon"
+// message rather than silently uploading something we don't yet
+// know how to convert into an icon.
+const TaskAvatarPicker = ({
+  value,
+  inheritedFromLabel,
+  onPick,
+}: {
+  value: string | null;
+  inheritedFromLabel: boolean;
+  onPick: (next: string | null) => void;
+}) => {
+  return (
+    <div className="space-y-2">
+      <div className="grid grid-cols-10 gap-1">
+        <button
+          type="button"
+          title={inheritedFromLabel ? "Currently inherited from label" : "Use label's icon"}
+          onClick={() => onPick(null)}
+          className={`flex h-7 w-7 items-center justify-center rounded-md border text-[10px] ${
+            value === null
+              ? "border-ink bg-paper-3 text-ink"
+              : "border-line text-ink-3 hover:border-ink"
+          }`}
+        >
+          ↺
+        </button>
+        {LABEL_ICON_CHOICES.map((name) => {
+          const id = `icon:${name}`;
+          const active = value === id;
+          return (
+            <button
+              key={name}
+              type="button"
+              title={name}
+              onClick={() => onPick(id)}
+              className={`flex h-7 w-7 items-center justify-center rounded-md border ${
+                active
+                  ? "border-ink bg-paper-3 text-ink"
+                  : "border-line text-ink-3 hover:border-ink hover:text-ink"
+              } ${inheritedFromLabel && value === id ? "opacity-60" : ""}`}
+            >
+              <Icon name={name} size={16} />
+            </button>
+          );
+        })}
+      </div>
+      <p className="text-[11px] text-ink-3">
+        Upload a photo →{" "}
+        <span className="italic">
+          AI conversion to icon coming soon (Phase 7).
+        </span>
+      </p>
+    </div>
+  );
+};
 
 const LabelsBlock = ({
   labels,

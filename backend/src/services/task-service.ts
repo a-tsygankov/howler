@@ -101,7 +101,7 @@ export const createTask = async (
       priority: input.priority as Task["priority"],
       kind: input.kind,
       deadlineHint: input.deadlineHint ?? null,
-      avatarId: null,
+      avatarId: input.avatarId ?? null,
       labelId: input.labelId ? asLabelId(input.labelId) : null,
       resultTypeId: input.resultTypeId ? asTaskResultId(input.resultTypeId) : null,
       isPrivate: input.isPrivate ?? false,
@@ -157,6 +157,7 @@ export const updateTask = async (
         : patch.resultTypeId === null
           ? null
           : asTaskResultId(patch.resultTypeId),
+      avatarId: patch.avatarId === undefined ? t.avatarId : patch.avatarId,
       isPrivate: patch.isPrivate ?? t.isPrivate,
       updatedAt: clock().nowMs(),
     };
