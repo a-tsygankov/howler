@@ -13,7 +13,8 @@ const NAV: Array<{
   match: string;
 }> = [
   { label: "Today", to: "/", match: "/" },
-  { label: "Result types", to: "/settings/result-types", match: "/settings/result-types" },
+  { label: "All tasks", to: "/all", match: "/all" },
+  { label: "Settings", to: "/settings", match: "/settings" },
 ];
 
 export const Sidebar = () => {

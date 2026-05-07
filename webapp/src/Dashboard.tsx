@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   apiLogout,
@@ -44,6 +44,7 @@ import { HowlerAvatar } from "./components/HowlerAvatar.tsx";
 import { Icon, type IconName } from "./components/Icon.tsx";
 import { Btn } from "./components/Buttons.tsx";
 import { Sheet } from "./components/Sheet.tsx";
+import { BottomTabs } from "./components/BottomTabs.tsx";
 import { ResultSlider } from "./components/ResultSlider.tsx";
 import {
   completeTask,
@@ -67,9 +68,19 @@ const fmtDayCaps = (d: Date): string =>
     })
     .replace(",", " ·");
 
+// Tab routing — single Dashboard component renders different
+// sections based on the `view` prop, driven by App.tsx routes.
+// Trade-off vs. splitting into separate page files: the heavy
+// shared sub-components (CreateTaskForm, TaskRow, LabelsBlock,
+// the Sheet, the picker components) all live in this file and
+// each page would otherwise import the same ones from here. One
+// file with one render path stays easier to refactor.
+export type DashboardView = "today" | "all" | "settings";
+
 interface Props {
   session: SessionInfo;
   onLogout: () => void;
+  view: DashboardView;
 }
 
 // Dashboard polls every 5 min while open; mutations (create/edit/
@@ -79,7 +90,7 @@ interface Props {
 // across web + dial).
 const DASHBOARD_POLL_MS = 5 * 60 * 1000;
 
-export const Dashboard = ({ session, onLogout }: Props) => {
+export const Dashboard = ({ session, onLogout, view }: Props) => {
   const qc = useQueryClient();
   const me = useQuery({ queryKey: ["me"], queryFn: apiMe });
   const tasks = useQuery({ queryKey: ["tasks"], queryFn: fetchTasks });
@@ -152,8 +163,36 @@ export const Dashboard = ({ session, onLogout }: Props) => {
     | null
   >(null);
 
+  // CreateTaskForm starts collapsed — only the "+ Add task" CTA
+  // is visible until the user opts in. Today view's CTA writes a
+  // one-shot flag to sessionStorage, navigates to /all, and the
+  // /all view consumes the flag in a `view`-keyed effect. Routing
+  // between sibling routes here keeps the same Dashboard instance
+  // (only the `view` prop changes), so the open-on-arrive trigger
+  // has to fire from a `view` dependency, not a mount.
+  const navigate = useNavigate();
+  const ADD_KEY = "howler.openCreateTask.v1";
+  const [addOpen, setAddOpen] = useState(false);
+  useEffect(() => {
+    if (view !== "all") return;
+    try {
+      if (sessionStorage.getItem(ADD_KEY) === "1") {
+        sessionStorage.removeItem(ADD_KEY);
+        setAddOpen(true);
+      }
+    } catch {
+      /* private mode / quota — silently no-op */
+    }
+  }, [view]);
+
   return (
-    <main data-testid="dashboard" className="paper-grain mx-auto min-h-screen max-w-md lg:max-w-2xl">
+    <main
+      data-testid="dashboard"
+      data-view={view}
+      // pb-24 keeps the floating BottomTabs (lg:hidden) from
+      // covering the last row on mobile. No-op on desktop.
+      className="paper-grain mx-auto min-h-screen max-w-md pb-24 lg:max-w-2xl lg:pb-0"
+    >
       <Header
         homeName={me.data?.homeDisplayName ?? "Howler"}
         homeAvatarId={me.data?.homeAvatarId ?? null}
@@ -169,107 +208,164 @@ export const Dashboard = ({ session, onLogout }: Props) => {
         <PushPill />
       </section>
 
-      {urgent.length > 0 && (
-        <UrgencyGroup
-          title="Urgent"
-          items={urgent}
-          labels={labels.data ?? []}
-          serverNow={dashboard.data?.now}
-          onMarkDone={(item) => setCompleteTarget({ kind: "dashboard", item })}
-        />
+      {view === "today" && (
+        <>
+          {urgent.length > 0 && (
+            <UrgencyGroup
+              title="Urgent"
+              items={urgent}
+              labels={labels.data ?? []}
+              serverNow={dashboard.data?.now}
+              onMarkDone={(item) => setCompleteTarget({ kind: "dashboard", item })}
+            />
+          )}
+          {nonUrgent.length > 0 && (
+            <UrgencyGroup
+              title="Coming up"
+              items={nonUrgent}
+              labels={labels.data ?? []}
+              serverNow={dashboard.data?.now}
+              onMarkDone={(item) => setCompleteTarget({ kind: "dashboard", item })}
+            />
+          )}
+          {dashboard.isLoading && <Empty>Loading…</Empty>}
+          {!dashboard.isLoading && dashboardItems.length === 0 && (
+            <Empty>Nothing urgent. All caught up.</Empty>
+          )}
+          <div className="flex justify-center px-5 pb-4 pt-2">
+            <Btn
+              variant="outline"
+              size="pillSm"
+              data-testid="add-task-cta"
+              onClick={() => {
+                try {
+                  sessionStorage.setItem(ADD_KEY, "1");
+                } catch {
+                  /* private mode — fall through, /all just won't auto-open */
+                }
+                navigate("/all");
+              }}
+            >
+              + Add task
+            </Btn>
+          </div>
+        </>
       )}
-      {nonUrgent.length > 0 && (
-        <UrgencyGroup
-          title="Coming up"
-          items={nonUrgent}
-          labels={labels.data ?? []}
-          serverNow={dashboard.data?.now}
-          onMarkDone={(item) => setCompleteTarget({ kind: "dashboard", item })}
-        />
+
+      {view === "all" && (
+        <>
+          <section className="px-5 py-4">
+            {addOpen ? (
+              <>
+                <div className="mb-2 flex items-center justify-between">
+                  <h2 className="cap">New task</h2>
+                  <button
+                    type="button"
+                    onClick={() => setAddOpen(false)}
+                    aria-label="Close new-task form"
+                    className="cap text-ink-3 hover:text-ink"
+                  >
+                    Close
+                  </button>
+                </div>
+                <CreateTaskForm
+                  labels={labels.data ?? []}
+                  taskResults={taskResults.data ?? []}
+                  templates={templates.data ?? []}
+                  users={users.data ?? []}
+                  onCreated={() => {
+                    void qc.invalidateQueries({ queryKey: ["tasks"] });
+                    void qc.invalidateQueries({ queryKey: ["dashboard"] });
+                    // Collapse the form once a task is created so
+                    // the page returns to the All Tasks list view.
+                    setAddOpen(false);
+                  }}
+                />
+              </>
+            ) : (
+              <Btn
+                variant="primary"
+                size="block"
+                data-testid="add-task-cta"
+                onClick={() => setAddOpen(true)}
+              >
+                + Add task
+              </Btn>
+            )}
+          </section>
+
+          <Section title="All tasks">
+            {tasks.isLoading && <Empty>Loading…</Empty>}
+            {tasks.data?.length === 0 && <Empty>No tasks yet.</Empty>}
+            {tasks.data?.map((t) => (
+              <TaskRow
+                key={t.id}
+                task={t}
+                labels={labels.data ?? []}
+                taskResults={taskResults.data ?? []}
+                onDelete={() => {
+                  if (confirm(`Delete "${t.title}"?`)) del.mutate(t.id);
+                }}
+                onMarkDone={() => setCompleteTarget({ kind: "task", task: t })}
+                deleting={del.isPending && del.variables === t.id}
+                onSaved={() => {
+                  void qc.invalidateQueries({ queryKey: ["tasks"] });
+                  void qc.invalidateQueries({ queryKey: ["dashboard"] });
+                }}
+              />
+            ))}
+          </Section>
+        </>
       )}
-      {dashboard.isLoading && <Empty>Loading…</Empty>}
-      {!dashboard.isLoading && dashboardItems.length === 0 && (
-        <Empty>Nothing urgent. All caught up.</Empty>
+
+      {view === "settings" && (
+        <>
+          <section className="border-t border-line-soft px-5 py-5">
+            <div className="flex items-center justify-between">
+              <h2 className="cap">Result types</h2>
+              <Link
+                to="/settings/result-types"
+                className="cap text-ink-3 hover:text-ink"
+              >
+                Manage →
+              </Link>
+            </div>
+            <p className="mt-1 text-xs text-ink-3">
+              Numeric shapes (Grams, Pushups, Rating) tasks can opt into.
+            </p>
+          </section>
+
+          <Section title="Labels">
+            <LabelsBlock
+              labels={labels.data ?? []}
+              onChanged={() => {
+                void qc.invalidateQueries({ queryKey: ["labels"] });
+                void qc.invalidateQueries({ queryKey: ["dashboard"] });
+              }}
+            />
+          </Section>
+
+          <Section title="Users">
+            <UsersBlock
+              users={users.data ?? []}
+              sessionUserId={session.userId}
+              onChanged={() => qc.invalidateQueries({ queryKey: ["users"] })}
+            />
+          </Section>
+
+          <Section title="Devices">
+            <DevicesBlock
+              devices={devices.data ?? []}
+              onChanged={() => qc.invalidateQueries({ queryKey: ["devices"] })}
+            />
+            <PairTile
+              onPaired={() => qc.invalidateQueries({ queryKey: ["devices"] })}
+            />
+          </Section>
+        </>
       )}
 
-      <section className="px-5 py-6">
-        <h2 className="cap mb-2">New task</h2>
-        <CreateTaskForm
-          labels={labels.data ?? []}
-          taskResults={taskResults.data ?? []}
-          templates={templates.data ?? []}
-          users={users.data ?? []}
-          onCreated={() => {
-            void qc.invalidateQueries({ queryKey: ["tasks"] });
-            void qc.invalidateQueries({ queryKey: ["dashboard"] });
-          }}
-        />
-      </section>
-
-      <section className="border-t border-line-soft px-5 py-5">
-        <div className="flex items-center justify-between">
-          <h2 className="cap">Result types</h2>
-          <Link
-            to="/settings/result-types"
-            className="cap text-ink-3 hover:text-ink"
-          >
-            Manage →
-          </Link>
-        </div>
-        <p className="mt-1 text-xs text-ink-3">
-          Numeric shapes (Grams, Pushups, Rating) tasks can opt into.
-        </p>
-      </section>
-
-      <Section title="Labels">
-        <LabelsBlock
-          labels={labels.data ?? []}
-          onChanged={() => {
-            void qc.invalidateQueries({ queryKey: ["labels"] });
-            void qc.invalidateQueries({ queryKey: ["dashboard"] });
-          }}
-        />
-      </Section>
-
-      <Section title="All tasks">
-        {tasks.isLoading && <Empty>Loading…</Empty>}
-        {tasks.data?.length === 0 && <Empty>No tasks yet.</Empty>}
-        {tasks.data?.map((t) => (
-          <TaskRow
-            key={t.id}
-            task={t}
-            labels={labels.data ?? []}
-            taskResults={taskResults.data ?? []}
-            onDelete={() => {
-              if (confirm(`Delete "${t.title}"?`)) del.mutate(t.id);
-            }}
-            onMarkDone={() => setCompleteTarget({ kind: "task", task: t })}
-            deleting={del.isPending && del.variables === t.id}
-            onSaved={() => {
-              void qc.invalidateQueries({ queryKey: ["tasks"] });
-              void qc.invalidateQueries({ queryKey: ["dashboard"] });
-            }}
-          />
-        ))}
-      </Section>
-
-      <Section title="Users">
-        <UsersBlock
-          users={users.data ?? []}
-          sessionUserId={session.userId}
-          onChanged={() => qc.invalidateQueries({ queryKey: ["users"] })}
-        />
-      </Section>
-
-      <Section title="Devices">
-        <DevicesBlock
-          devices={devices.data ?? []}
-          onChanged={() => qc.invalidateQueries({ queryKey: ["devices"] })}
-        />
-        <PairTile
-          onPaired={() => qc.invalidateQueries({ queryKey: ["devices"] })}
-        />
-      </Section>
+      <BottomTabs />
 
       {completeTarget && (
         <CompleteTaskSheet

@@ -48,6 +48,13 @@ const setupUser = async (
 };
 
 const createTaskViaUI = async (u: UserSession): Promise<void> => {
+  // Create-task form lives on the All-tasks tab now and is
+  // collapsed behind a CTA — expand before filling.
+  await u.page.getByTestId("tab-all").click();
+  await expect(
+    u.page.getByTestId("dashboard"),
+  ).toHaveAttribute("data-view", "all");
+  await u.page.getByTestId("add-task-cta").click();
   await u.page
     .getByPlaceholder(/what do you want to remember/i)
     .fill(u.taskTitle);
@@ -55,6 +62,10 @@ const createTaskViaUI = async (u: UserSession): Promise<void> => {
   await u.page.getByRole("button", { name: /^add$/i }).click();
   await expect(u.page.getByText(u.taskTitle)).toBeVisible({ timeout: 10_000 });
 };
+
+// Mobile viewport — see happy-path.spec.ts. BottomTabs is
+// lg:hidden so we run these tests on a phone-sized viewport.
+test.use({ viewport: { width: 390, height: 844 } });
 
 test.describe("two concurrent users", () => {
   test("each completes quick-setup → create → see own task; no cross-home leakage", async ({
