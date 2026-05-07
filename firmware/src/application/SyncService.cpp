@@ -29,14 +29,27 @@ void SyncService::tick() {
 void SyncService::runRound() {
     bool anyOk = false;
 
-    // 1. Dashboard — primary source for the home screen.
+    // 1. Dashboard — primary source for the home screen + the All
+    //    tasks screen. The network call always passes
+    //    ?include=hidden so we get every active task with its tier;
+    //    we split client-side: the focused dashboard hides HIDDEN,
+    //    the all-tasks model keeps everything.
     {
         std::vector<howler::domain::DashboardItem> items;
         int64_t serverNow = 0;
         const auto r = net_.fetchDashboard(items, serverNow);
         if (r.isOk()) {
             watermark_.dashboard = maxUpdatedAt(items);
-            dashboard_.replace(std::move(items));
+            if (serverNow > 0) watermark_.serverNowSec = serverNow;
+            std::vector<howler::domain::DashboardItem> visible;
+            visible.reserve(items.size());
+            for (const auto& it : items) {
+                if (it.urgency != howler::domain::Urgency::Hidden) {
+                    visible.push_back(it);
+                }
+            }
+            dashboard_.replace(std::move(visible));
+            allTasks_.replace(std::move(items));
             anyOk = true;
         }
     }

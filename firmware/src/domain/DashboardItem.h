@@ -6,7 +6,11 @@
 
 namespace howler::domain {
 
-enum class Urgency : uint8_t { Urgent, NonUrgent };
+/// Server-classified urgency tier for a task. Mirrors the backend's
+/// `services/urgency.ts` enum on the wire. The on-device dashboard
+/// hides Hidden by default; the All-tasks screen surfaces every
+/// active task regardless of tier.
+enum class Urgency : uint8_t { Urgent, NonUrgent, Hidden };
 
 /// One dashboard row — `Occurrence`-shaped where present, otherwise
 /// "open task" (no due time, no occurrence id). The device renders

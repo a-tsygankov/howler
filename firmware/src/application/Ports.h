@@ -94,8 +94,19 @@ public:
                             howler::domain::PairState& state) = 0;
 };
 
-/// Encoder + tactile button. `poll()` returns at most one event per
-/// call; multiple events queue up in the adapter's ring buffer.
+/// Encoder + tactile button + capacitive touch. `poll()` returns at
+/// most one event per call; multiple events queue up in the adapter's
+/// ring buffer.
+///
+/// Interaction model (user spec 2026-05-07):
+///   Press      — tap (single click) → enter / activate
+///   DoubleTap  — two clicks within ~400 ms → back / cancel
+///   LongPress  — held past threshold → confirm (UI shows arc fill)
+///   RotateCW   — knob CW rotation or touch swipe right
+///   RotateCCW  — knob CCW rotation or touch swipe left
+///
+/// Touch and knob produce the same Event types so screens stay
+/// input-source-agnostic; the CompositeInput adapter merges them.
 class IInputDevice {
 public:
     enum class Event : uint8_t {
@@ -103,10 +114,25 @@ public:
         RotateCW,
         RotateCCW,
         Press,
+        DoubleTap,
         LongPress,
+        /// Vertical touch swipes — SwipeUp = finger moved from low Y
+        /// to high Y (toward the top of the screen), SwipeDown = the
+        /// inverse. The encoder doesn't have a vertical axis so the
+        /// rotary input never emits these. Reusable by any touch
+        /// adapter; ScreenManager translates them into "next/previous
+        /// main screen" at root and "scroll cursor" inside menus.
+        SwipeUp,
+        SwipeDown,
     };
     virtual ~IInputDevice() = default;
     virtual Event poll() = 0;
+    /// True while the user is actively holding the knob or pressing
+    /// the screen. Powers the LongPress-arc visual: ScreenManager
+    /// reads this every frame to advance the arc fill. Default impl
+    /// always returns false so legacy stubs without hold-tracking
+    /// don't have to opt in.
+    virtual bool isHeld() const { return false; }
 };
 
 /// LVGL-or-whatever display abstraction. Application calls `tick()`

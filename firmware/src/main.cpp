@@ -15,6 +15,8 @@
 #include <WiFi.h>
 
 #include "adapters/ArduinoClock.h"
+#include "adapters/CompositeInput.h"
+#include "adapters/Cst816Touch.h"
 #include "adapters/EspRandom.h"
 #include "adapters/NoopNetwork.h"
 #include "adapters/NvsStorage.h"
@@ -42,6 +44,10 @@ howler::adapters::ArduinoClock        arduinoClock;
 howler::adapters::EspRandom           espRandom;
 howler::adapters::NvsStorage          nvsStorage;
 howler::adapters::RotaryInput         rotaryInput;
+howler::adapters::Cst816Touch         touchInput;
+howler::adapters::CompositeInput<
+    howler::adapters::RotaryInput,
+    howler::adapters::Cst816Touch>    compositeInput(rotaryInput, touchInput);
 howler::adapters::WifiStation         wifiStation;
 howler::adapters::WifiCaptivePortal   captivePortal;
 
@@ -155,6 +161,7 @@ void setup() {
 #endif
 
     rotaryInput.begin();
+    touchInput.begin();
 
     // Wi-Fi boot decision. NVS creds → STA + connect. Missing →
     // captive-portal AP `howler-XXXX` for first-boot setup; never
@@ -180,9 +187,9 @@ void setup() {
 
     auto* net = pickNetwork();
     static howler::application::App app(
-        *net, pairApi, arduinoClock, espRandom, nvsStorage, rotaryInput,
+        *net, pairApi, arduinoClock, espRandom, nvsStorage, compositeInput,
         wifiStation, deviceIdFromMac());
-    static howler::screens::ScreenManager screens(app, rotaryInput);
+    static howler::screens::ScreenManager screens(app, compositeInput);
     g_app = &app;
     g_screens = &screens;
 

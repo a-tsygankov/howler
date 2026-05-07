@@ -14,6 +14,11 @@ struct SyncWatermark {
     int64_t resultTypes   = 0;
     int64_t dashboard     = 0;     // max updated_at across rendered tasks
     int64_t lastFullSync  = 0;     // when the last full round completed
+    /// Server's notion of "now" at the most-recent dashboard fetch.
+    /// Screens render relative time labels ("in 14m", "overdue 2h")
+    /// from this rather than the local SNTP clock so a dial whose
+    /// time is off doesn't show wrong urgency.
+    int64_t serverNowSec  = 0;
 };
 
 }  // namespace howler::domain

@@ -373,6 +373,13 @@ export const Dashboard = ({ session, onLogout, view }: Props) => {
             />
           </Section>
 
+          <Section title="Sync activity">
+            <SyncLogBlock
+              devices={devices.data ?? []}
+              onRefresh={() => qc.invalidateQueries({ queryKey: ["devices"] })}
+            />
+          </Section>
+
           <Section title="Devices">
             <DevicesBlock
               devices={devices.data ?? []}
@@ -2116,6 +2123,99 @@ const UserRow = ({
         )}
       </div>
     </div>
+  );
+};
+
+/// Sync-health pill — visible answer to "is the dial actually
+/// reaching the server?". The backend bumps `device.last_seen_at`
+/// every time it serves a request bearing a device token (see
+/// `markDeviceAlive` middleware), so a recent timestamp = the dial
+/// is alive. Three buckets:
+///   < 5 min    → green ("just now" / "N min ago")
+///   < 30 min   → amber ("N min ago")
+///   else       → red   ("hours ago" / "never")
+/// On a healthy sync interval (~30 s default) the green band is
+/// where every paired device should sit while in active use.
+const SyncLogBlock = ({
+  devices,
+  onRefresh,
+}: {
+  devices: Device[];
+  onRefresh: () => void;
+}) => {
+  const now = Math.floor(Date.now() / 1000);
+  const fmtAgo = (ts: number | null) => {
+    if (ts === null) return "never";
+    const dSec = now - ts;
+    if (dSec < 60) return "just now";
+    if (dSec < 3600) return `${Math.round(dSec / 60)} min ago`;
+    if (dSec < 86400) return `${Math.round(dSec / 3600)} h ago`;
+    return `${Math.round(dSec / 86400)} d ago`;
+  };
+  const tier = (ts: number | null): "ok" | "stale" | "lost" => {
+    if (ts === null) return "lost";
+    const dSec = now - ts;
+    if (dSec < 5 * 60) return "ok";
+    if (dSec < 30 * 60) return "stale";
+    return "lost";
+  };
+  const dot = (t: "ok" | "stale" | "lost") =>
+    t === "ok"
+      ? "bg-[#2C774B]"
+      : t === "stale"
+        ? "bg-[#C88310]"
+        : "bg-[#C13D1E]";
+
+  return (
+    <>
+      {devices.length === 0 ? (
+        <p className="cap py-2">No paired devices yet.</p>
+      ) : (
+        <div className="flex flex-col gap-2">
+          {devices.map((d) => {
+            const t = tier(d.lastSeenAt);
+            return (
+              <div
+                key={d.id}
+                className="flex items-center gap-3 rounded-lg border border-line-soft bg-paper-2 px-3 py-2"
+              >
+                <span
+                  className={`inline-block h-2.5 w-2.5 rounded-full ${dot(t)}`}
+                  aria-hidden
+                />
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm">
+                    {d.hwModel || "Unnamed device"}
+                  </div>
+                  <div className="cap mt-0.5">
+                    last sync {fmtAgo(d.lastSeenAt)}
+                    {d.fwVersion && ` · fw ${d.fwVersion}`}
+                  </div>
+                </div>
+                <span
+                  className={
+                    "cap " +
+                    (t === "ok"
+                      ? "text-[#2C774B]"
+                      : t === "stale"
+                        ? "text-[#C88310]"
+                        : "text-[#C13D1E]")
+                  }
+                >
+                  {t === "ok" ? "live" : t === "stale" ? "idle" : "offline"}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      <div className="mt-3 flex items-center justify-between">
+        <p className="cap">Updates each time a device hits the API.</p>
+        <Btn variant="outline" size="pillSm" onClick={onRefresh}>
+          Refresh
+        </Btn>
+      </div>
+    </>
   );
 };
 

@@ -2,7 +2,11 @@
 
 #include "../application/App.h"
 #include "../application/Ports.h"
+#include "../domain/LongPressArc.h"
+#include "../domain/RoundMenuModel.h"
 #include "../domain/Router.h"
+#include "components/LongPressArcWidget.h"
+#include "components/RoundMenu.h"
 
 #include <Arduino.h>
 #include <TFT_eSPI.h>
@@ -16,10 +20,13 @@ namespace howler::screens {
 /// — they call `app.router().push(…)` and let the manager rebuild on
 /// the next frame.
 ///
-/// LVGL's encoder group ties tab order into rotary movement. Each
-/// screen registers its focusable widgets into `group_` on entry and
-/// clears it on exit; this lets the framework handle "which widget
-/// has focus" without per-screen bookkeeping.
+/// Interaction model (matches IInputDevice docs):
+///   Press      — tap → enter / activate
+///   DoubleTap  — quick double click → back / cancel
+///   LongPress  — held past threshold → confirm; the perimeter arc
+///                fills as the finger / knob is held so the user has
+///                a visual cue
+///   Rotate     — knob CW/CCW or touch swipe
 class ScreenManager {
 public:
     ScreenManager(application::App& app, application::IInputDevice& input);
@@ -37,6 +44,27 @@ public:
     /// the lambdas isn't possible).
     application::App& app() { return app_; }
 
+    /// True iff the bottom-most screen in the router stack is
+    /// TaskList. Used by Settings → "Switch view" to decide which
+    /// way to flip the root.
+    bool isOnTaskListRoot() const;
+
+    /// Brief banner overlay that fades after `durationMs`. Used to
+    /// surface "syncing..." after the user taps Sync now in Settings.
+    /// Lives outside the screen tree so it survives screen rebuilds.
+    void showToast(const char* text, uint32_t durationMs = 1500);
+
+    /// Helper for screens that show a tab strip — returns the index
+    /// of the current main screen in `kMainScreens`, or kMainScreens
+    /// length if the current screen isn't a main one.
+    size_t mainScreenIndex() const;
+
+    /// `screen_dashboard.cpp` reads this to format "in 14m" / "due
+    /// 2h" labels relative to the server's idea of "now" (delivered
+    /// alongside the dashboard payload). 0 means "we haven't synced
+    /// yet" — screens fall back to a static "scheduled" label.
+    int64_t lastServerNowSec() const { return lastServerNowSec_; }
+
 private:
     application::App& app_;
     application::IInputDevice& input_;
@@ -44,15 +72,43 @@ private:
     lv_obj_t* root_ = nullptr;
     lv_group_t* group_ = nullptr;
 
-    // ── per-screen reactive state (kept on the manager so it survives
-    //    the screen rebuild on dashboard refresh) ──
-    int rotaryDeltaSinceFrame_ = 0;
-    bool pressPending_ = false;
-    bool longPressPending_ = false;
+    /// Owned long-press visual state. The arc widget is rebuilt by
+    /// each screen that wants to show it (it lives inside that
+    /// screen's LVGL tree); the model is global so the fill survives
+    /// the brief reconstruction window.
+    domain::LongPressArc longPressArc_;
+    components::LongPressArcWidget longPressArcWidget_;
+    int64_t lastServerNowSec_ = 0;
+
+    /// Cached pointer to the ResultPicker's big number label so the
+    /// rotation-handler in onEvent can refresh it in place without
+    /// rebuilding the whole screen tree (which would flicker on
+    /// every detent of the encoder). Cleared in teardownScreen().
+    lv_obj_t* resultValueLabel_ = nullptr;
+
+    /// Toast overlay (parent = lv_layer_top so it floats above any
+    /// screen tree and survives router transitions). Used by
+    /// Settings → "Sync now" to surface "syncing..." for ~1.5 s.
+    lv_obj_t* toastLabel_ = nullptr;
+    uint32_t  toastUntilMs_ = 0;
+
+    /// Round-menu state. Each screen that opts into the watch-style
+    /// carousel layout (Settings, UserPicker, Wi-Fi) populates the
+    /// model with items + an activate callback during build*; the
+    /// ScreenManager event router translates rotation/tap into
+    /// `menu_.onRotate()` / `menu_.fireActivate()`. The model lives
+    /// here so cursor doesn't reset when an inner screen pops back
+    /// to its caller.
+    domain::RoundMenuModel menuModel_;
+    components::RoundMenu  menu_;
+    /// True between build* and teardown for screens that registered
+    /// menu_ — ScreenManager::onEvent reads this to decide whether
+    /// to forward events to the menu.
+    bool menuActive_ = false;
 
     void rebuildScreen();
     void teardownScreen();
-    void pollAndDispatch();
+    void pollAndDispatch(uint32_t millisNow);
 
     // Per-screen builders defined in their respective .cpp files.
     void buildBoot();
@@ -70,9 +126,22 @@ private:
     void buildLoginQr();
     void buildOfflineNotice();
 
-    // Per-screen event dispatch — called with at most one of:
-    // {rotateDelta != 0, press, longPress}.
-    void onEvent(int rotateDelta, bool press, bool longPress);
+    // Per-screen event dispatch. `vertSwipe` is +1 for SwipeUp (next
+    // main screen / scroll forward) and -1 for SwipeDown (previous
+    // main screen / scroll back). At root level it cycles through
+    // mainScreenAt() entries; inside menu screens it nudges the
+    // cursor like a knob detent so touch-only users have parity
+    // with the rotary.
+    void onEvent(int rotateDelta, bool tap, bool doubleTap, bool longPress,
+                 int vertSwipe);
+
+    /// The list of "main" screens the user can swipe between at
+    /// root level. Order = the swipe-up cycle direction. Pair is
+    /// excluded; it's a setup screen, not a main one.
+    static constexpr domain::ScreenId kMainScreens[] = {
+        domain::ScreenId::Dashboard,
+        domain::ScreenId::TaskList,
+    };
 };
 
 }  // namespace howler::screens

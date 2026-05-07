@@ -355,4 +355,93 @@ describe("GET /api/dashboard", () => {
     const r = await SELF.fetch("https://t/api/dashboard");
     expect(r.status).toBe(401);
   });
+
+  it("?include=hidden returns HIDDEN-tier tasks (firmware All-tasks screen)", async () => {
+    // Default behaviour drops HIDDEN; the device's "All tasks" screen
+    // wants every active task. New query param flips the filter off.
+    const { token } = await auth();
+    const headers = {
+      authorization: `Bearer ${token}`,
+      "content-type": "application/json",
+    } as const;
+
+    // Two tasks, both freshly created so both will be HIDDEN under
+    // the default filter — periodic-2 won't have an urgent slot for
+    // 2 days; periodic-7 even longer.
+    for (const intervalDays of [2, 7]) {
+      const r = await SELF.fetch("https://t/api/tasks", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          title: `every-${intervalDays}d`,
+          kind: "PERIODIC",
+          intervalDays,
+        }),
+      });
+      expect(r.status).toBe(201);
+    }
+
+    // Default — both filtered out.
+    {
+      const r = await SELF.fetch("https://t/api/dashboard", {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      const body = await json<{ tasks: unknown[] }>(r);
+      expect(body.tasks).toHaveLength(0);
+    }
+    // ?include=hidden — both surface, with urgency="HIDDEN".
+    {
+      const r = await SELF.fetch("https://t/api/dashboard?include=hidden", {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      const body = await json<{ tasks: Array<{ urgency: string }> }>(r);
+      expect(body.tasks).toHaveLength(2);
+      for (const t of body.tasks) expect(t.urgency).toBe("HIDDEN");
+    }
+  });
+
+  it("accepts a device token (firmware-side dashboard render)", async () => {
+    // The on-device firmware authenticates with a device token, not
+    // a user token. The dashboard endpoint must accept both — gating
+    // on requireUser() left the dial showing empty even with valid
+    // creds. Mint a token via the same path the pair flow uses, then
+    // prove the response carries the home's tasks.
+    const { token: userToken, homeId } = await auth();
+    const userHeaders = {
+      authorization: `Bearer ${userToken}`,
+      "content-type": "application/json",
+    } as const;
+
+    // Seed one task so the response isn't trivially empty.
+    const create = await SELF.fetch("https://t/api/tasks", {
+      method: "POST",
+      headers: userHeaders,
+      body: JSON.stringify({
+        title: "device-side",
+        kind: "PERIODIC",
+        intervalDays: 1,
+      }),
+    });
+    expect(create.status).toBe(201);
+    testClock.advanceMs(2 * DAY_MS);
+
+    // Mint a device token directly. The pair flow normally produces
+    // these via /api/pair/confirm; this short-circuits the four-step
+    // pair dance for the test.
+    const { issueDeviceToken } = await import("../src/auth.ts");
+    const secret = (env as unknown as { AUTH_SECRET: string }).AUTH_SECRET;
+    const deviceToken = await issueDeviceToken(
+      homeId,
+      "0".repeat(20) + "abcdef012345",
+      secret,
+    );
+
+    const r = await SELF.fetch("https://t/api/dashboard", {
+      headers: { authorization: `Bearer ${deviceToken}` },
+    });
+    expect(r.status).toBe(200);
+    const body = await json<{ tasks: Array<{ task: { title: string } }> }>(r);
+    expect(body.tasks.length).toBeGreaterThan(0);
+    expect(body.tasks[0]?.task.title).toBe("device-side");
+  });
 });

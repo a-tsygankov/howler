@@ -28,7 +28,8 @@ public:
     static constexpr int kPinA      = 45;
     static constexpr int kPinB      = 42;
     static constexpr int kPinButton = 41;
-    static constexpr uint32_t kLongPressMs = 600;
+    static constexpr uint32_t kLongPressMs   = 600;
+    static constexpr uint32_t kDoubleTapMs   = 350;
 
     void begin() {
         pinMode(kPinA, INPUT_PULLUP);
@@ -49,6 +50,7 @@ public:
                 out == Event::RotateCW   ? "RotateCW"   :
                 out == Event::RotateCCW  ? "RotateCCW"  :
                 out == Event::Press      ? "Press"      :
+                out == Event::DoubleTap  ? "DoubleTap"  :
                 out == Event::LongPress  ? "LongPress"  : "?";
             Serial.printf("[input] event=%s  A=%d B=%d SW=%d\n",
                 name,
@@ -73,23 +75,43 @@ public:
         return out;
     }
 
+    bool isHeld() const override { return wasPressed_; }
+
 private:
     uint8_t prev_ = 0;
     int8_t accumulator_ = 0;
     bool wasPressed_ = false;
+    bool longFired_  = false;
     uint32_t pressStartedMs_ = 0;
+    bool pendingTap_     = false;
+    uint32_t lastTapEndMs_ = 0;
+    Event   queuedTap_   = Event::None;
 #ifdef HOWLER_DEBUG_INPUT
     uint8_t lastDebugState_ = 3;
     int     lastDebugBtn_   = 1;
 #endif
 
     Event pollImpl() {
+        // 0. Drain the deferred-tap slot first if it ripened past the
+        //    double-tap window with no follow-up. We hold a single Tap
+        //    pending for kDoubleTapMs so a second click within the
+        //    window upgrades to DoubleTap; otherwise we surface Tap.
+        if (queuedTap_ != Event::None) {
+            const Event q = queuedTap_;
+            queuedTap_ = Event::None;
+            return q;
+        }
+        const uint32_t now = millis();
+        if (pendingTap_ && (now - lastTapEndMs_) >= kDoubleTapMs) {
+            pendingTap_ = false;
+            return Event::Press;
+        }
+
         // 1. Decode rotation.
         const uint8_t curr = readState();
         const uint8_t key = static_cast<uint8_t>((prev_ << 2) | curr);
-        // -1, +1, 0 lookup. Two-bit transitions: see app note AN-08
-        // for quadrature decoders. Ignore double-transitions (curr==prev
-        // or 11→00 / 00→11 which are noise).
+        // -1, +1, 0 lookup per the standard quadrature transition table.
+        // Ignore double-transitions (curr==prev / 11→00 / 00→11 noise).
         static constexpr int8_t kDelta[16] = {
             0, -1,  1,  0,
             1,  0,  0, -1,
@@ -101,16 +123,43 @@ private:
         if (accumulator_ >= 4) { accumulator_ = 0; return Event::RotateCW; }
         if (accumulator_ <= -4) { accumulator_ = 0; return Event::RotateCCW; }
 
-        // 2. Decode button. Active LOW; long-press if held > kLongPressMs.
+        // 2. Decode button.
+        //    Press = Tap (deferred for kDoubleTapMs to upgrade to DoubleTap)
+        //    DoubleTap = two short presses inside kDoubleTapMs
+        //    LongPress = fired EAGERLY mid-hold once held >= kLongPressMs,
+        //                so the LongPressArc widget has a clear endpoint
+        //                while the finger is still down. Releasing after
+        //                a long-press is then a no-op (the user already
+        //                got their event when the arc filled).
         const bool pressed = digitalRead(kPinButton) == LOW;
-        const uint32_t now = millis();
         if (pressed && !wasPressed_) {
             wasPressed_ = true;
+            longFired_  = false;
             pressStartedMs_ = now;
+        } else if (pressed && wasPressed_) {
+            // Eager long-press fire while still held.
+            if (!longFired_ && (now - pressStartedMs_) >= kLongPressMs) {
+                longFired_ = true;
+                pendingTap_ = false;
+                return Event::LongPress;
+            }
         } else if (!pressed && wasPressed_) {
             wasPressed_ = false;
-            const uint32_t held = now - pressStartedMs_;
-            return (held >= kLongPressMs) ? Event::LongPress : Event::Press;
+            if (longFired_) {
+                // Long-press already fired mid-hold; release is silent.
+                longFired_ = false;
+                return Event::None;
+            }
+            // Short release. If a Tap was pending and we're inside
+            // the window, upgrade to DoubleTap (and DON'T surface the
+            // earlier Tap — DoubleTap is the user's intent).
+            if (pendingTap_ && (now - lastTapEndMs_) < kDoubleTapMs) {
+                pendingTap_ = false;
+                return Event::DoubleTap;
+            }
+            // First short release — defer for kDoubleTapMs.
+            pendingTap_   = true;
+            lastTapEndMs_ = now;
         }
         return Event::None;
     }

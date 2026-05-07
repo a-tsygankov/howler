@@ -3,6 +3,8 @@
 // framework concerns. LVGL 9 API.
 
 #include "ScreenManager.h"
+#include "components/RoundCard.h"
+#include "../application/PairCoordinator.h"
 
 namespace howler::screens {
 
@@ -14,7 +16,6 @@ constexpr int kScreenW = 240;
 constexpr int kScreenH = 240;
 constexpr size_t kBufLines = 40;
 
-// Static draw buffer for partial-mode rendering.
 lv_color_t g_drawBuf[kScreenW * kBufLines];
 
 void flush_cb(lv_display_t* disp, const lv_area_t* area, uint8_t* px_map) {
@@ -28,7 +29,7 @@ void flush_cb(lv_display_t* disp, const lv_area_t* area, uint8_t* px_map) {
     lv_display_flush_ready(disp);
 }
 
-// Encoder state pumped by the manager's pollAndDispatch.
+// Encoder driver state — pumped by pollAndDispatch.
 struct EncoderState {
     int  pendingDelta = 0;
     bool pendingPress = false;
@@ -70,38 +71,87 @@ void ScreenManager::begin(TFT_eSPI& tft) {
     rebuildScreen();
 }
 
-void ScreenManager::tick(uint32_t /*millisNow*/) {
-    pollAndDispatch();
+void ScreenManager::tick(uint32_t millisNow) {
+    pollAndDispatch(millisNow);
+
+    // Update the long-press arc once per frame from the current
+    // hold state. Independent of screen rebuilds — even if the user
+    // starts holding mid-rebuild the arc model carries the start
+    // time forward across the brief frame the new screen takes to
+    // re-create the widget.
+    longPressArc_.update(millisNow, input_.isHeld());
+    longPressArcWidget_.update(longPressArc_);
+
+    // Pick up the server-side "now" so dashboard date math is
+    // immune to dial-clock drift before SNTP completes.
+    lastServerNowSec_ = app_.serverNowSec();
+
+    // Auto-fade the toast overlay once its window expires.
+    if (toastLabel_ && toastUntilMs_ != 0 && millisNow >= toastUntilMs_) {
+        lv_obj_del(toastLabel_);
+        toastLabel_ = nullptr;
+        toastUntilMs_ = 0;
+    }
+
     if (app_.router().current() != rendered_) {
         rebuildScreen();
     }
     lv_timer_handler();
 }
 
-void ScreenManager::pollAndDispatch() {
+bool ScreenManager::isOnTaskListRoot() const {
+    return rendered_ == domain::ScreenId::TaskList;
+}
+
+size_t ScreenManager::mainScreenIndex() const {
+    constexpr auto N = sizeof(kMainScreens) / sizeof(kMainScreens[0]);
+    for (size_t i = 0; i < N; ++i) if (kMainScreens[i] == rendered_) return i;
+    return N;
+}
+
+void ScreenManager::showToast(const char* text, uint32_t durationMs) {
+    // Re-create even if a previous toast is still up so the new
+    // message isn't queued. Parent = top layer so the toast sits
+    // above whatever screen LVGL is currently rendering.
+    if (toastLabel_) {
+        lv_obj_del(toastLabel_);
+        toastLabel_ = nullptr;
+    }
+    auto* l = lv_label_create(lv_layer_top());
+    lv_label_set_text(l, text);
+    lv_obj_set_style_text_color(l, components::Palette::paper(), 0);
+    lv_obj_set_style_bg_color(l, components::Palette::ink(), 0);
+    lv_obj_set_style_bg_opa(l, LV_OPA_80, 0);
+    lv_obj_set_style_pad_all(l, 8, 0);
+    lv_obj_set_style_radius(l, 14, 0);
+    lv_obj_align(l, LV_ALIGN_BOTTOM_MID, 0, -36);
+    toastLabel_   = l;
+    toastUntilMs_ = millis() + durationMs;
+}
+
+void ScreenManager::pollAndDispatch(uint32_t /*millisNow*/) {
     int delta = 0;
-    bool press = false;
+    int vert = 0;
+    bool tap = false;
+    bool doubleTap = false;
     bool longPress = false;
     using application::IInputDevice;
     while (true) {
         const auto e = input_.poll();
         if (e == IInputDevice::Event::None) break;
-        if (e == IInputDevice::Event::RotateCW)  ++delta;
+        if      (e == IInputDevice::Event::RotateCW)  ++delta;
         else if (e == IInputDevice::Event::RotateCCW) --delta;
-        else if (e == IInputDevice::Event::Press) press = true;
+        else if (e == IInputDevice::Event::Press)     tap = true;
+        else if (e == IInputDevice::Event::DoubleTap) doubleTap = true;
         else if (e == IInputDevice::Event::LongPress) longPress = true;
+        else if (e == IInputDevice::Event::SwipeUp)   ++vert;
+        else if (e == IInputDevice::Event::SwipeDown) --vert;
     }
-    if (delta == 0 && !press && !longPress) return;
-    // Forward to LVGL focus engine for ChangeFocus/ClickButton — only
-    // when a screen registers focusable widgets does this matter; for
-    // pure-drawing screens (Pair, Boot) the manager routes events
-    // itself via onEvent.
+    if (delta == 0 && vert == 0 && !tap && !doubleTap && !longPress) return;
     g_enc.pendingDelta += delta;
-    if (press || longPress) g_enc.pendingPress = true;
-    onEvent(delta, press, longPress);
-    if (press || longPress) {
-        g_enc.pendingPress = false;
-    }
+    if (tap || longPress) g_enc.pendingPress = true;
+    onEvent(delta, tap, doubleTap, longPress, vert);
+    if (tap || longPress) g_enc.pendingPress = false;
 }
 
 void ScreenManager::teardownScreen() {
@@ -110,6 +160,11 @@ void ScreenManager::teardownScreen() {
         lv_obj_del(root_);
         root_ = nullptr;
     }
+    // Cached pointers into root_'s subtree are now dangling. Clear
+    // them before any next frame can read them.
+    longPressArcWidget_.reset();
+    resultValueLabel_ = nullptr;
+    menuActive_ = false;
 }
 
 void ScreenManager::rebuildScreen() {
@@ -134,16 +189,51 @@ void ScreenManager::rebuildScreen() {
     }
 }
 
-void ScreenManager::onEvent(int rotateDelta, bool press, bool longPress) {
+void ScreenManager::onEvent(int rotateDelta, bool tap, bool doubleTap,
+                            bool longPress, int vertSwipe) {
     using domain::ScreenId;
     auto& app = app_;
     auto& router = app.router();
 
-    // Universal: long-press at non-root pops; at any root screen
-    // opens Settings. The Pair root needs the Settings escape so a
-    // user with no Wi-Fi creds (fresh device) can navigate to the
-    // Wi-Fi screen instead of being stuck on "error - check wifi".
-    if (longPress) {
+    // ── Vertical swipe at any root → cycle main screens ────────
+    // SwipeUp moves forward in kMainScreens (Dashboard → TaskList),
+    // SwipeDown moves backward. Setting screens (Settings root etc.)
+    // are reachable by DoubleTap, not by vertical swipe — we don't
+    // want a misfired flick to drop the user into a config screen.
+    if (vertSwipe != 0 && router.atRoot()) {
+        const ScreenId cur = rendered_;
+        const auto N = sizeof(kMainScreens) / sizeof(kMainScreens[0]);
+        // Only swap if the current root is one of the main screens.
+        // (The Pair root, for instance, doesn't participate.)
+        size_t idx = N;  // sentinel "not found"
+        for (size_t i = 0; i < N; ++i) if (kMainScreens[i] == cur) idx = i;
+        if (idx < N) {
+            const long step = (vertSwipe > 0) ? 1 : -1;
+            const long next = ((static_cast<long>(idx) + step) % static_cast<long>(N)
+                              + static_cast<long>(N)) % static_cast<long>(N);
+            router.replaceRoot(kMainScreens[next]);
+            return;
+        }
+    }
+
+    // ── Vertical swipe inside a round-menu screen → cursor nudge ──
+    // Acts as a touch-only equivalent of rotation so users can
+    // browse without spinning the knob. SwipeUp moves toward the
+    // next item (the one rendered below the centre), SwipeDown
+    // toward the previous (above the centre).
+    if (vertSwipe != 0 && menuActive_ && !router.atRoot()) {
+        // SwipeUp = next item = +1 cursor delta. The natural mapping
+        // (eyes look down, item below moves up to centre) feels
+        // right under thumb on a round display.
+        menu_.onRotate(vertSwipe);
+        return;
+    }
+
+    // ── Universal: DoubleTap = back / cancel ────────────────────
+    // At root, "back" is undefined, so we shortcut to Settings —
+    // the user always has a path off any root screen without arming
+    // a hidden gesture. Inside a flow, pop one level.
+    if (doubleTap) {
         if (router.atRoot()) {
             router.push(ScreenId::Settings);
             return;
@@ -151,45 +241,123 @@ void ScreenManager::onEvent(int rotateDelta, bool press, bool longPress) {
         if (router.pop()) return;
     }
 
-    // Pair-screen safety net: while we don't trust the encoder pin
-    // map (different silkscreens out there), let *any* input on the
-    // Pair root reach Settings so the user can configure Wi-Fi. A
-    // tap or a rotation also escape — not just the long-press.
-    if (rendered_ == ScreenId::Pair && (press || rotateDelta != 0)) {
+    // ── Pair-screen escape hatch ────────────────────────────────
+    // No other meaningful actions on the pair screen; any input
+    // jumps to Settings so a Wi-Fi-less device stays recoverable.
+    if (rendered_ == ScreenId::Pair && (tap || longPress || rotateDelta != 0)) {
         router.push(ScreenId::Settings);
         return;
+    }
+
+    // ── RoundMenu screens (Settings, UserPicker, Wi-Fi list) ────
+    // Forward the rotary delta and tap to the menu component;
+    // long-press is handled per-screen below for any destructive
+    // confirm. Build* sets menuActive_ when this routing should
+    // engage.
+    if (menuActive_) {
+        if (rotateDelta != 0) menu_.onRotate(rotateDelta);
+        if (tap) menu_.fireActivate();
     }
 
     switch (rendered_) {
         case ScreenId::Dashboard: {
             if (rotateDelta != 0) app.dashboard().moveCursor(rotateDelta);
-            if (press) {
-                const auto* sel = app.dashboard().selected();
-                if (sel) {
-                    app.pendingDone() = {};
-                    app.pendingDone().taskId = sel->taskId;
-                    app.pendingDone().occurrenceId = sel->occurrenceId;
-                    app.pendingDone().resultTypeId = sel->resultTypeId;
-                    router.push(sel->resultTypeId.empty() ? ScreenId::UserPicker
-                                                          : ScreenId::ResultPicker);
-                }
+            const auto* sel = app.dashboard().selected();
+            if (!sel) break;
+            if (tap) {
+                // Tap = enter the result/user mark-done flow.
+                app.pendingDone() = {};
+                app.pendingDone().taskId = sel->taskId;
+                app.pendingDone().occurrenceId = sel->occurrenceId;
+                app.pendingDone().resultTypeId = sel->resultTypeId;
+                router.push(sel->resultTypeId.empty()
+                            ? ScreenId::UserPicker
+                            : ScreenId::ResultPicker);
+            } else if (longPress) {
+                // Long-press = quick mark-done (no result, no user).
+                // The arc gave the user 600 ms of "are you sure"
+                // feedback; releasing before fill produces nothing.
+                app.pendingDone() = {};
+                app.pendingDone().taskId = sel->taskId;
+                app.pendingDone().occurrenceId = sel->occurrenceId;
+                app.pendingDone().resultTypeId = "";
+                app.pendingDone().userId = "";
+                app.pendingDone().hasResultValue = false;
+                app.commitPendingDone();
             }
             break;
         }
         case ScreenId::ResultPicker: {
-            if (press) router.push(ScreenId::UserPicker);
+            if (rotateDelta != 0) {
+                app.resultEdit().nudge(rotateDelta);
+                if (resultValueLabel_) {
+                    lv_label_set_text(resultValueLabel_,
+                                      app.resultEdit().formatValue().c_str());
+                }
+            } else if (tap) {
+                // Tap = accept current value, advance to user picker.
+                app.pendingDone().hasResultValue = true;
+                app.pendingDone().resultValue = app.resultEdit().value();
+                router.push(ScreenId::UserPicker);
+            } else if (longPress) {
+                // Long-press = skip the result entirely (no value
+                // recorded), advance to user picker.
+                app.pendingDone().hasResultValue = false;
+                router.push(ScreenId::UserPicker);
+            }
             break;
         }
         case ScreenId::UserPicker: {
-            if (press) {
+            // Tap activation handled by the round menu activate
+            // callback (forwarded earlier in this function via
+            // menuActive_). LongPress = quick "skip user, commit".
+            if (longPress) {
+                app.pendingDone().userId = "";
                 app.commitPendingDone();
                 router.replaceRoot(ScreenId::Dashboard);
             }
             break;
         }
+        case ScreenId::Settings: {
+            // Long-press on the Unpair item performs the destructive
+            // action. Round menu shows the accent border on items
+            // marked destructive so users can tell.
+            if (longPress) {
+                const auto* sel = menuModel_.selected();
+                if (sel && sel->id == "unpair") {
+                    application::PairCoordinator::clearToken(app.storage());
+                    router.replaceRoot(ScreenId::Pair);
+                    app.pair().start(app.deviceId());
+                }
+            }
+            break;
+        }
+        case ScreenId::TaskList: {
+            // Long-press on a task in All-tasks = quick mark-done
+            // (no result, no user) — same shortcut as the Dashboard
+            // root, so a power-user keystroke works regardless of
+            // which list view they're spinning through.
+            if (longPress) {
+                const auto* sel = menuModel_.selected();
+                if (!sel) break;
+                const howler::domain::DashboardItem* match = nullptr;
+                for (const auto& d : app.allTasks().items()) {
+                    if (d.taskId.hex() == sel->id) { match = &d; break; }
+                }
+                if (!match) break;
+                app.pendingDone() = {};
+                app.pendingDone().taskId = match->taskId;
+                app.pendingDone().occurrenceId = match->occurrenceId;
+                app.pendingDone().resultTypeId = "";
+                app.pendingDone().userId = "";
+                app.pendingDone().hasResultValue = false;
+                app.commitPendingDone();
+            }
+            break;
+        }
         default:
-            // Per-screen LVGL event callbacks set up in build* methods
-            // handle the rest.
+            // Per-screen LVGL event callbacks set up in build*
+            // methods handle the rest.
             break;
     }
 }

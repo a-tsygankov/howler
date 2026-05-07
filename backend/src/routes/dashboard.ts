@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import type { Bindings } from "../env.ts";
 import { clock } from "../clock.ts";
 import { computeUrgency, type UrgencyResult } from "../services/urgency.ts";
-import { requireAuth, requireUser, type AuthVars } from "../middleware/auth.ts";
+import { markDeviceAlive, requireAuth, type AuthVars } from "../middleware/auth.ts";
 import type { ScheduleRule } from "../shared/schemas.ts";
 
 // Unified dashboard endpoint. Every client (web, dial, future
@@ -67,11 +67,24 @@ export const dashboardRouter = new Hono<{
   Bindings: Bindings;
   Variables: AuthVars;
 }>()
-  .use("*", requireAuth(), requireUser())
+  // Accept BOTH user and device tokens. The device firmware needs
+  // the dashboard to render the on-screen task list — gating this
+  // behind requireUser() left the dial showing empty even when its
+  // device token was valid for the home. The auth info already
+  // carries homeId for both shapes; we read that directly instead
+  // of the narrowed `user` view. `markDeviceAlive` records that
+  // the dial reached the server so the webapp Settings page can
+  // show "last sync N min ago" without an extra heartbeat endpoint.
+  .use("*", requireAuth(), markDeviceAlive())
 
   .get("/", async (c) => {
-    const homeId = c.get("user").homeId;
+    const homeId = c.get("auth").homeId;
     const nowSec = clock().nowSec();
+    // `?include=hidden` returns HIDDEN-tier rows too. The on-device
+    // "All tasks" screen needs every active task, not just the urgent
+    // tier the home screen shows. Default behaviour (filter HIDDEN)
+    // is unchanged so the webapp's home page stays a focused list.
+    const includeHidden = c.req.query("include") === "hidden";
 
     const { results: tasks } = await c.env.DB
       .prepare(
@@ -178,7 +191,7 @@ export const dashboardRouter = new Hono<{
         lastExecutionAt: lastExecutionByTask.get(t.id) ?? null,
         nowSec,
       });
-      if (urg.urgency === "HIDDEN") continue;
+      if (urg.urgency === "HIDDEN" && !includeHidden) continue;
       // Effective avatar: explicit avatar_id wins; otherwise fall
       // back to the label's icon under the "icon:" prefix so tasks
       // that just have a label still get an icon on the dashboard.

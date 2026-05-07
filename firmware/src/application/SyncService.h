@@ -29,11 +29,12 @@ public:
                 IClock& clock,
                 howler::domain::OccurrenceList& occList,
                 howler::domain::DashboardModel& dashboard,
+                howler::domain::DashboardModel& allTasks,
                 std::vector<howler::domain::User>& users,
                 std::vector<howler::domain::ResultType>& resultTypes,
                 howler::domain::SyncWatermark& watermark)
         : net_(net), clock_(clock),
-          occList_(occList), dashboard_(dashboard),
+          occList_(occList), dashboard_(dashboard), allTasks_(allTasks),
           users_(users), resultTypes_(resultTypes),
           watermark_(watermark) {}
 
@@ -54,6 +55,7 @@ private:
     IClock& clock_;
     howler::domain::OccurrenceList& occList_;
     howler::domain::DashboardModel& dashboard_;
+    howler::domain::DashboardModel& allTasks_;
     std::vector<howler::domain::User>& users_;
     std::vector<howler::domain::ResultType>& resultTypes_;
     howler::domain::SyncWatermark& watermark_;
