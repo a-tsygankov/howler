@@ -93,6 +93,45 @@ export const scheduleTemplatesRouter = new Hono<{
     );
   })
 
+  .patch("/:id", zValidator("json", TemplateInput.partial()), async (c) => {
+    const u = c.get("user");
+    const id = c.req.param("id");
+    const patch = c.req.valid("json");
+    const row = await c.env.DB
+      .prepare(
+        "SELECT home_id, system FROM schedule_templates WHERE id = ? AND is_deleted = 0",
+      )
+      .bind(id)
+      .first<{ home_id: string; system: number }>();
+    if (!row || row.home_id !== u.homeId) {
+      return c.json({ error: "not-found" }, 404);
+    }
+    if (row.system === 1) {
+      return c.json({ error: "cannot edit a system template" }, 409);
+    }
+    const nowSec = clock().nowSec();
+    await c.env.DB
+      .prepare(
+        `UPDATE schedule_templates SET
+           display_name = COALESCE(?, display_name),
+           description  = COALESCE(?, description),
+           rule_json    = COALESCE(?, rule_json),
+           sort_order   = COALESCE(?, sort_order),
+           updated_at   = ?
+         WHERE id = ?`,
+      )
+      .bind(
+        patch.displayName ?? null,
+        patch.description ?? null,
+        patch.rule ? JSON.stringify(patch.rule) : null,
+        patch.sortOrder ?? null,
+        nowSec,
+        id,
+      )
+      .run();
+    return c.body(null, 204);
+  })
+
   .delete("/:id", async (c) => {
     const u = c.get("user");
     const id = c.req.param("id");
