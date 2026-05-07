@@ -14,7 +14,11 @@ const ScheduleRuleSchema = z.discriminatedUnion("kind", [
     kind: z.literal("PERIODIC"),
     intervalDays: z.number().int().positive(),
   }),
-  z.object({ version: z.literal(1), kind: z.literal("ONESHOT") }),
+  z.object({
+    version: z.literal(1),
+    kind: z.literal("ONESHOT"),
+    intervalDays: z.number().int().positive().optional(),
+  }),
 ]);
 export type ScheduleRule = z.infer<typeof ScheduleRuleSchema>;
 

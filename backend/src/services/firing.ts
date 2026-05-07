@@ -27,9 +27,16 @@ export const computeNextFireAt = (
       // intuition works (you don't want it firing the moment you
       // hit Save).
       return nowSec + rule.intervalDays * DAY_SEC;
-    case "ONESHOT":
+    case "ONESHOT": {
       if (oneshotAt === null) return null;
-      return oneshotAt > nowSec ? oneshotAt : null;
+      if (oneshotAt <= nowSec) return null;
+      // No cadence — single-shot fire at the deadline.
+      if (!rule.intervalDays || rule.intervalDays <= 0) return oneshotAt;
+      // Cadence — fire `intervalDays` from now, capped at the
+      // deadline so the final fire is the deadline itself.
+      const next = nowSec + rule.intervalDays * DAY_SEC;
+      return next < oneshotAt ? next : oneshotAt;
+    }
   }
 };
 

@@ -5,7 +5,7 @@ import type { ScheduleId, TaskId } from "./ids.ts";
 export type ScheduleRule =
   | { version: 1; kind: "DAILY"; times: string[] }
   | { version: 1; kind: "PERIODIC"; intervalDays: number }
-  | { version: 1; kind: "ONESHOT" };
+  | { version: 1; kind: "ONESHOT"; intervalDays?: number };
 
 export interface Schedule {
   id: ScheduleId;

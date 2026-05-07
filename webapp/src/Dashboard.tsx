@@ -583,7 +583,14 @@ const CreateTaskForm = ({
   // Local-timezone "HH:MM" strings; converted to UTC on submit.
   const [localTimes, setLocalTimes] = useState<string[]>(["09:00"]);
   const [intervalDays, setIntervalDays] = useState(7);
-  const [deadlineMins, setDeadlineMins] = useState(60);
+  // ONESHOT: pick a deadline date + an optional reminder cadence
+  // (so the dashboard nudges the user every N days until the
+  // deadline). Default 7 days from now, no cadence.
+  const todayIso = new Date(Date.now() + 7 * 86_400_000)
+    .toISOString()
+    .slice(0, 10);
+  const [oneshotDate, setOneshotDate] = useState(todayIso);
+  const [oneshotCadence, setOneshotCadence] = useState(0); // 0 = no cadence
   const [labelId, setLabelId] = useState("");
   const [resultTypeId, setResultTypeId] = useState("");
   const [templateId, setTemplateId] = useState("");
@@ -624,8 +631,19 @@ const CreateTaskForm = ({
     } else if (kind === "PERIODIC") {
       create.mutate({ ...common, kind, intervalDays });
     } else {
-      const due = Math.floor(Date.now() / 1000) + deadlineMins * 60;
-      create.mutate({ ...common, kind, deadlineHint: due });
+      // ONESHOT — `oneshotDate` is local-tz YYYY-MM-DD; convert to
+      // an end-of-day epoch so the deadline is "by midnight" of the
+      // chosen day. `oneshotCadence > 0` adds a reminder cadence.
+      const dt = new Date(`${oneshotDate}T23:59:59`);
+      if (Number.isNaN(dt.getTime())) return setError("invalid deadline date");
+      const due = Math.floor(dt.getTime() / 1000);
+      const payload: Parameters<typeof createTask>[0] = {
+        ...common,
+        kind,
+        deadlineHint: due,
+      };
+      if (oneshotCadence > 0) payload.intervalDays = oneshotCadence;
+      create.mutate(payload);
     }
   };
 
@@ -717,16 +735,28 @@ const CreateTaskForm = ({
         </label>
       )}
       {!templateId && kind === "ONESHOT" && (
-        <label className="mt-2 block text-xs">
-          <span className="cap mb-1 block">Remind in (minutes)</span>
-          <input
-            type="number"
-            min={1}
-            value={deadlineMins}
-            onChange={(e) => setDeadlineMins(parseInt(e.target.value, 10) || 1)}
-            className="w-24 rounded-md border border-line bg-paper px-3 py-2 text-sm focus:border-ink focus:outline-none"
-          />
-        </label>
+        <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
+          <label className="block">
+            <span className="cap mb-1 block">Deadline</span>
+            <input
+              type="date"
+              value={oneshotDate}
+              onChange={(e) => setOneshotDate(e.target.value)}
+              className="w-full rounded-md border border-line bg-paper px-3 py-2 text-sm focus:border-ink focus:outline-none"
+            />
+          </label>
+          <label className="block">
+            <span className="cap mb-1 block">Remind every (days)</span>
+            <input
+              type="number"
+              min={0}
+              value={oneshotCadence}
+              onChange={(e) => setOneshotCadence(Math.max(0, parseInt(e.target.value, 10) || 0))}
+              placeholder="0 = no reminders"
+              className="w-full rounded-md border border-line bg-paper px-3 py-2 text-sm focus:border-ink focus:outline-none"
+            />
+          </label>
+        </div>
       )}
       <label className="mt-2 flex items-center gap-2 text-xs text-ink-2">
         <input
@@ -789,7 +819,14 @@ const describeSchedule = (task: Task): string => {
   if (task.rule.kind === "PERIODIC") {
     return `every ${task.rule.intervalDays} day${task.rule.intervalDays === 1 ? "" : "s"}`;
   }
-  return "one-time";
+  // ONESHOT
+  const dueLabel = task.deadlineHint
+    ? `by ${new Date(task.deadlineHint * 1000).toLocaleDateString()}`
+    : "one-time";
+  if (task.rule.intervalDays && task.rule.intervalDays > 0) {
+    return `${dueLabel} · every ${task.rule.intervalDays}d`;
+  }
+  return dueLabel;
 };
 
 const TaskRow = ({

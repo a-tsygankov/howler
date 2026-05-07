@@ -63,6 +63,7 @@ export const computeUrgency = (input: UrgencyInput): UrgencyResult => {
       scheduleModifiedAt,
       lastExecutionAt,
       nowSec,
+      rule.intervalDays ?? null,
     );
   }
 
@@ -126,6 +127,7 @@ const urgencyForOneshot = (
   modifiedAt: number,
   lastExecutionAt: number | null,
   nowSec: number,
+  intervalDays: number | null,
 ): UrgencyResult => {
   if (deadline === null) {
     return {
@@ -138,13 +140,83 @@ const urgencyForOneshot = (
     };
   }
 
-  // ONESHOT period is deadline − modifiedAt. If the deadline lies
-  // before the modification, the task is already "in its last 0 %"
-  // — treat as urgent until executed.
+  // ── ONESHOT with reminder cadence ─────────────────────────────
+  // Behaves like a PERIODIC every `intervalDays` between modifiedAt
+  // and the deadline. Each cadence cycle is its own "deadline" for
+  // urgency purposes. After the actual deadline: missed unless the
+  // user executed at any point post-modification.
+  if (intervalDays !== null && intervalDays > 0) {
+    const cycle = intervalDays * DAY_SEC;
+    if (nowSec >= deadline) {
+      // Past the absolute deadline.
+      const completed =
+        lastExecutionAt !== null && lastExecutionAt >= modifiedAt;
+      if (completed) {
+        return {
+          urgency: "HIDDEN",
+          prevDeadline: deadline,
+          nextDeadline: null,
+          periodSec: cycle,
+          isMissed: false,
+          secondsUntilNext: null,
+        };
+      }
+      return {
+        urgency: "URGENT",
+        prevDeadline: deadline,
+        nextDeadline: null,
+        periodSec: cycle,
+        isMissed: true,
+        secondsUntilNext: 0,
+      };
+    }
+    // Find the next cadence cycle (capped at the deadline).
+    const elapsed = nowSec - modifiedAt;
+    let next: number;
+    let prev: number | null;
+    if (elapsed <= 0) {
+      next = Math.min(modifiedAt + cycle, deadline);
+      prev = null;
+    } else {
+      const kNext = Math.floor(elapsed / cycle) + 1;
+      next = Math.min(modifiedAt + kNext * cycle, deadline);
+      const kPrev = Math.ceil(elapsed / cycle) - 1;
+      prev = kPrev >= 1 ? modifiedAt + kPrev * cycle : null;
+    }
+    const completedRef = Math.max(
+      modifiedAt,
+      lastExecutionAt ?? Number.NEGATIVE_INFINITY,
+    );
+    const isMissed = prev !== null && prev > completedRef;
+    if (isMissed) {
+      return {
+        urgency: "URGENT",
+        prevDeadline: prev,
+        nextDeadline: next,
+        periodSec: cycle,
+        isMissed: true,
+        secondsUntilNext: next - nowSec,
+      };
+    }
+    const remaining = next - nowSec;
+    const fraction = cycle > 0 ? remaining / cycle : 0;
+    return {
+      urgency: tierFromFraction(fraction),
+      prevDeadline: prev,
+      nextDeadline: next,
+      periodSec: cycle,
+      isMissed: false,
+      secondsUntilNext: remaining,
+    };
+  }
+
+  // ── ONESHOT without cadence — single deadline, no reminders ───
+  // Period is deadline − modifiedAt. If the deadline lies before
+  // the modification, the task is already "in its last 0 %" —
+  // treat as urgent until executed.
   const period = Math.max(0, deadline - modifiedAt);
 
-  // Already executed (any execution counts for ONESHOT — there's
-  // only one due window).
+  // Already executed (any execution counts — only one due window).
   if (lastExecutionAt !== null) {
     return {
       urgency: "HIDDEN",
@@ -157,7 +229,6 @@ const urgencyForOneshot = (
   }
 
   if (nowSec >= deadline) {
-    // Past deadline, never executed → missed.
     return {
       urgency: "URGENT",
       prevDeadline: deadline,

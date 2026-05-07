@@ -63,6 +63,13 @@ export const ScheduleRuleSchema = z.discriminatedUnion("kind", [
   z.object({
     version: z.literal(1),
     kind: z.literal("ONESHOT"),
+    // Optional reminder cadence — when set, the dashboard surfaces
+    // the task every `intervalDays` between creation and the
+    // deadline so the user is nudged on a periodic basis instead of
+    // only seeing it once it's about to expire. The deadline itself
+    // still lives on `tasks.deadline_hint`; the rule only carries
+    // the cadence.
+    intervalDays: z.number().int().positive().optional(),
   }),
 ]);
 export type ScheduleRule = z.infer<typeof ScheduleRuleSchema>;
