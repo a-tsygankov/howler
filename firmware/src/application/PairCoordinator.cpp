@@ -23,10 +23,29 @@ void PairCoordinator::cancel() {
 
 void PairCoordinator::tick() {
     using howler::domain::PairPhase;
+    const int64_t nowMs = clock_.nowEpochMillis();
+
+    // Failed → retry start() on the cool-down so a device that
+    // booted before Wi-Fi finished associating eventually recovers
+    // without user intervention. Idle isn't reachable post-start
+    // (cancel() puts us there manually), so we don't auto-start
+    // from Idle here — only from Failed.
+    if (state_.phase == PairPhase::Failed) {
+        if (nowMs - lastPollMs_ < kPollIntervalMs) return;
+        lastPollMs_ = nowMs;
+        if (deviceId_.empty()) return;
+        state_.lastError.clear();
+        const auto r = api_.start(deviceId_, state_);
+        if (!r.isOk()) {
+            state_.phase = PairPhase::Failed;
+            state_.lastError = "pair-start failed";
+        }
+        return;
+    }
+
     if (state_.phase != PairPhase::Started && state_.phase != PairPhase::Pending) {
         return;
     }
-    const int64_t nowMs = clock_.nowEpochMillis();
     if (nowMs - lastPollMs_ < kPollIntervalMs) return;
     lastPollMs_ = nowMs;
 

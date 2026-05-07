@@ -36,7 +36,10 @@ void ScreenManager::buildPair() {
 
     auto* code = lv_label_create(root_);
     if (state.pairCode.empty()) {
-        lv_label_set_text(code, "starting...");
+        // No code yet — either we're between attempts or pair-start
+        // failed. The status label below carries the explanation;
+        // an em-dash here keeps the layout stable.
+        lv_label_set_text(code, "—");
     } else {
         // Render as "123 456" — easier to read aloud.
         char fmt[16];
@@ -48,14 +51,17 @@ void ScreenManager::buildPair() {
     lv_obj_set_style_text_font(code, &lv_font_montserrat_22, 0);
 
     auto* status = lv_label_create(root_);
+    lv_label_set_long_mode(status, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(status, 200);
+    lv_obj_set_style_text_align(status, LV_TEXT_ALIGN_CENTER, 0);
     switch (state.phase) {
         case PairPhase::Started:   lv_label_set_text(status, "scan QR or enter code"); break;
-        case PairPhase::Pending:   lv_label_set_text(status, "waiting..."); break;
+        case PairPhase::Pending:   lv_label_set_text(status, "waiting for confirm..."); break;
         case PairPhase::Confirmed: lv_label_set_text(status, "paired!"); break;
-        case PairPhase::Expired:   lv_label_set_text(status, "expired - long-press"); break;
+        case PairPhase::Expired:   lv_label_set_text(status, "code expired — retrying"); break;
         case PairPhase::Cancelled: lv_label_set_text(status, "cancelled"); break;
-        case PairPhase::Failed:    lv_label_set_text(status, "error - check wifi"); break;
-        case PairPhase::Idle:      lv_label_set_text(status, ""); break;
+        case PairPhase::Failed:    lv_label_set_text(status, "no wifi — long-press for settings"); break;
+        case PairPhase::Idle:      lv_label_set_text(status, "starting..."); break;
     }
     lv_obj_set_style_text_color(status, lv_color_make(0x7A, 0x70, 0x60), 0);
 }

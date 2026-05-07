@@ -17,6 +17,7 @@ void test_pair_start_populates_code_and_expiry();
 void test_pair_check_confirmed_persists_token();
 void test_pair_isPaired_reads_storage();
 void test_pair_check_throttles_calls();
+void test_pair_retries_start_after_failure();
 
 // test_app.cpp
 void test_app_first_boot_lands_on_pair_screen();
@@ -46,6 +47,7 @@ int main(int, char**) {
     RUN_TEST(test_pair_check_confirmed_persists_token);
     RUN_TEST(test_pair_isPaired_reads_storage);
     RUN_TEST(test_pair_check_throttles_calls);
+    RUN_TEST(test_pair_retries_start_after_failure);
 
     RUN_TEST(test_app_first_boot_lands_on_pair_screen);
     RUN_TEST(test_app_paired_token_lands_on_dashboard);

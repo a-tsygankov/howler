@@ -52,6 +52,29 @@ void test_pair_isPaired_reads_storage() {
     TEST_ASSERT_FALSE(PairCoordinator::isPaired(storage));
 }
 
+void test_pair_retries_start_after_failure() {
+    StubClock clock;
+    StubPairApi api;
+    StubStorage storage;
+    // First start() fails (e.g., Wi-Fi not associated yet).
+    api.startResult_ = howler::application::NetResult::transient();
+
+    PairCoordinator c(api, storage, clock);
+    c.start("dev-1");
+    TEST_ASSERT_EQUAL(static_cast<int>(PairPhase::Failed),
+                      static_cast<int>(c.state().phase));
+
+    // Wi-Fi comes up; the next tick (after the cooldown) should
+    // re-issue start() and recover.
+    api.startResult_ = howler::application::NetResult::ok();
+    api.startCode_ = "778899";
+    clock.advance(10'000);
+    c.tick();
+    TEST_ASSERT_EQUAL(static_cast<int>(PairPhase::Started),
+                      static_cast<int>(c.state().phase));
+    TEST_ASSERT_EQUAL_STRING("778899", c.state().pairCode.c_str());
+}
+
 void test_pair_check_throttles_calls() {
     StubClock clock;
     StubPairApi api;

@@ -134,10 +134,12 @@ void ScreenManager::onEvent(int rotateDelta, bool press, bool longPress) {
     auto& app = app_;
     auto& router = app.router();
 
-    // Universal: long-press at non-root pops; at dashboard root opens
-    // settings. Pair root long-press cancels the current pair attempt.
+    // Universal: long-press at non-root pops; at any root screen
+    // opens Settings. The Pair root needs the Settings escape so a
+    // user with no Wi-Fi creds (fresh device) can navigate to the
+    // Wi-Fi screen instead of being stuck on "error - check wifi".
     if (longPress) {
-        if (rendered_ == ScreenId::Dashboard) {
+        if (router.atRoot()) {
             router.push(ScreenId::Settings);
             return;
         }
