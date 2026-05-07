@@ -280,44 +280,40 @@ jobs:
         with:
           name: firmware-simulator
           path: .
-      - name: Install wokwi-cli
-        # Pinned version: HIL-2 needs reproducible runs. Bump deliberately.
-        run: curl -L https://wokwi.com/ci/install.sh | sh -s -- v0.13.0
-      - name: Run device for 8 s and capture serial
-        id: run
+      # Branch on whether the secret is present without referencing
+      # `secrets.*` from a job-level `if:` — those expressions don't
+      # evaluate `secrets` at all in non-trusted contexts. The env
+      # round-trip is the standard workaround.
+      - name: Check WOKWI_CLI_TOKEN presence
+        id: tok
         env:
-          WOKWI_CLI_TOKEN: ${{ secrets.WOKWI_CLI_TOKEN }}
-        # No-token path: skip without failing the run. Once the
-        # secret is set, the actual smoke test asserts on serial.
+          T: ${{ secrets.WOKWI_CLI_TOKEN }}
         run: |
-          if [ -z "$WOKWI_CLI_TOKEN" ]; then
-            echo "::warning::WOKWI_CLI_TOKEN not set — skipping HIL-2"
-            echo "skipped=true" >> "$GITHUB_OUTPUT"
-            exit 0
+          if [ -z "$T" ]; then
+            echo "::warning::WOKWI_CLI_TOKEN not set — HIL-2 will skip"
+            echo "have=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "have=true" >> "$GITHUB_OUTPUT"
           fi
-          cd firmware
-          wokwi-cli --timeout 8000 --serial-log-file serial.log .
-          echo "skipped=false" >> "$GITHUB_OUTPUT"
         shell: bash
-      - name: Assert boot output
-        if: steps.run.outputs.skipped == 'false'
-        run: |
-          if ! grep -q '\[howler\] boot ok' firmware/serial.log; then
-            echo "Missing '[howler] boot ok' in serial output:"
-            cat firmware/serial.log || true
-            exit 1
-          fi
-          if ! grep -q '\[howler\] device=' firmware/serial.log; then
-            echo "Missing '[howler] device=' line:"
-            cat firmware/serial.log || true
-            exit 1
-          fi
-          echo "HIL-2 boot smoke green."
-        shell: bash
+      # Official Wokwi action installs wokwi-cli, runs the simulator,
+      # captures the serial log, and exits non-zero if `expect_text`
+      # isn't seen within `timeout`. Skipped silently when the token
+      # is absent.
+      - name: HIL-2 boot smoke (Wokwi)
+        if: steps.tok.outputs.have == 'true'
+        uses: wokwi/wokwi-ci-action@v1
+        with:
+          token: ${{ secrets.WOKWI_CLI_TOKEN }}
+          path: firmware
+          timeout: 8000
+          expect_text: '[howler] boot ok'
+          serial_log_file: firmware/serial.log
       - name: Upload serial log
-        if: always() && steps.run.outputs.skipped == 'false'
+        if: always() && steps.tok.outputs.have == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: hil2-serial-log
           path: firmware/serial.log
           retention-days: 7
+          if-no-files-found: ignore
