@@ -52,6 +52,8 @@ void ScreenManager::buildSettings() {
 
     menuModel_.replace({
         mk("all-tasks", "All tasks",   "browse + mark done"),
+        mk("switch",    "Switch view", "toggle today / all"),
+        mk("sync",      "Sync now",    "fetch latest"),
         mk("wifi",      "Wi-Fi",       "scan + connect"),
         mk("login-qr",  "Login by QR", "phone link"),
         mk("brightness","Brightness",  "screen level"),
@@ -65,6 +67,24 @@ void ScreenManager::buildSettings() {
         auto& app = this->app();
         const auto& id = it.id;
         if      (id == "all-tasks")  app.router().push(domain::ScreenId::TaskList);
+        else if (id == "switch") {
+            // Toggle the root between Dashboard and TaskList. Pop
+            // back so the user lands on the new main screen rather
+            // than buried under Settings; the carousel cursor in
+            // either main screen survives because their models are
+            // populated from the same sync payload.
+            const auto next = (this->isOnTaskListRoot())
+                ? domain::ScreenId::Dashboard
+                : domain::ScreenId::TaskList;
+            app.router().replaceRoot(next);
+        }
+        else if (id == "sync") {
+            // Force a sync round on the next tick. The "syncing..."
+            // toast is set by ScreenManager so the user gets visible
+            // feedback even when the actual fetch is fast.
+            app.sync().requestSync();
+            this->showToast("syncing...", 1500);
+        }
         else if (id == "wifi")       app.router().push(domain::ScreenId::Wifi);
         else if (id == "login-qr")   app.router().push(domain::ScreenId::LoginQr);
         else if (id == "brightness") app.router().push(domain::ScreenId::SettingsBrightness);

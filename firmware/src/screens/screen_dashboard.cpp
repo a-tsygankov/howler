@@ -60,6 +60,23 @@ void ScreenManager::buildDashboard() {
     //    update loop can fade it in/out without a rebuild. ──
     longPressArcWidget_.build(root_, Palette::accent());
 
+    // ── tab strip: today / all (touch-tap to switch) ─────────────
+    {
+        components::TabStripEntry entries[] = {
+            {"today", reinterpret_cast<const void*>(static_cast<intptr_t>(domain::ScreenId::Dashboard))},
+            {"all",   reinterpret_cast<const void*>(static_cast<intptr_t>(domain::ScreenId::TaskList))},
+        };
+        components::buildTabStrip(root_, entries, 2, /*activeIndex=*/0,
+            [](lv_event_t* e) {
+                if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
+                auto* mgr = static_cast<ScreenManager*>(lv_event_get_user_data(e));
+                auto* btn = lv_event_get_target_obj(e);
+                const auto target = static_cast<domain::ScreenId>(
+                    reinterpret_cast<intptr_t>(lv_obj_get_user_data(btn)));
+                mgr->app().router().replaceRoot(target);
+            }, this);
+    }
+
     // ── empty state ────────────────────────────────────────────
     if (dash.empty()) {
         auto* card = buildCenterCard(root_, 180, Palette::paper2());
@@ -80,31 +97,10 @@ void ScreenManager::buildDashboard() {
     const bool urgent = sel->urgency == domain::Urgency::Urgent;
     const lv_color_t accent = urgent ? Palette::accent() : Palette::ink2();
 
-    // ── header chip: "N urgent · M other" — top-of-card mini badge ─
-    {
-        auto* chip = lv_obj_create(root_);
-        lv_obj_set_size(chip, 156, 22);
-        lv_obj_align(chip, LV_ALIGN_TOP_MID, 0, 24);
-        lv_obj_clear_flag(chip, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_set_style_radius(chip, 11, 0);
-        lv_obj_set_style_bg_color(chip, urgent ? Palette::accent()
-                                               : Palette::paper3(), 0);
-        lv_obj_set_style_border_width(chip, 0, 0);
-        lv_obj_set_style_pad_all(chip, 0, 0);
-
-        auto* l = lv_label_create(chip);
-        char hdr[32];
-        const auto urg = dash.urgentCount();
-        const auto rest = dash.size() - urg;
-        if (urg == 0)        snprintf(hdr, sizeof(hdr), "%u to do", (unsigned)rest);
-        else if (rest == 0)  snprintf(hdr, sizeof(hdr), "%u urgent", (unsigned)urg);
-        else                 snprintf(hdr, sizeof(hdr), "%u urgent  %u more",
-                                      (unsigned)urg, (unsigned)rest);
-        lv_label_set_text(l, hdr);
-        lv_obj_set_style_text_color(l,
-            urgent ? Palette::paper() : Palette::ink2(), 0);
-        lv_obj_center(l);
-    }
+    // (Urgency-count chip removed: the tab strip occupies the top
+    // band now, and the centre card + cursor dots already convey
+    // selection + total-count without doubling up the same number.)
+    (void)urgent;  // kept above for the centre-card border accent
 
     // ── centre circular card with the selected task ──
     auto* card = buildCenterCard(root_, 156, Palette::paper2());

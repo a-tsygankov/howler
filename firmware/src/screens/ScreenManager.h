@@ -44,6 +44,21 @@ public:
     /// the lambdas isn't possible).
     application::App& app() { return app_; }
 
+    /// True iff the bottom-most screen in the router stack is
+    /// TaskList. Used by Settings → "Switch view" to decide which
+    /// way to flip the root.
+    bool isOnTaskListRoot() const;
+
+    /// Brief banner overlay that fades after `durationMs`. Used to
+    /// surface "syncing..." after the user taps Sync now in Settings.
+    /// Lives outside the screen tree so it survives screen rebuilds.
+    void showToast(const char* text, uint32_t durationMs = 1500);
+
+    /// Helper for screens that show a tab strip — returns the index
+    /// of the current main screen in `kMainScreens`, or kMainScreens
+    /// length if the current screen isn't a main one.
+    size_t mainScreenIndex() const;
+
     /// `screen_dashboard.cpp` reads this to format "in 14m" / "due
     /// 2h" labels relative to the server's idea of "now" (delivered
     /// alongside the dashboard payload). 0 means "we haven't synced
@@ -70,6 +85,12 @@ private:
     /// rebuilding the whole screen tree (which would flicker on
     /// every detent of the encoder). Cleared in teardownScreen().
     lv_obj_t* resultValueLabel_ = nullptr;
+
+    /// Toast overlay (parent = lv_layer_top so it floats above any
+    /// screen tree and survives router transitions). Used by
+    /// Settings → "Sync now" to surface "syncing..." for ~1.5 s.
+    lv_obj_t* toastLabel_ = nullptr;
+    uint32_t  toastUntilMs_ = 0;
 
     /// Round-menu state. Each screen that opts into the watch-style
     /// carousel layout (Settings, UserPicker, Wi-Fi) populates the

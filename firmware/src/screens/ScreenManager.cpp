@@ -3,6 +3,7 @@
 // framework concerns. LVGL 9 API.
 
 #include "ScreenManager.h"
+#include "components/RoundCard.h"
 #include "../application/PairCoordinator.h"
 
 namespace howler::screens {
@@ -85,10 +86,47 @@ void ScreenManager::tick(uint32_t millisNow) {
     // immune to dial-clock drift before SNTP completes.
     lastServerNowSec_ = app_.serverNowSec();
 
+    // Auto-fade the toast overlay once its window expires.
+    if (toastLabel_ && toastUntilMs_ != 0 && millisNow >= toastUntilMs_) {
+        lv_obj_del(toastLabel_);
+        toastLabel_ = nullptr;
+        toastUntilMs_ = 0;
+    }
+
     if (app_.router().current() != rendered_) {
         rebuildScreen();
     }
     lv_timer_handler();
+}
+
+bool ScreenManager::isOnTaskListRoot() const {
+    return rendered_ == domain::ScreenId::TaskList;
+}
+
+size_t ScreenManager::mainScreenIndex() const {
+    constexpr auto N = sizeof(kMainScreens) / sizeof(kMainScreens[0]);
+    for (size_t i = 0; i < N; ++i) if (kMainScreens[i] == rendered_) return i;
+    return N;
+}
+
+void ScreenManager::showToast(const char* text, uint32_t durationMs) {
+    // Re-create even if a previous toast is still up so the new
+    // message isn't queued. Parent = top layer so the toast sits
+    // above whatever screen LVGL is currently rendering.
+    if (toastLabel_) {
+        lv_obj_del(toastLabel_);
+        toastLabel_ = nullptr;
+    }
+    auto* l = lv_label_create(lv_layer_top());
+    lv_label_set_text(l, text);
+    lv_obj_set_style_text_color(l, components::Palette::paper(), 0);
+    lv_obj_set_style_bg_color(l, components::Palette::ink(), 0);
+    lv_obj_set_style_bg_opa(l, LV_OPA_80, 0);
+    lv_obj_set_style_pad_all(l, 8, 0);
+    lv_obj_set_style_radius(l, 14, 0);
+    lv_obj_align(l, LV_ALIGN_BOTTOM_MID, 0, -36);
+    toastLabel_   = l;
+    toastUntilMs_ = millis() + durationMs;
 }
 
 void ScreenManager::pollAndDispatch(uint32_t /*millisNow*/) {

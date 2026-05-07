@@ -36,11 +36,22 @@ void ScreenManager::buildTaskList() {
     root_ = buildRoundBackground();
     longPressArcWidget_.build(root_, Palette::accent());
 
+    // Tab strip — same shape as Dashboard so the user always sees
+    // both views available regardless of which is active.
     {
-        auto* h = lv_label_create(root_);
-        lv_label_set_text(h, "All tasks");
-        lv_obj_set_style_text_color(h, Palette::ink2(), 0);
-        lv_obj_align(h, LV_ALIGN_TOP_MID, 0, 12);
+        components::TabStripEntry entries[] = {
+            {"today", reinterpret_cast<const void*>(static_cast<intptr_t>(domain::ScreenId::Dashboard))},
+            {"all",   reinterpret_cast<const void*>(static_cast<intptr_t>(domain::ScreenId::TaskList))},
+        };
+        components::buildTabStrip(root_, entries, 2, /*activeIndex=*/1,
+            [](lv_event_t* e) {
+                if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
+                auto* mgr = static_cast<ScreenManager*>(lv_event_get_user_data(e));
+                auto* btn = lv_event_get_target_obj(e);
+                const auto target = static_cast<domain::ScreenId>(
+                    reinterpret_cast<intptr_t>(lv_obj_get_user_data(btn)));
+                mgr->app().router().replaceRoot(target);
+            }, this);
     }
 
     auto& all = app_.allTasks();
