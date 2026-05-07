@@ -43,7 +43,15 @@ export const BottomTabs = () => {
     <nav
       data-testid="bottom-tabs"
       aria-label="Main"
-      className="fixed bottom-3 left-1/2 z-40 flex -translate-x-1/2 items-center gap-1 rounded-full border border-line bg-paper/95 px-2 py-1.5 shadow-tabbar backdrop-blur-md lg:hidden"
+      // iOS Safari hides anything in the last ~32 pt under the home
+      // indicator + bottom URL bar when `viewport-fit=cover` is set
+      // (which it is, in index.html). Use the safe-area inset to
+      // float the bar above both. The `max(...)` keeps a 12 px
+      // breathing room on Android / non-notched devices.
+      style={{
+        bottom: "max(0.75rem, calc(env(safe-area-inset-bottom) + 0.5rem))",
+      }}
+      className="fixed left-1/2 z-40 flex -translate-x-1/2 items-center gap-1 rounded-full border border-line bg-paper/95 px-2 py-1.5 shadow-tabbar backdrop-blur-md lg:hidden"
     >
       {TABS.map((t) => {
         const active = t.match(pathname);

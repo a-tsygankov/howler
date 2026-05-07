@@ -193,9 +193,16 @@ export const Dashboard = ({ session, onLogout, view }: Props) => {
     <main
       data-testid="dashboard"
       data-view={view}
-      // pb-24 keeps the floating BottomTabs (lg:hidden) from
-      // covering the last row on mobile. No-op on desktop.
-      className="paper-grain mx-auto min-h-screen max-w-md pb-24 lg:max-w-2xl lg:pb-0"
+      // The bottom inset clears the floating BottomTabs (lg:hidden).
+      // On iOS the tab bar floats above the home indicator via
+      // env(safe-area-inset-bottom), so the page needs to reserve
+      // that much extra space too — otherwise the last row sits
+      // under the bar.
+      style={{
+        paddingBottom:
+          "calc(6rem + env(safe-area-inset-bottom))",
+      }}
+      className="paper-grain mx-auto min-h-screen max-w-md lg:max-w-2xl lg:!pb-0"
     >
       <Header
         homeName={me.data?.homeDisplayName ?? "Howler"}
