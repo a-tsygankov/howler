@@ -19,6 +19,7 @@
 #include "adapters/NoopNetwork.h"
 #include "adapters/NvsStorage.h"
 #include "adapters/RotaryInput.h"
+#include "adapters/WifiCaptivePortal.h"
 #include "adapters/WifiNetwork.h"
 #include "adapters/WifiPairApi.h"
 #include "adapters/WifiStation.h"
@@ -37,15 +38,69 @@ constexpr int LCD_POWER_PIN = 1;
 
 TFT_eSPI tft;
 
-howler::adapters::ArduinoClock arduinoClock;
-howler::adapters::EspRandom    espRandom;
-howler::adapters::NvsStorage   nvsStorage;
-howler::adapters::RotaryInput  rotaryInput;
-howler::adapters::WifiStation  wifiStation;
+howler::adapters::ArduinoClock        arduinoClock;
+howler::adapters::EspRandom           espRandom;
+howler::adapters::NvsStorage          nvsStorage;
+howler::adapters::RotaryInput         rotaryInput;
+howler::adapters::WifiStation         wifiStation;
+howler::adapters::WifiCaptivePortal   captivePortal;
 
 howler::adapters::NoopNetwork  noopNet;
 howler::adapters::WifiPairApi  pairApi(HOWLER_BACKEND_URL);
 howler::adapters::WifiNetwork  wifiNet(HOWLER_BACKEND_URL, std::string{});
+
+// Read the persisted Wi-Fi creds (App::saveAndConnectWifi format)
+// and connect synchronously. Returns true on association.
+bool tryConnectFromNvs() {
+    std::string blob;
+    if (!nvsStorage.readBlob("howler.wifi", blob) || blob.size() < 4) return false;
+    auto readStr = [&](size_t& off, std::string& out) -> bool {
+        if (off + 2 > blob.size()) return false;
+        const uint16_t n =
+            static_cast<uint8_t>(blob[off]) |
+            (static_cast<uint8_t>(blob[off + 1]) << 8);
+        off += 2;
+        if (off + n > blob.size()) return false;
+        out.assign(blob.data() + off, n);
+        off += n;
+        return true;
+    };
+    size_t off = 0;
+    std::string ssid, pass;
+    if (!readStr(off, ssid) || !readStr(off, pass) || ssid.empty()) return false;
+
+    Serial.printf("[wifi] connecting to '%s'\n", ssid.c_str());
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(ssid.c_str(), pass.c_str());
+    const uint32_t deadline = millis() + 12000;
+    while (WiFi.status() != WL_CONNECTED && millis() < deadline) {
+        delay(250);
+    }
+    if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("[wifi] connect timeout - continuing offline");
+        return false;
+    }
+    Serial.printf("[wifi] connected, ip=%s rssi=%d\n",
+                  WiFi.localIP().toString().c_str(), WiFi.RSSI());
+    // Best-effort SNTP. UTC; ts in occurrences are seconds since epoch.
+    configTime(0, 0, "pool.ntp.org", "time.google.com");
+    return true;
+}
+
+// Run the captive portal until the user submits the form, then reboot
+// so the next boot enters STA mode with the saved creds.
+[[noreturn]] void runCaptivePortalAndReboot() {
+    captivePortal.begin(nvsStorage);
+    Serial.printf("[setup] portal active. Connect to '%s' then open http://%s\n",
+                  captivePortal.apName(), captivePortal.apIp());
+    while (!captivePortal.isComplete()) {
+        captivePortal.handle();
+        delay(2);
+    }
+    Serial.println("[setup] saved - rebooting");
+    delay(500);  // let the HTTP "saved" response flush to the phone
+    ESP.restart();
+}
 
 // Read the persisted token (if any) and use the wifi-backed network
 // when present; otherwise fall back to the noop adapter so the UI is
@@ -100,8 +155,28 @@ void setup() {
 #endif
 
     rotaryInput.begin();
-    WiFi.mode(WIFI_STA);
-    WiFi.begin();  // best-effort reconnect to last-known network
+
+    // Wi-Fi boot decision. NVS creds → STA + connect. Missing →
+    // captive-portal AP `howler-XXXX` for first-boot setup; never
+    // returns (reboots once the user submits the web form). Without
+    // this the device hits the chicken-and-egg of the SPA needing
+    // the device's pair code while the device needs Wi-Fi to fetch
+    // a code in the first place.
+    if (!tryConnectFromNvs()) {
+        // Show the AP name on the raw TFT (LVGL isn't up yet — its
+        // bring-up depends on having `g_app` constructed, which we
+        // skip when the portal takes over).
+        uint8_t mac[6]; WiFi.macAddress(mac);
+        char ap[16]; snprintf(ap, sizeof(ap), "howler-%02x%02x", mac[4], mac[5]);
+        tft.fillScreen(TFT_BLACK);
+        tft.setTextColor(TFT_WHITE, TFT_BLACK);
+        tft.setTextDatum(MC_DATUM);
+        tft.drawString("Wi-Fi setup", 120, 90, 4);
+        tft.drawString("join", 120, 120, 2);
+        tft.drawString(ap, 120, 140, 4);
+        tft.drawString("from your phone", 120, 170, 2);
+        runCaptivePortalAndReboot();   // never returns
+    }
 
     auto* net = pickNetwork();
     static howler::application::App app(
