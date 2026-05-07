@@ -6,9 +6,11 @@ import {
   apiMe,
   apiPairConfirm,
   createLabel,
+  createScheduleTemplate,
   createTask,
   createUser,
   deleteLabel,
+  deleteScheduleTemplate,
   deleteTask,
   deleteUser,
   fetchDashboard,
@@ -22,11 +24,13 @@ import {
   revokeDevice,
   updateHome,
   updateLabel,
+  updateScheduleTemplate,
   updateTask,
   uploadAvatar,
   type DashboardItem,
   type Device,
   type Label,
+  type ScheduleRule,
   type ScheduleTemplate,
   type Task,
   type TaskKind,
@@ -334,6 +338,15 @@ export const Dashboard = ({ session, onLogout, view }: Props) => {
               Numeric shapes (Grams, Pushups, Rating) tasks can opt into.
             </p>
           </section>
+
+          <Section title="Schedule templates">
+            <TemplatesBlock
+              templates={templates.data ?? []}
+              onChanged={() =>
+                qc.invalidateQueries({ queryKey: ["templates"] })
+              }
+            />
+          </Section>
 
           <Section title="Labels">
             <LabelsBlock
@@ -1395,6 +1408,262 @@ const TaskRow = ({
           disabled={deleting}
         >
           Delete
+        </Btn>
+      </div>
+    </div>
+  );
+};
+
+// ── Schedule templates (per-home; system + custom) ────────────────
+
+const describeTemplateRule = (rule: ScheduleRule): string => {
+  if (rule.kind === "DAILY") {
+    if (rule.times.length === 0) return "daily";
+    const local = rule.times
+      .map((t) => utcToLocal(t))
+      .filter((t): t is string => !!t);
+    return `daily ${local.join(", ")}`;
+  }
+  if (rule.kind === "PERIODIC") {
+    return `every ${rule.intervalDays} day${rule.intervalDays === 1 ? "" : "s"}`;
+  }
+  return rule.intervalDays
+    ? `one-time · remind every ${rule.intervalDays} day${rule.intervalDays === 1 ? "" : "s"}`
+    : "one-time";
+};
+
+const TemplatesBlock = ({
+  templates,
+  onChanged,
+}: {
+  templates: ScheduleTemplate[];
+  onChanged: () => void;
+}) => {
+  const [adding, setAdding] = useState(false);
+  return (
+    <div>
+      {templates.length === 0 && (
+        <p className="cap py-2">No templates yet.</p>
+      )}
+      {templates.map((t) => (
+        <TemplateRow key={t.id} template={t} onChanged={onChanged} />
+      ))}
+      {adding ? (
+        <TemplateEditor
+          initial={{
+            displayName: "",
+            description: "",
+            rule: { version: 1, kind: "DAILY", times: ["09:00"] },
+          }}
+          isNew
+          onCancel={() => setAdding(false)}
+          onSave={async (payload) => {
+            await createScheduleTemplate(payload);
+            setAdding(false);
+            onChanged();
+          }}
+        />
+      ) : (
+        <Btn
+          variant="outline"
+          size="pillSm"
+          className="mt-2"
+          onClick={() => setAdding(true)}
+        >
+          + Add template
+        </Btn>
+      )}
+    </div>
+  );
+};
+
+const TemplateRow = ({
+  template,
+  onChanged,
+}: {
+  template: ScheduleTemplate;
+  onChanged: () => void;
+}) => {
+  const [editing, setEditing] = useState(false);
+  const remove = useMutation({
+    mutationFn: () => deleteScheduleTemplate(template.id),
+    onSuccess: onChanged,
+  });
+  if (editing) {
+    return (
+      <TemplateEditor
+        initial={{
+          displayName: template.displayName,
+          description: template.description ?? "",
+          rule: template.rule,
+        }}
+        isNew={false}
+        onCancel={() => setEditing(false)}
+        onSave={async (payload) => {
+          await updateScheduleTemplate(template.id, payload);
+          setEditing(false);
+          onChanged();
+        }}
+      />
+    );
+  }
+  return (
+    <div className="flex items-center justify-between border-t border-line-soft py-2">
+      <div className="min-w-0 flex-1">
+        <div className="text-sm">
+          {template.displayName}
+          {template.system && <span className="cap ml-2">default</span>}
+        </div>
+        <div className="cap mt-0.5">{describeTemplateRule(template.rule)}</div>
+      </div>
+      <div className="flex gap-1">
+        {!template.system && (
+          <>
+            <Btn variant="ghost" size="pillSm" onClick={() => setEditing(true)}>
+              Edit
+            </Btn>
+            <Btn
+              variant="danger"
+              size="pillSm"
+              disabled={remove.isPending}
+              onClick={() => {
+                if (confirm(`Delete template "${template.displayName}"?`)) {
+                  remove.mutate();
+                }
+              }}
+            >
+              Delete
+            </Btn>
+          </>
+        )}
+      </div>
+    </div>
+  );
+};
+
+interface TemplateEditorPayload {
+  displayName: string;
+  description: string | null;
+  rule: ScheduleRule;
+}
+
+const TemplateEditor = ({
+  initial,
+  isNew,
+  onCancel,
+  onSave,
+}: {
+  initial: { displayName: string; description: string; rule: ScheduleRule };
+  isNew: boolean;
+  onCancel: () => void;
+  onSave: (payload: TemplateEditorPayload) => Promise<void>;
+}) => {
+  const [name, setName] = useState(initial.displayName);
+  const [desc, setDesc] = useState(initial.description);
+  const [kind, setKind] = useState<TaskKind>(initial.rule.kind);
+  const [localTimes, setLocalTimes] = useState<string[]>(
+    initial.rule.kind === "DAILY"
+      ? initial.rule.times
+          .map((t) => utcToLocal(t))
+          .filter((t): t is string => !!t)
+      : ["09:00"],
+  );
+  const [intervalDays, setIntervalDays] = useState<number>(
+    initial.rule.kind === "PERIODIC" ? initial.rule.intervalDays : 7,
+  );
+  const [busy, setBusy] = useState(false);
+  const submit = async () => {
+    if (!name.trim()) return;
+    let rule: ScheduleRule;
+    if (kind === "DAILY") {
+      const utc = localTimes
+        .map((t) => localToUTC(t))
+        .filter((t): t is string => !!t);
+      if (utc.length === 0) return;
+      rule = { version: 1, kind: "DAILY", times: utc };
+    } else if (kind === "PERIODIC") {
+      rule = { version: 1, kind: "PERIODIC", intervalDays };
+    } else {
+      rule = { version: 1, kind: "ONESHOT" };
+    }
+    setBusy(true);
+    try {
+      await onSave({
+        displayName: name.trim(),
+        description: desc.trim() || null,
+        rule,
+      });
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="border-t border-line-soft py-3">
+      <input
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        placeholder="Template name"
+        className="mb-2 w-full rounded-md border border-line bg-paper px-3 py-1.5 text-sm focus:border-ink focus:outline-none"
+      />
+      <input
+        value={desc}
+        onChange={(e) => setDesc(e.target.value)}
+        placeholder="Description (optional)"
+        className="mb-2 w-full rounded-md border border-line bg-paper px-3 py-1.5 text-xs focus:border-ink focus:outline-none"
+      />
+      <div className="mb-2 flex gap-1.5">
+        {(["DAILY", "PERIODIC", "ONESHOT"] as const).map((k) => (
+          <button
+            key={k}
+            type="button"
+            onClick={() => setKind(k)}
+            className={`flex-1 rounded-md px-2 py-1 text-xs ${
+              kind === k
+                ? "bg-ink text-paper"
+                : "border border-line text-ink-2 hover:text-ink"
+            }`}
+          >
+            {KIND_LABEL[k]}
+          </button>
+        ))}
+      </div>
+      {kind === "DAILY" && (
+        <div className="mb-2">
+          <span className="cap mb-1 block">
+            Times <span className="opacity-60">({getLocalTimezone()})</span>
+          </span>
+          <DailyTimePicker
+            value={localTimes}
+            onChange={setLocalTimes}
+            maxSlots={6}
+          />
+        </div>
+      )}
+      {kind === "PERIODIC" && (
+        <label className="mb-2 block text-xs">
+          <span className="cap mb-1 block">Every N days</span>
+          <input
+            type="number"
+            min={1}
+            value={intervalDays}
+            onChange={(e) =>
+              setIntervalDays(parseInt(e.target.value, 10) || 1)
+            }
+            className="w-24 rounded-md border border-line bg-paper px-3 py-1.5 text-sm focus:border-ink focus:outline-none"
+          />
+        </label>
+      )}
+      <div className="flex justify-end gap-2">
+        <Btn variant="ghost" size="pillSm" onClick={onCancel} disabled={busy}>
+          Cancel
+        </Btn>
+        <Btn
+          variant="sage"
+          size="pillSm"
+          onClick={submit}
+          disabled={busy || !name.trim()}
+        >
+          {busy ? "…" : isNew ? "Add" : "Save"}
         </Btn>
       </div>
     </div>

@@ -535,6 +535,31 @@ export const fetchScheduleTemplates = async (): Promise<ScheduleTemplate[]> =>
     .parse(await callJson("GET", "/schedule-templates"))
     .templates;
 
+export interface UpsertTemplateInput {
+  displayName: string;
+  description?: string | null;
+  rule: ScheduleRule;
+  sortOrder?: number;
+}
+
+export const createScheduleTemplate = async (
+  input: UpsertTemplateInput,
+): Promise<ScheduleTemplate> =>
+  ScheduleTemplateSchema.parse(
+    await callJson("POST", "/schedule-templates", input),
+  );
+
+export const updateScheduleTemplate = async (
+  id: string,
+  patch: Partial<UpsertTemplateInput>,
+): Promise<void> => {
+  await callJson("PATCH", `/schedule-templates/${id}`, patch);
+};
+
+export const deleteScheduleTemplate = async (id: string): Promise<void> => {
+  await callJson("DELETE", `/schedule-templates/${id}`);
+};
+
 // ── Avatars ────────────────────────────────────────────────────────
 
 export const uploadAvatar = async (
