@@ -10,9 +10,10 @@ import init0004 from "../migrations/0004_avatars.sql?raw";
 import init0005 from "../migrations/0005_push_subscriptions.sql?raw";
 import init0006 from "../migrations/0006_label_icons.sql?raw";
 import init0007 from "../migrations/0007_task_avatar_backfill.sql?raw";
+import init0008 from "../migrations/0008_rule_modified_at.sql?raw";
 
 const applyMigrations = async () => {
-  for (const sql of [init0000, init0001, init0002, init0003, init0004, init0005, init0006, init0007]) {
+  for (const sql of [init0000, init0001, init0002, init0003, init0004, init0005, init0006, init0007, init0008]) {
     // Strip line comments first — they may contain `;` which would
     // otherwise break the naive split below.
     const stripped = sql

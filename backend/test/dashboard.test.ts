@@ -9,6 +9,7 @@ import init0004 from "../migrations/0004_avatars.sql?raw";
 import init0005 from "../migrations/0005_push_subscriptions.sql?raw";
 import init0006 from "../migrations/0006_label_icons.sql?raw";
 import init0007 from "../migrations/0007_task_avatar_backfill.sql?raw";
+import init0008 from "../migrations/0008_rule_modified_at.sql?raw";
 import { resetClock, setClock, TestClock } from "../src/clock.ts";
 
 // End-to-end view of the urgency endpoint: real auth, real D1
@@ -21,7 +22,7 @@ const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
 
 const applyMigrations = async () => {
-  for (const sql of [init0000, init0001, init0002, init0003, init0004, init0005, init0006, init0007]) {
+  for (const sql of [init0000, init0001, init0002, init0003, init0004, init0005, init0006, init0007, init0008]) {
     const stripped = sql
       .split("\n")
       .filter((line) => !line.trim().startsWith("--"))
@@ -296,6 +297,58 @@ describe("GET /api/dashboard", () => {
     // since not missed. But we still want isMissed false. The task
     // gets filtered if HIDDEN — verify by checking the empty list.
     expect(body.tasks).toHaveLength(0);
+  });
+
+  it("rule_modified_at survives cron's updated_at bumps (urgency stays correct)", async () => {
+    // Regression for the prod bug seen in dev-17 debugging: the
+    // cron's queue consumer (`fanout.ts`) bumps `schedules.updated_at`
+    // every time it advances `next_fire_at`. Before migration 0008
+    // urgency.ts anchored on `updated_at` directly, which raced
+    // forward past every prev_deadline → nothing was ever "missed"
+    // and every task ended up in the HIDDEN tier. After 0008 the
+    // dashboard reads `rule_modified_at` instead, which only the
+    // user-driven mutation sites bump.
+    const { token } = await auth();
+    const headers = {
+      authorization: `Bearer ${token}`,
+      "content-type": "application/json",
+    } as const;
+
+    // PERIODIC every-1-day, created at T0. Before 0008's fix, advancing
+    // past T0+1d AND simulating a cron-fanout updated_at bump would
+    // hide the task (false negative). The regression check is that
+    // the task is still URGENT-missed.
+    const create = await SELF.fetch("https://t/api/tasks", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        title: "rhythm-anchor",
+        kind: "PERIODIC",
+        intervalDays: 1,
+      }),
+    });
+    expect(create.status).toBe(201);
+
+    // Advance 2 days. Now the fired-at-T0+1d slot is in the past.
+    testClock.advanceMs(2 * DAY_MS);
+
+    // Simulate the cron's post-fire schedule write: bump updated_at
+    // to wall-clock now, leave rule_modified_at alone. This is what
+    // fanout.ts does for any actively-firing schedule.
+    await env.DB
+      .prepare("UPDATE schedules SET updated_at = ? WHERE task_id IN (SELECT id FROM tasks WHERE title = ?)")
+      .bind(testClock.nowMs(), "rhythm-anchor")
+      .run();
+
+    const r = await SELF.fetch("https://t/api/dashboard", {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    const body = await json<{
+      tasks: Array<{ urgency: string; isMissed: boolean }>;
+    }>(r);
+    expect(body.tasks).toHaveLength(1);
+    expect(body.tasks[0]?.urgency).toBe("URGENT");
+    expect(body.tasks[0]?.isMissed).toBe(true);
   });
 
   it("requires auth", async () => {

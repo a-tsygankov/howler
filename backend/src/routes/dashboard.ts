@@ -37,6 +37,7 @@ interface ScheduleRow {
   task_id: string;
   rule_json: string;
   updated_at: number;
+  rule_modified_at: number | null;
 }
 
 interface ExecutionRow {
@@ -102,7 +103,8 @@ export const dashboardRouter = new Hono<{
     ] = await Promise.all([
       c.env.DB
         .prepare(
-          `SELECT task_id, rule_json, updated_at FROM schedules
+          `SELECT task_id, rule_json, updated_at, rule_modified_at
+           FROM schedules
            WHERE task_id IN (${placeholders}) AND is_deleted = 0`,
         )
         .bind(...taskIds)
@@ -137,12 +139,21 @@ export const dashboardRouter = new Hono<{
     >();
     for (const s of scheduleRows) {
       try {
+        // Anchor on rule_modified_at (added in migration 0008) — the
+        // user-driven mutation timestamp. Pre-0008 rows have a 0 default
+        // until the migration's UPDATE backfills them; if a deploy
+        // races so the row appears with rule_modified_at=0/null we
+        // fall back to updated_at so urgency still works (just with
+        // the prior buggy semantics, not a crash).
+        const ms =
+          s.rule_modified_at && s.rule_modified_at > 0
+            ? s.rule_modified_at
+            : s.updated_at;
         scheduleByTask.set(s.task_id, {
           rule: JSON.parse(s.rule_json) as ScheduleRule,
-          // schedules.updated_at is stored in ms (matches the rest
-          // of tasks/schedules) but the urgency calc works in
-          // seconds (matches now, deadline_hint, task_executions.ts).
-          modifiedAt: Math.floor(s.updated_at / 1000),
+          // Stored in ms; urgency calc works in seconds (matches now,
+          // deadline_hint, task_executions.ts).
+          modifiedAt: Math.floor(ms / 1000),
         });
       } catch {
         /* ignore malformed row */

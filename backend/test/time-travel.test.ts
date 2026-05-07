@@ -9,6 +9,7 @@ import init0004 from "../migrations/0004_avatars.sql?raw";
 import init0005 from "../migrations/0005_push_subscriptions.sql?raw";
 import init0006 from "../migrations/0006_label_icons.sql?raw";
 import init0007 from "../migrations/0007_task_avatar_backfill.sql?raw";
+import init0008 from "../migrations/0008_rule_modified_at.sql?raw";
 import { resetClock, setClock, TestClock } from "../src/clock.ts";
 
 // Demonstrates the injectable-clock pattern (plan §3 / `src/clock.ts`).
@@ -21,7 +22,7 @@ const T0_MS = 1_700_000_000_000; // arbitrary anchor (2023-11-14 UTC)
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 
 const applyMigrations = async () => {
-  for (const sql of [init0000, init0001, init0002, init0003, init0004, init0005, init0006, init0007]) {
+  for (const sql of [init0000, init0001, init0002, init0003, init0004, init0005, init0006, init0007, init0008]) {
     const stripped = sql
       .split("\n")
       .filter((line) => !line.trim().startsWith("--"))
