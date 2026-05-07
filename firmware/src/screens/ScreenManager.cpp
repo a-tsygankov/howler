@@ -256,6 +256,29 @@ void ScreenManager::onEvent(int rotateDelta, bool tap, bool doubleTap, bool long
             }
             break;
         }
+        case ScreenId::TaskList: {
+            // Long-press on a task in All-tasks = quick mark-done
+            // (no result, no user) — same shortcut as the Dashboard
+            // root, so a power-user keystroke works regardless of
+            // which list view they're spinning through.
+            if (longPress) {
+                const auto* sel = menuModel_.selected();
+                if (!sel) break;
+                const howler::domain::DashboardItem* match = nullptr;
+                for (const auto& d : app.allTasks().items()) {
+                    if (d.taskId.hex() == sel->id) { match = &d; break; }
+                }
+                if (!match) break;
+                app.pendingDone() = {};
+                app.pendingDone().taskId = match->taskId;
+                app.pendingDone().occurrenceId = match->occurrenceId;
+                app.pendingDone().resultTypeId = "";
+                app.pendingDone().userId = "";
+                app.pendingDone().hasResultValue = false;
+                app.commitPendingDone();
+            }
+            break;
+        }
         default:
             // Per-screen LVGL event callbacks set up in build*
             // methods handle the rest.

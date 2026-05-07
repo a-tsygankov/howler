@@ -48,7 +48,8 @@ App::App(INetwork& net,
          std::string deviceId)
     : net_(net), pairApi_(pairApi), clock_(clock), rng_(rng),
       storage_(storage), input_(input), wifi_(wifi),
-      sync_(net_, clock_, occList_, dashboard_, users_, resultTypes_, watermark_),
+      sync_(net_, clock_, occList_, dashboard_, allTasks_,
+            users_, resultTypes_, watermark_),
       markDoneSvc_(net_, clock_, rng_, storage_, queue_),
       pairCoord_(pairApi_, storage_, clock_),
       deviceId_(std::move(deviceId)) {}
@@ -105,13 +106,14 @@ void App::commitPendingDone() {
     markDoneSvc_.enqueue(p.taskId, p.occurrenceId, p.userId,
                          p.hasResultValue, p.resultValue);
     if (p.hasResultValue) rememberLastValue(p.taskId, p.resultValue);
-    // Optimistic UI: remove the row from the dashboard immediately
-    // so the user sees feedback even if the network is offline.
-    if (!p.occurrenceId.empty()) {
-        dashboard_.removeById(p.occurrenceId);
-    } else {
-        dashboard_.removeById(p.taskId.hex());
-    }
+    // Optimistic UI: drop the row from both the focused dashboard
+    // and the all-tasks list so the user sees feedback even when
+    // offline. The next successful sync round refills both models
+    // from the server, so any optimism we got wrong self-corrects.
+    const std::string id =
+        !p.occurrenceId.empty() ? p.occurrenceId : p.taskId.hex();
+    dashboard_.removeById(id);
+    allTasks_.removeById(id);
     sync_.requestSync();
     clearPendingDone();
 }

@@ -78,6 +78,11 @@ export const dashboardRouter = new Hono<{
   .get("/", async (c) => {
     const homeId = c.get("auth").homeId;
     const nowSec = clock().nowSec();
+    // `?include=hidden` returns HIDDEN-tier rows too. The on-device
+    // "All tasks" screen needs every active task, not just the urgent
+    // tier the home screen shows. Default behaviour (filter HIDDEN)
+    // is unchanged so the webapp's home page stays a focused list.
+    const includeHidden = c.req.query("include") === "hidden";
 
     const { results: tasks } = await c.env.DB
       .prepare(
@@ -184,7 +189,7 @@ export const dashboardRouter = new Hono<{
         lastExecutionAt: lastExecutionByTask.get(t.id) ?? null,
         nowSec,
       });
-      if (urg.urgency === "HIDDEN") continue;
+      if (urg.urgency === "HIDDEN" && !includeHidden) continue;
       // Effective avatar: explicit avatar_id wins; otherwise fall
       // back to the label's icon under the "icon:" prefix so tasks
       // that just have a label still get an icon on the dashboard.

@@ -25,7 +25,8 @@ void test_sync_no_op_when_offline() {
     std::vector<User> users;
     std::vector<ResultType> types;
     SyncWatermark wm;
-    SyncService s(net, clock, occ, dash, users, types, wm);
+    DashboardModel allTasks;
+    SyncService s(net, clock, occ, dash, allTasks, users, types, wm);
     s.tick();
     TEST_ASSERT_EQUAL_size_t(0, dash.size());
     TEST_ASSERT_FALSE(s.lastSyncOk());
@@ -71,7 +72,8 @@ void test_sync_replaces_dashboard_users_result_types() {
     std::vector<User> users;
     std::vector<ResultType> types;
     SyncWatermark wm;
-    SyncService s(net, clock, occ, dash, users, types, wm);
+    DashboardModel allTasks;
+    SyncService s(net, clock, occ, dash, allTasks, users, types, wm);
     s.requestSync();
     s.tick();
 
@@ -98,7 +100,8 @@ void test_sync_respects_interval() {
     std::vector<User> users;
     std::vector<ResultType> types;
     SyncWatermark wm;
-    SyncService s(net, clock, occ, dash, users, types, wm);
+    DashboardModel allTasks;
+    SyncService s(net, clock, occ, dash, allTasks, users, types, wm);
     s.setIntervalMs(1000);
     s.requestSync();  // unblocks the first tick
     s.tick();

@@ -7,9 +7,11 @@ namespace {
 constexpr unsigned kHttpTimeoutMs = 8000;
 
 howler::domain::Urgency urgencyFromString(const char* s) {
-    return (s && std::string(s) == "URGENT")
-        ? howler::domain::Urgency::Urgent
-        : howler::domain::Urgency::NonUrgent;
+    if (!s) return howler::domain::Urgency::NonUrgent;
+    const std::string v = s;
+    if (v == "URGENT")     return howler::domain::Urgency::Urgent;
+    if (v == "HIDDEN")     return howler::domain::Urgency::Hidden;
+    return howler::domain::Urgency::NonUrgent;
 }
 
 }  // namespace
@@ -81,7 +83,11 @@ howler::application::NetResult WifiNetwork::fetchDashboard(
     std::vector<howler::domain::DashboardItem>& out,
     int64_t& serverNowSec) {
     String body;
-    auto r = doGet("/api/dashboard", body);
+    // Always pass `?include=hidden` so the device gets every active
+    // task with its urgency tier intact. The SyncService splits the
+    // response client-side into `dashboard()` (Urgent + NonUrgent)
+    // and `allTasks()` (everything). One HTTP call, two views.
+    auto r = doGet("/api/dashboard?include=hidden", body);
     if (!r.isOk()) return r;
     JsonDocument doc;
     if (deserializeJson(doc, body)) return howler::application::NetResult::transient();

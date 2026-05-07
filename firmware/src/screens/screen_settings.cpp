@@ -51,6 +51,7 @@ void ScreenManager::buildSettings() {
     }
 
     menuModel_.replace({
+        mk("all-tasks", "All tasks",   "browse + mark done"),
         mk("wifi",      "Wi-Fi",       "scan + connect"),
         mk("login-qr",  "Login by QR", "phone link"),
         mk("brightness","Brightness",  "screen level"),
@@ -63,7 +64,8 @@ void ScreenManager::buildSettings() {
     menu_.setOnActivate([this](const domain::RoundMenuItem& it) {
         auto& app = this->app();
         const auto& id = it.id;
-        if      (id == "wifi")       app.router().push(domain::ScreenId::Wifi);
+        if      (id == "all-tasks")  app.router().push(domain::ScreenId::TaskList);
+        else if (id == "wifi")       app.router().push(domain::ScreenId::Wifi);
         else if (id == "login-qr")   app.router().push(domain::ScreenId::LoginQr);
         else if (id == "brightness") app.router().push(domain::ScreenId::SettingsBrightness);
         else if (id == "about")      app.router().push(domain::ScreenId::SettingsAbout);

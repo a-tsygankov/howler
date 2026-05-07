@@ -48,6 +48,12 @@ public:
     // ── Surface for the screens ──────────────────────────────────
     howler::domain::Router& router() { return router_; }
     howler::domain::DashboardModel& dashboard() { return dashboard_; }
+    /// All active tasks regardless of urgency tier — what the device's
+    /// "All tasks" screen renders. Populated by SyncService from the
+    /// same /api/dashboard?include=hidden round-trip that fills
+    /// `dashboard()`. The dashboard() model filters HIDDEN out;
+    /// allTasks() keeps them.
+    howler::domain::DashboardModel& allTasks() { return allTasks_; }
     howler::domain::OccurrenceList& occurrences() { return occList_; }
     const std::vector<howler::domain::User>& users() const { return users_; }
     const std::vector<howler::domain::ResultType>& resultTypes() const { return resultTypes_; }
@@ -131,6 +137,7 @@ private:
 
     howler::domain::Router router_;
     howler::domain::DashboardModel dashboard_;
+    howler::domain::DashboardModel allTasks_;
     howler::domain::OccurrenceList occList_;
     howler::domain::MarkDoneQueue queue_;
     howler::domain::Settings settings_;

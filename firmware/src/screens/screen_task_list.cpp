@@ -1,48 +1,120 @@
+// All-tasks screen — round-menu carousel over `App::allTasks()`. The
+// dashboard model holds only the urgency-filtered subset; this view
+// shows every active task in the home regardless of tier so the user
+// can mark anything done from the dial without waiting for the
+// urgency rule to surface it.
+//
+// Tap = enter the same mark-done flow the dashboard uses; double-tap
+// = pop back to Settings; long-press = quick mark-done (no result,
+// no user) the same as on the dashboard.
+
 #include "ScreenManager.h"
+#include "components/RoundCard.h"
 #include <stdio.h>
 
 namespace howler::screens {
 
+using components::Palette;
+using components::buildRoundBackground;
+using components::buildCenterCard;
+
+namespace {
+
+const char* tierLabel(howler::domain::Urgency u, bool missed) {
+    if (missed) return "missed";
+    switch (u) {
+        case howler::domain::Urgency::Urgent:    return "urgent";
+        case howler::domain::Urgency::NonUrgent: return "soon";
+        case howler::domain::Urgency::Hidden:    return "scheduled";
+    }
+    return "";
+}
+
+}  // namespace
+
 void ScreenManager::buildTaskList() {
-    root_ = lv_obj_create(lv_scr_act());
-    lv_obj_set_size(root_, LV_PCT(100), LV_PCT(100));
-    lv_obj_clear_flag(root_, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_style_bg_color(root_, lv_color_make(0xFB, 0xF7, 0xEC), 0);
+    root_ = buildRoundBackground();
+    longPressArcWidget_.build(root_, Palette::accent());
 
-    auto* list = lv_list_create(root_);
-    lv_obj_set_size(list, LV_PCT(100), LV_PCT(100));
+    {
+        auto* h = lv_label_create(root_);
+        lv_label_set_text(h, "All tasks");
+        lv_obj_set_style_text_color(h, Palette::ink2(), 0);
+        lv_obj_align(h, LV_ALIGN_TOP_MID, 0, 12);
+    }
 
-    auto& dash = app_.dashboard();
-    if (dash.empty()) {
-        lv_list_add_text(list, "no tasks");
+    auto& all = app_.allTasks();
+    if (all.empty()) {
+        auto* card = buildCenterCard(root_, 180, Palette::paper2());
+        auto* l = lv_label_create(card);
+        lv_label_set_text(l, "no tasks yet");
+        lv_obj_set_style_text_color(l, Palette::ink2(), 0);
+        lv_obj_center(l);
+        auto* hint = lv_label_create(root_);
+        lv_label_set_text(hint, "double back");
+        lv_obj_set_style_text_color(hint, Palette::ink3(), 0);
+        lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -10);
         return;
     }
-    for (const auto& it : dash.items()) {
-        const char* sym = it.urgency == domain::Urgency::Urgent
-            ? LV_SYMBOL_WARNING : LV_SYMBOL_OK;
-        auto* btn = lv_list_add_btn(list, sym, it.title.empty() ? "(untitled)" : it.title.c_str());
-        if (group_) lv_group_add_obj(group_, btn);
-        lv_obj_add_event_cb(btn, [](lv_event_t* e) {
-            if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
-            // Click on the encoder is bridged into LVGL via the
-            // group; the manager's own onEvent path also handles
-            // press but only if no widget consumed it. For the list
-            // we want LVGL to win — pop back to dashboard on click
-            // and let the user re-focus there.
-            auto* mgr = static_cast<ScreenManager*>(lv_event_get_user_data(e));
-            mgr->app().router().pop();
-        }, LV_EVENT_CLICKED, this);
+
+    // Build the menu from every task in the home. The id is the
+    // taskHex so the activate callback can find the source row in
+    // the model when the user taps.
+    std::vector<domain::RoundMenuItem> items;
+    items.reserve(all.size());
+    for (const auto& t : all.items()) {
+        domain::RoundMenuItem it;
+        it.id = t.taskId.hex();
+        it.title = t.title.empty() ? std::string{"(untitled)"} : t.title;
+        it.subtitle = tierLabel(t.urgency, t.isMissed);
+        // Only Urgent + missed get the destructive accent so the user
+        // can spot what's actually overdue at a glance while spinning
+        // through the carousel.
+        it.destructive =
+            (t.urgency == domain::Urgency::Urgent) || t.isMissed;
+        items.push_back(std::move(it));
     }
+    menuModel_.replace(std::move(items));
+    menu_.build(root_, menuModel_);
+    menu_.refresh();
+
+    menu_.setOnActivate([this](const domain::RoundMenuItem& it) {
+        // Find the matching task in the all-tasks model so we can
+        // pull its result_type_id + occurrence_id (if any) into the
+        // mark-done draft. The carousel id is the taskHex so a
+        // straight match works.
+        const auto& all = this->app().allTasks();
+        const howler::domain::DashboardItem* match = nullptr;
+        for (const auto& d : all.items()) {
+            if (d.taskId.hex() == it.id) { match = &d; break; }
+        }
+        if (!match) return;
+        auto& app = this->app();
+        app.pendingDone() = {};
+        app.pendingDone().taskId = match->taskId;
+        app.pendingDone().occurrenceId = match->occurrenceId;
+        app.pendingDone().resultTypeId = match->resultTypeId;
+        app.router().push(match->resultTypeId.empty()
+                          ? domain::ScreenId::UserPicker
+                          : domain::ScreenId::ResultPicker);
+    });
+    menuActive_ = true;
+
+    auto* hint = lv_label_create(root_);
+    lv_label_set_text(hint, "rotate · tap done · double back");
+    lv_obj_set_style_text_color(hint, Palette::ink3(), 0);
+    lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -10);
 }
 
 void ScreenManager::buildTaskDetail() {
-    // Reserved for the future "row → detail" path; for now the
-    // dashboard press goes straight into the mark-done flow. Render
-    // an explanatory placeholder so the screen doesn't 404.
-    root_ = lv_obj_create(lv_scr_act());
-    lv_obj_set_size(root_, LV_PCT(100), LV_PCT(100));
+    // Reserved for a future "row → detail" path. Today the All-tasks
+    // and Dashboard screens go straight into the mark-done flow on
+    // tap, so this screen exists only to satisfy the ScreenId enum.
+    root_ = buildRoundBackground();
     auto* l = lv_label_create(root_);
-    lv_label_set_text(l, "task detail\n(long-press to go back)");
+    lv_label_set_text(l, "task detail\n(double back)");
+    lv_obj_set_style_text_color(l, Palette::ink2(), 0);
+    lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_center(l);
 }
 

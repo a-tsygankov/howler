@@ -356,6 +356,50 @@ describe("GET /api/dashboard", () => {
     expect(r.status).toBe(401);
   });
 
+  it("?include=hidden returns HIDDEN-tier tasks (firmware All-tasks screen)", async () => {
+    // Default behaviour drops HIDDEN; the device's "All tasks" screen
+    // wants every active task. New query param flips the filter off.
+    const { token } = await auth();
+    const headers = {
+      authorization: `Bearer ${token}`,
+      "content-type": "application/json",
+    } as const;
+
+    // Two tasks, both freshly created so both will be HIDDEN under
+    // the default filter — periodic-2 won't have an urgent slot for
+    // 2 days; periodic-7 even longer.
+    for (const intervalDays of [2, 7]) {
+      const r = await SELF.fetch("https://t/api/tasks", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          title: `every-${intervalDays}d`,
+          kind: "PERIODIC",
+          intervalDays,
+        }),
+      });
+      expect(r.status).toBe(201);
+    }
+
+    // Default — both filtered out.
+    {
+      const r = await SELF.fetch("https://t/api/dashboard", {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      const body = await json<{ tasks: unknown[] }>(r);
+      expect(body.tasks).toHaveLength(0);
+    }
+    // ?include=hidden — both surface, with urgency="HIDDEN".
+    {
+      const r = await SELF.fetch("https://t/api/dashboard?include=hidden", {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      const body = await json<{ tasks: Array<{ urgency: string }> }>(r);
+      expect(body.tasks).toHaveLength(2);
+      for (const t of body.tasks) expect(t.urgency).toBe("HIDDEN");
+    }
+  });
+
   it("accepts a device token (firmware-side dashboard render)", async () => {
     // The on-device firmware authenticates with a device token, not
     // a user token. The dashboard endpoint must accept both — gating
