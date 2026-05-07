@@ -5,7 +5,7 @@
 > question in [`docs/plan.md`](docs/plan.md) §17, or discovers a new risk.
 > If this grows past one page it's wrong — move detail into `docs/`.
 
-**Last updated:** 2026-05-06 — Phase 2.8c shipped on `dev-7` (desktop sidebar + responsive shell + visual-regression spec wired as opt-in project). Visual baselines pending a one-time seed from a Linux runner.
+**Last updated:** 2026-05-07 — Phase 4 device-firmware MVP landed on `dev-16` (PR #16): full domain + application + LVGL screens for the CrowPanel + 40 host-side Unity tests + HIL-2 (Wokwi) wired into CI behind the `WOKWI_CLI_TOKEN` secret. Real WifiNetwork adapter, NVS-persisted token, /api/pair flow, mark-done queue with offline tolerance.
 
 ## Live URLs
 
@@ -112,10 +112,35 @@ create-task form (DAILY times / PERIODIC interval / ONESHOT remind-in).
 - ✅ 3.5 CI runs Playwright on every webapp-touching PR
   (`.github/workflows/deploy.yml` `webapp-e2e` job).
 
-**Next: Phase 2.8 — design-system port** (the design handoff in
-`docs/design_handoff_howler/`). After 2.8 lands, we add visual-
-regression tests, then run the 7-day stability watch on `main`
-that gates Phase 4 (device firmware).
+**Phase 4 status (per plan §18):**
+
+- ✅ domain + application + adapters layout (firmware/src/)
+- ✅ real WifiNetwork over HTTPS (dashboard / users / result-types /
+  occurrences/pending / occurrences/:id/ack / tasks/:id/complete /
+  heartbeat) + WifiPairApi for the unauthenticated pair endpoints
+- ✅ NVS-persisted device token; pick `WifiNetwork` vs `NoopNetwork`
+  based on token presence at boot
+- ✅ /api/pair/start flow runs on the dial — PairCoordinator owns
+  the state machine, persists the token on confirm, swings the
+  router to Dashboard
+- ✅ Pending-list polling via SyncService (dashboard + users +
+  result-types + legacy /occurrences/pending)
+- ✅ Mark-done with optional result + user picker, offline-tolerant
+  outbound queue persisted to NVS via TLV serialization, idempotent
+  on the server's PRIMARY KEY for `task_executions`
+- ✅ HIL-1 (native): 40 host-side Unity tests across `test_domain`
+  (DashboardModel, MarkDoneQueue, Router, RotaryNav, ResultType,
+  OccurrenceList) and `test_application` (SyncService, MarkDoneService,
+  PairCoordinator, App boot routing + commit-pending-done + Wi-Fi)
+- ✅ HIL-2 (Wokwi): `firmware-hil2` job in `deploy.yml` runs the
+  simulator in wokwi-cli, asserts `[howler] boot ok` in serial.
+  Gated on `WOKWI_CLI_TOKEN` secret being set; a missing secret
+  emits a CI warning instead of failing.
+- 🔵 HIL-3 (real CrowPanel) — deferred to release/* gating; needs
+  attached hardware on a self-hosted runner
+
+**Next:** unified menu component (plan §11) + LVGL theming for the
+dial (Phase 5), or pick up server-side Phase 5 work (MQTT bridge).
 
 **What's left in Phase 0:**
 

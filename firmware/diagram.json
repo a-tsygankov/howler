@@ -17,9 +17,9 @@
     [ "esp:GND.1", "lcd:GND", "black", [] ],
     [ "esp:3V3", "lcd:VCC",  "red",    [] ],
 
-    [ "esp:5", "enc:CLK", "green", [] ],
-    [ "esp:6", "enc:DT",  "yellow", [] ],
-    [ "esp:7", "enc:SW",  "purple", [] ],
+    [ "esp:45", "enc:CLK", "green", [] ],
+    [ "esp:42", "enc:DT",  "yellow", [] ],
+    [ "esp:41", "enc:SW",  "purple", [] ],
     [ "esp:GND.2", "enc:GND", "black", [] ],
     [ "esp:3V3", "enc:VCC", "red", [] ]
   ]

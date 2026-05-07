@@ -2171,6 +2171,21 @@ const PairTile = ({ onPaired }: { onPaired: () => void }) => {
   const [msg, setMsg] = useState<{ kind: "ok" | "error"; text: string } | null>(
     null,
   );
+  // Pre-fill from `?pair=CODE` so the QR shown on a fresh dial drops
+  // the user straight into a one-tap confirm. Cleaned out of the URL
+  // on first render so a refresh doesn't re-trigger. Done in an
+  // effect rather than a lazy useState initializer because StrictMode
+  // double-invokes initializers — a side-effecting init would lose
+  // the value on the second pass.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const url = new URL(window.location.href);
+    const fromQs = url.searchParams.get("pair");
+    if (!fromQs) return;
+    url.searchParams.delete("pair");
+    window.history.replaceState({}, "", url.toString());
+    setCode(fromQs.replace(/\D/g, "").slice(0, 6));
+  }, []);
   const m = useMutation({
     mutationFn: apiPairConfirm,
     onSuccess: () => {

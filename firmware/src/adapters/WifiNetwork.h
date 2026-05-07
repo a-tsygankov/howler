@@ -2,24 +2,51 @@
 
 #include "../application/Ports.h"
 
+#include <Arduino.h>
+#include <HTTPClient.h>
+#include <WiFiClientSecure.h>
+#include <ArduinoJson.h>
+
 namespace howler::adapters {
 
-/// Phase 1: HTTPS REST polling against the Worker. Filled out alongside
-/// device pairing + token storage. For now the constructor exists so
-/// main.cpp can wire it in conditionally.
+/// HTTPS REST client against the Cloudflare Worker. Each call opens
+/// a short-lived TLS connection — there's no per-request keepalive,
+/// because the device sleeps between syncs and an idle TLS session
+/// won't survive a deep-sleep cycle anyway.
+///
+/// Auth: device token is set after pairing; we send it as
+/// `Authorization: Bearer <token>` (matches what the SPA does for
+/// user tokens — the server accepts both via authFromHeaders).
 class WifiNetwork : public howler::application::INetwork {
 public:
-    WifiNetwork(const char* backendUrl, const char* deviceToken)
-        : backendUrl_(backendUrl), deviceToken_(deviceToken) {}
+    using NetResult = howler::application::NetResult;
 
-    bool isOnline() const override { return false; }   // Phase 1
-    bool fetchPending(std::vector<howler::domain::Occurrence>&) override { return false; }
-    bool postAck(const std::string&, const std::string&) override { return false; }
-    bool postHeartbeat(const std::string&) override { return false; }
+    WifiNetwork(const char* backendUrl, std::string deviceToken)
+        : backendUrl_(backendUrl), deviceToken_(std::move(deviceToken)) {}
+
+    void setDeviceToken(std::string t) { deviceToken_ = std::move(t); }
+    const std::string& deviceToken() const { return deviceToken_; }
+    bool hasToken() const { return !deviceToken_.empty(); }
+
+    bool isOnline() const override {
+        return WiFi.status() == WL_CONNECTED && hasToken() && backendUrl_ && backendUrl_[0];
+    }
+
+    NetResult fetchPending(std::vector<howler::domain::Occurrence>& out) override;
+    NetResult fetchDashboard(std::vector<howler::domain::DashboardItem>& out,
+                             int64_t& serverNowSec) override;
+    NetResult fetchUsers(std::vector<howler::domain::User>& out) override;
+    NetResult fetchResultTypes(std::vector<howler::domain::ResultType>& out) override;
+    NetResult postMarkDone(const howler::domain::MarkDoneDraft& d) override;
+    NetResult postHeartbeat(const std::string& fwVersion) override;
 
 private:
     const char* backendUrl_;
-    const char* deviceToken_;
+    std::string deviceToken_;
+
+    NetResult doGet(const String& path, String& bodyOut);
+    NetResult doPost(const String& path, const String& body);
+    NetResult fromHttp(int code, const String& body);
 };
 
 }  // namespace howler::adapters
