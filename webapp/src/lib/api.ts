@@ -313,6 +313,9 @@ const LabelSchema = z.object({
   homeId: Hex32,
   displayName: z.string(),
   color: z.string().nullable(),
+  // Icon name from the Icon barrel — see webapp/src/components/Icon.tsx.
+  // Null falls back to initials in the renderer.
+  icon: z.string().nullable().optional(),
   system: z.boolean(),
   sortOrder: z.number().int(),
   createdAt: z.number().int(),
@@ -320,11 +323,32 @@ const LabelSchema = z.object({
 });
 export type Label = z.infer<typeof LabelSchema>;
 
+export interface UpsertLabelInput {
+  displayName?: string;
+  color?: string | null;
+  icon?: string | null;
+  sortOrder?: number;
+}
+
 export const fetchLabels = async (): Promise<Label[]> =>
   z
     .object({ labels: z.array(LabelSchema) })
     .parse(await callJson("GET", "/labels"))
     .labels;
+
+export const createLabel = async (input: UpsertLabelInput): Promise<Label> =>
+  LabelSchema.parse(await callJson("POST", "/labels", input));
+
+export const updateLabel = async (
+  id: string,
+  patch: UpsertLabelInput,
+): Promise<void> => {
+  await callJson("PATCH", `/labels/${id}`, patch);
+};
+
+export const deleteLabel = async (id: string): Promise<void> => {
+  await callJson("DELETE", `/labels/${id}`);
+};
 
 // ── TaskResults ────────────────────────────────────────────────────
 

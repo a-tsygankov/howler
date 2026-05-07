@@ -5,8 +5,10 @@ import {
   apiLogout,
   apiMe,
   apiPairConfirm,
+  createLabel,
   createTask,
   createUser,
+  deleteLabel,
   deleteTask,
   deleteUser,
   fetchDashboard,
@@ -19,6 +21,7 @@ import {
   renameUser,
   revokeDevice,
   updateHome,
+  updateLabel,
   updateTask,
   uploadAvatar,
   type DashboardItem,
@@ -38,6 +41,7 @@ import {
   unsubscribePush,
 } from "./lib/push.ts";
 import { HowlerAvatar } from "./components/HowlerAvatar.tsx";
+import { Icon, type IconName } from "./components/Icon.tsx";
 import { Btn } from "./components/Buttons.tsx";
 import {
   DailyTimePicker,
@@ -176,6 +180,16 @@ export const Dashboard = ({ session, onLogout }: Props) => {
           Numeric shapes (Grams, Pushups, Rating) tasks can opt into.
         </p>
       </section>
+
+      <Section title="Labels">
+        <LabelsBlock
+          labels={labels.data ?? []}
+          onChanged={() => {
+            void qc.invalidateQueries({ queryKey: ["labels"] });
+            void qc.invalidateQueries({ queryKey: ["dashboard"] });
+          }}
+        />
+      </Section>
 
       <Section title="All tasks">
         {tasks.isLoading && <Empty>Loading…</Empty>}
@@ -1032,6 +1046,222 @@ const TaskRow = ({
           disabled={deleting}
         >
           Delete
+        </Btn>
+      </div>
+    </div>
+  );
+};
+
+// ── Labels (per-home; system + custom) ────────────────────────────
+
+// Curated subset of the Icon barrel surfaced in the picker. We
+// don't expose every name — chevrons / trash / edit etc. are UI
+// chrome, not category icons.
+const LABEL_ICON_CHOICES: IconName[] = [
+  "paw", "dog", "cat", "broom", "home", "bowl",
+  "heart", "sparkle", "star", "plant", "flame", "bell",
+  "briefcase", "book", "run", "pill", "tooth", "clock",
+  "calendar", "check",
+];
+
+const IconPicker = ({
+  value,
+  onChange,
+}: {
+  value: string | null | undefined;
+  onChange: (next: string | null) => void;
+}) => (
+  <div className="grid grid-cols-10 gap-1">
+    <button
+      type="button"
+      title="No icon"
+      onClick={() => onChange(null)}
+      className={`flex h-7 w-7 items-center justify-center rounded-md border text-[10px] ${
+        value ? "border-line text-ink-3 hover:border-ink" : "border-ink bg-paper-3 text-ink"
+      }`}
+    >
+      —
+    </button>
+    {LABEL_ICON_CHOICES.map((name) => {
+      const active = value === name;
+      return (
+        <button
+          key={name}
+          type="button"
+          title={name}
+          onClick={() => onChange(name)}
+          className={`flex h-7 w-7 items-center justify-center rounded-md border ${
+            active
+              ? "border-ink bg-paper-3 text-ink"
+              : "border-line text-ink-3 hover:border-ink hover:text-ink"
+          }`}
+        >
+          <Icon name={name} size={16} />
+        </button>
+      );
+    })}
+  </div>
+);
+
+const LabelsBlock = ({
+  labels,
+  onChanged,
+}: {
+  labels: Label[];
+  onChanged: () => void;
+}) => {
+  const [adding, setAdding] = useState(false);
+  return (
+    <div>
+      {labels.length === 0 && <p className="cap py-2">No labels yet.</p>}
+      {labels.map((l) => (
+        <LabelRow key={l.id} label={l} onChanged={onChanged} />
+      ))}
+      {adding ? (
+        <LabelEditor
+          initial={{ displayName: "", color: "#7A7060", icon: null }}
+          isNew
+          onCancel={() => setAdding(false)}
+          onSave={async (patch) => {
+            await createLabel(patch);
+            setAdding(false);
+            onChanged();
+          }}
+        />
+      ) : (
+        <Btn
+          variant="outline"
+          size="pillSm"
+          className="mt-2"
+          onClick={() => setAdding(true)}
+        >
+          + Add label
+        </Btn>
+      )}
+    </div>
+  );
+};
+
+const LabelRow = ({
+  label,
+  onChanged,
+}: {
+  label: Label;
+  onChanged: () => void;
+}) => {
+  const [editing, setEditing] = useState(false);
+  const remove = useMutation({
+    mutationFn: () => deleteLabel(label.id),
+    onSuccess: onChanged,
+  });
+  if (editing) {
+    return (
+      <LabelEditor
+        initial={{
+          displayName: label.displayName,
+          color: label.color ?? "#7A7060",
+          icon: label.icon ?? null,
+        }}
+        isNew={false}
+        onCancel={() => setEditing(false)}
+        onSave={async (patch) => {
+          await updateLabel(label.id, patch);
+          setEditing(false);
+          onChanged();
+        }}
+      />
+    );
+  }
+  return (
+    <div className="flex items-center justify-between border-t border-line-soft py-2">
+      <div className="flex min-w-0 items-center gap-2">
+        <span
+          className="flex h-7 w-7 items-center justify-center rounded-full"
+          style={{ background: label.color ?? "#7A7060", color: "#fff" }}
+        >
+          {label.icon ? (
+            <Icon name={label.icon as IconName} size={14} color="#fff" />
+          ) : (
+            <span className="font-mono text-[10px]">
+              {label.displayName.slice(0, 2).toUpperCase()}
+            </span>
+          )}
+        </span>
+        <span className="truncate text-sm">{label.displayName}</span>
+        {label.system && <span className="cap">default</span>}
+      </div>
+      <div className="flex gap-1">
+        <Btn variant="ghost" size="pillSm" onClick={() => setEditing(true)}>
+          Edit
+        </Btn>
+        {!label.system && (
+          <Btn
+            variant="danger"
+            size="pillSm"
+            disabled={remove.isPending}
+            onClick={() => {
+              if (confirm(`Delete label "${label.displayName}"?`)) remove.mutate();
+            }}
+          >
+            Delete
+          </Btn>
+        )}
+      </div>
+    </div>
+  );
+};
+
+const LabelEditor = ({
+  initial,
+  isNew,
+  onCancel,
+  onSave,
+}: {
+  initial: { displayName: string; color: string; icon: string | null };
+  isNew: boolean;
+  onCancel: () => void;
+  onSave: (patch: { displayName: string; color: string; icon: string | null }) => Promise<void>;
+}) => {
+  const [name, setName] = useState(initial.displayName);
+  const [color, setColor] = useState(initial.color);
+  const [icon, setIcon] = useState<string | null>(initial.icon);
+  const [busy, setBusy] = useState(false);
+  const submit = async () => {
+    if (!name.trim()) return;
+    setBusy(true);
+    try {
+      await onSave({ displayName: name.trim(), color, icon });
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="border-t border-line-soft py-3">
+      <div className="flex flex-wrap items-center gap-2 text-xs">
+        <input
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="Display name"
+          className="flex-1 rounded-md border border-line bg-paper px-3 py-1.5 text-sm focus:border-ink focus:outline-none"
+        />
+        <input
+          type="color"
+          value={color}
+          onChange={(e) => setColor(e.target.value)}
+          aria-label="Label color"
+          className="h-7 w-9 cursor-pointer rounded-md border border-line"
+        />
+      </div>
+      <div className="mt-2">
+        <span className="cap mb-1 block">Icon</span>
+        <IconPicker value={icon} onChange={setIcon} />
+      </div>
+      <div className="mt-2 flex justify-end gap-2">
+        <Btn variant="ghost" size="pillSm" onClick={onCancel} disabled={busy}>
+          Cancel
+        </Btn>
+        <Btn variant="sage" size="pillSm" onClick={submit} disabled={busy || !name.trim()}>
+          {busy ? "…" : isNew ? "Add" : "Save"}
         </Btn>
       </div>
     </div>

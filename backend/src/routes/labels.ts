@@ -6,9 +6,13 @@ import type { Bindings } from "../env.ts";
 import { newUuid } from "../domain/ids.ts";
 import { requireAuth, requireUser, type AuthVars } from "../middleware/auth.ts";
 
+// `icon` is an opaque string (the name of one of the entries in
+// webapp/src/components/Icon.tsx). Backend stays decoupled — the
+// SPA / dial validate the icon name at the render boundary.
 const LabelInput = z.object({
   displayName: z.string().min(1).max(40),
   color: z.string().max(20).nullish(),
+  icon: z.string().max(40).nullish(),
   sortOrder: z.number().int().optional(),
 });
 
@@ -17,6 +21,7 @@ interface LabelRow {
   home_id: string;
   display_name: string;
   color: string | null;
+  icon: string | null;
   system: number;
   sort_order: number;
   created_at: number;
@@ -28,6 +33,7 @@ const toDto = (r: LabelRow) => ({
   homeId: r.home_id,
   displayName: r.display_name,
   color: r.color,
+  icon: r.icon,
   system: r.system === 1,
   sortOrder: r.sort_order,
   createdAt: r.created_at,
@@ -44,7 +50,7 @@ export const labelsRouter = new Hono<{
     const info = c.get("user");
     const { results } = await c.env.DB
       .prepare(
-        `SELECT id, home_id, display_name, color, system, sort_order,
+        `SELECT id, home_id, display_name, color, icon, system, sort_order,
            created_at, updated_at
          FROM labels
          WHERE home_id = ? AND is_deleted = 0
@@ -61,14 +67,15 @@ export const labelsRouter = new Hono<{
     const nowSec = clock().nowSec();
     const body = c.req.valid("json");
     await c.env.DB.prepare(
-      `INSERT INTO labels (id, home_id, display_name, color, system, sort_order, created_at, updated_at, is_deleted)
-       VALUES (?, ?, ?, ?, 0, ?, ?, ?, 0)`,
+      `INSERT INTO labels (id, home_id, display_name, color, icon, system, sort_order, created_at, updated_at, is_deleted)
+       VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, 0)`,
     )
       .bind(
         id,
         info.homeId,
         body.displayName,
         body.color ?? null,
+        body.icon ?? null,
         body.sortOrder ?? 100,
         nowSec,
         nowSec,
@@ -80,6 +87,7 @@ export const labelsRouter = new Hono<{
         homeId: info.homeId,
         displayName: body.displayName,
         color: body.color ?? null,
+        icon: body.icon ?? null,
         system: false,
         sortOrder: body.sortOrder ?? 100,
         createdAt: nowSec,
@@ -105,6 +113,7 @@ export const labelsRouter = new Hono<{
       `UPDATE labels SET
          display_name = COALESCE(?, display_name),
          color = COALESCE(?, color),
+         icon = COALESCE(?, icon),
          sort_order = COALESCE(?, sort_order),
          updated_at = ?
        WHERE id = ?`,
@@ -112,6 +121,7 @@ export const labelsRouter = new Hono<{
       .bind(
         patch.displayName ?? null,
         patch.color ?? null,
+        patch.icon ?? null,
         patch.sortOrder ?? null,
         nowSec,
         id,

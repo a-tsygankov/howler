@@ -8,13 +8,17 @@ interface SeedLabel {
   display_name: string;
   color: string | null;
   sort_order: number;
+  // Icon name from the frontend's Icon Set A barrel
+  // (webapp/src/components/Icon.tsx). Surfaces on dashboard rows
+  // when the task itself doesn't override the avatar.
+  icon: string;
 }
 
 const DEFAULT_LABELS: SeedLabel[] = [
-  { display_name: "Pets", color: "#a78bfa", sort_order: 10 },
-  { display_name: "Chores", color: "#60a5fa", sort_order: 20 },
-  { display_name: "Personal", color: "#34d399", sort_order: 30 },
-  { display_name: "Work", color: "#f59e0b", sort_order: 40 },
+  { display_name: "Pets",     color: "#a78bfa", sort_order: 10, icon: "paw" },
+  { display_name: "Chores",   color: "#60a5fa", sort_order: 20, icon: "broom" },
+  { display_name: "Personal", color: "#34d399", sort_order: 30, icon: "heart" },
+  { display_name: "Work",     color: "#f59e0b", sort_order: 40, icon: "briefcase" },
 ];
 
 interface SeedResult {
@@ -84,10 +88,10 @@ export const seedHomeDefaults = async (
   const labelStmts = DEFAULT_LABELS.map((l) =>
     db
       .prepare(
-        `INSERT INTO labels (id, home_id, display_name, color, system, sort_order, created_at, updated_at, is_deleted)
-         VALUES (?, ?, ?, ?, 1, ?, ?, ?, 0)`,
+        `INSERT INTO labels (id, home_id, display_name, color, icon, system, sort_order, created_at, updated_at, is_deleted)
+         VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, 0)`,
       )
-      .bind(newUuid(), homeId, l.display_name, l.color, l.sort_order, nowSec, nowSec),
+      .bind(newUuid(), homeId, l.display_name, l.color, l.icon, l.sort_order, nowSec, nowSec),
   );
   const resultStmts = DEFAULT_TASK_RESULTS.map((r) =>
     db

@@ -7,6 +7,7 @@ import init0002 from "../migrations/0002_home.sql?raw";
 import init0003 from "../migrations/0003_schedule_templates.sql?raw";
 import init0004 from "../migrations/0004_avatars.sql?raw";
 import init0005 from "../migrations/0005_push_subscriptions.sql?raw";
+import init0006 from "../migrations/0006_label_icons.sql?raw";
 import { clock, resetClock, setClock, TestClock } from "../src/clock.ts";
 import { consumeFireQueue } from "../src/services/fanout.ts";
 import type { Bindings, OccurrenceFireMessage } from "../src/env.ts";
@@ -41,7 +42,7 @@ const ONE_HOUR_MS = 60 * 60 * 1000;
 const ONE_DAY_MS = 24 * ONE_HOUR_MS;
 
 const applyMigrations = async () => {
-  for (const sql of [init0000, init0001, init0002, init0003, init0004, init0005]) {
+  for (const sql of [init0000, init0001, init0002, init0003, init0004, init0005, init0006]) {
     const stripped = sql
       .split("\n")
       .filter((line) => !line.trim().startsWith("--"))
