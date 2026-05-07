@@ -24,7 +24,31 @@ export const App = () => {
             <Route
               path="/"
               element={
-                <Dashboard session={session} onLogout={() => setSession(null)} />
+                <Dashboard
+                  session={session}
+                  onLogout={() => setSession(null)}
+                  view="today"
+                />
+              }
+            />
+            <Route
+              path="/all"
+              element={
+                <Dashboard
+                  session={session}
+                  onLogout={() => setSession(null)}
+                  view="all"
+                />
+              }
+            />
+            <Route
+              path="/settings"
+              element={
+                <Dashboard
+                  session={session}
+                  onLogout={() => setSession(null)}
+                  view="settings"
+                />
               }
             />
             <Route path="/tasks/:taskId" element={<TaskDetail />} />
