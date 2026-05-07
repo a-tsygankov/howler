@@ -146,6 +146,15 @@ void ScreenManager::onEvent(int rotateDelta, bool press, bool longPress) {
         if (router.pop()) return;
     }
 
+    // Pair-screen safety net: while we don't trust the encoder pin
+    // map (different silkscreens out there), let *any* input on the
+    // Pair root reach Settings so the user can configure Wi-Fi. A
+    // tap or a rotation also escape — not just the long-press.
+    if (rendered_ == ScreenId::Pair && (press || rotateDelta != 0)) {
+        router.push(ScreenId::Settings);
+        return;
+    }
+
     switch (rendered_) {
         case ScreenId::Dashboard: {
             if (rotateDelta != 0) app.dashboard().moveCursor(rotateDelta);

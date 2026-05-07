@@ -92,6 +92,13 @@ void setup() {
     tft.setRotation(0);
     tft.fillScreen(TFT_BLACK);
 
+#ifdef HOWLER_PIN_PROBE
+    // Bring-up aid: prints every GPIO that changes state for 6 s.
+    // Wiggle the encoder + press the knob during the window — the
+    // pins that print are the ones to feed into RotaryInput.h.
+    howler::adapters::probeInputPinsBlocking();
+#endif
+
     rotaryInput.begin();
     WiFi.mode(WIFI_STA);
     WiFi.begin();  // best-effort reconnect to last-known network
