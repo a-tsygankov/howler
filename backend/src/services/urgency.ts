@@ -104,6 +104,43 @@ export const computeUrgency = (input: UrgencyInput): UrgencyResult => {
     };
   }
 
+  // Did the user already complete *this* cycle? If lastExecution
+  // landed after the previous deadline, the current next deadline
+  // is effectively satisfied — shift the urgency window forward by
+  // one cycle so the row drops off until the *next* one approaches.
+  // Without this, completing a task while we're already inside the
+  // last 25 % of its window leaves it stuck on URGENT (next slot
+  // is still close, even though the user just did it).
+  const completedThisCycle =
+    prev !== null &&
+    lastExecutionAt !== null &&
+    lastExecutionAt >= prev;
+  if (completedThisCycle) {
+    const nextNext = computeNextDeadlineAfter(rule, scheduleModifiedAt, next);
+    if (nextNext === null) {
+      return {
+        urgency: "HIDDEN",
+        prevDeadline: next,
+        nextDeadline: null,
+        periodSec: period,
+        isMissed: false,
+        secondsUntilNext: null,
+      };
+    }
+    const shiftedPeriod =
+      rule.kind === "PERIODIC" ? period : nextNext - next;
+    const remaining = nextNext - nowSec;
+    const fraction = shiftedPeriod > 0 ? remaining / shiftedPeriod : 0;
+    return {
+      urgency: tierFromFraction(fraction),
+      prevDeadline: next,
+      nextDeadline: nextNext,
+      periodSec: shiftedPeriod,
+      isMissed: false,
+      secondsUntilNext: remaining,
+    };
+  }
+
   const remaining = next - nowSec;
   const fraction = period > 0 ? remaining / period : 0;
   return {
@@ -115,6 +152,14 @@ export const computeUrgency = (input: UrgencyInput): UrgencyResult => {
     secondsUntilNext: remaining,
   };
 };
+
+// computeNextDeadline anchored at `after` instead of `nowSec` —
+// returns the first scheduled deadline strictly after `after`.
+const computeNextDeadlineAfter = (
+  rule: ScheduleRule,
+  scheduleModifiedAt: number,
+  after: number,
+): number | null => computeNextDeadline(rule, scheduleModifiedAt, after);
 
 const tierFromFraction = (fraction: number): Urgency => {
   if (fraction <= 0.25) return "URGENT";

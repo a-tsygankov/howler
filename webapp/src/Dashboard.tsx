@@ -296,6 +296,16 @@ export const Dashboard = ({ session, onLogout }: Props) => {
             void qc.invalidateQueries({ queryKey: ["dashboard"] });
             void qc.invalidateQueries({ queryKey: ["task-executions"] });
             void qc.invalidateQueries({ queryKey: ["executions"] });
+            // Remote D1 reads can still see the just-recorded
+            // execution one beat later than the just-fired insert
+            // — schedule a second invalidation 1 s out so the
+            // dashboard's `MAX(ts)` lookup definitely picks it up
+            // and the task drops off if it's no longer urgent.
+            window.setTimeout(() => {
+              void qc.invalidateQueries({ queryKey: ["dashboard"] });
+              void qc.invalidateQueries({ queryKey: ["task-executions"] });
+              void qc.invalidateQueries({ queryKey: ["executions"] });
+            }, 1000);
           }}
         />
       )}
