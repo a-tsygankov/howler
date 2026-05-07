@@ -268,18 +268,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # upload-artifact@v4 preserves the workspace-relative path of
+      # each input, so the artifact contains a `firmware/...` subtree.
+      # Downloading with no `path:` (or `path: .`) recreates that
+      # subtree in the workspace root — exactly where wokwi-cli
+      # expects it (firmware/wokwi.toml + firmware/.pio/build/...).
+      # The checkout step above already wrote `firmware/diagram.json`
+      # and `firmware/wokwi.toml`; the download just adds the build
+      # outputs alongside them.
       - uses: actions/download-artifact@v4
         with:
           name: firmware-simulator
-          path: artifact
-      - name: Layout artifacts for wokwi-cli
-        run: |
-          mkdir -p firmware/.pio/build/simulator
-          mv artifact/firmware.elf            firmware/.pio/build/simulator/firmware.elf
-          mv artifact/firmware-merged.bin     firmware/.pio/build/simulator/firmware-merged.bin
-          mv artifact/diagram.json            firmware/diagram.json   2>/dev/null || true
-          mv artifact/wokwi.toml              firmware/wokwi.toml     2>/dev/null || true
-        shell: bash
+          path: .
       - name: Install wokwi-cli
         # Pinned version: HIL-2 needs reproducible runs. Bump deliberately.
         run: curl -L https://wokwi.com/ci/install.sh | sh -s -- v0.13.0
