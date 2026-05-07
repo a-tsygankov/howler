@@ -8,10 +8,13 @@ namespace howler::adapters {
 
 /// Reads the CrowPanel quadrature encoder + tactile push button.
 ///
-/// CrowPanel pin map (inherited verbatim from Feedme — plan §4):
-///   - encoder A:   GPIO 4
-///   - encoder B:   GPIO 5
-///   - button:      GPIO 0  (active LOW)
+/// Pin map (matches `firmware/diagram.json` for Wokwi parity — the
+/// same pins are wired on the CrowPanel hardware; if production
+/// silkscreen differs, re-derive these and update `diagram.json`
+/// in the same commit so HIL-2 stays in sync):
+///   - encoder CLK:  GPIO 5
+///   - encoder DT:   GPIO 6
+///   - encoder SW:   GPIO 7  (active LOW)
 ///
 /// Quadrature decoding uses the cheap "transition table" approach
 /// — we sample both pins on every poll, encode prev|curr into 4 bits,
@@ -19,9 +22,9 @@ namespace howler::adapters {
 /// detent (4 transitions on this encoder) emits one rotation event.
 class RotaryInput : public howler::application::IInputDevice {
 public:
-    static constexpr int kPinA      = 4;
-    static constexpr int kPinB      = 5;
-    static constexpr int kPinButton = 0;
+    static constexpr int kPinA      = 5;
+    static constexpr int kPinB      = 6;
+    static constexpr int kPinButton = 7;
     static constexpr uint32_t kLongPressMs = 600;
 
     void begin() {

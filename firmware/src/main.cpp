@@ -99,7 +99,7 @@ void setup() {
     auto* net = pickNetwork();
     static howler::application::App app(
         *net, pairApi, arduinoClock, espRandom, nvsStorage, rotaryInput,
-        deviceIdFromMac());
+        wifiStation, deviceIdFromMac());
     static howler::screens::ScreenManager screens(app, rotaryInput);
     g_app = &app;
     g_screens = &screens;

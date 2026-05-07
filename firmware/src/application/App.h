@@ -33,6 +33,7 @@ public:
         IRandom& rng,
         IStorage& storage,
         IInputDevice& input,
+        IWifi& wifi,
         std::string deviceId);
 
     /// Boot-time setup. Restores queue + settings from storage,
@@ -56,6 +57,16 @@ public:
     PairCoordinator& pair() { return pairCoord_; }
     const std::string& deviceId() const { return deviceId_; }
     IStorage& storage() { return storage_; }
+    IWifi& wifi() { return wifi_; }
+    const std::vector<howler::domain::WifiNetwork>& wifiScan() const { return wifiScan_; }
+    /// Trigger a fresh Wi-Fi scan (blocking on the supplicant). The
+    /// Wi-Fi screen calls this on entry; the result populates
+    /// `wifiScan()`. Returns false on driver failure.
+    bool refreshWifiScan();
+    /// Persist creds to NVS and attempt a connect. Returns the result
+    /// of the connect attempt; the caller decides whether to push the
+    /// "connecting" screen or surface an error.
+    bool saveAndConnectWifi(const howler::domain::WifiConfig& cfg);
 
     // ── Mark-done helpers consumed by the UserPicker / ResultPicker ──
     /// Pre-filled draft the flow accumulates while the user steps
@@ -84,6 +95,8 @@ private:
     IRandom& rng_;
     IStorage& storage_;
     IInputDevice& input_;
+    IWifi& wifi_;
+    std::vector<howler::domain::WifiNetwork> wifiScan_;
 
     howler::domain::Router router_;
     howler::domain::DashboardModel dashboard_;

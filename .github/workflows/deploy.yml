@@ -220,6 +220,8 @@ jobs:
     if: needs.changes.outputs.firmware == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     defaults: { run: { working-directory: firmware } }
+    outputs:
+      sim_built: ${{ steps.simbuild.outputs.ok }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -232,9 +234,90 @@ jobs:
             firmware/.pio
           key: ${{ runner.os }}-pio-${{ hashFiles('firmware/platformio.ini') }}
           restore-keys: ${{ runner.os }}-pio-
-      - name: Native domain tests (HIL-1)
+      - name: Native domain + application tests (HIL-1)
         run: pio test -e native
       - name: Build (crowpanel)
         run: pio run -e crowpanel
       - name: Build (simulator — Wokwi)
-        run: pio run -e simulator
+        id: simbuild
+        run: |
+          pio run -e simulator
+          echo "ok=true" >> "$GITHUB_OUTPUT"
+      # Wokwi binary + diagram + elf are downstream inputs for HIL-2.
+      - name: Upload simulator artifacts
+        if: steps.simbuild.outputs.ok == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-simulator
+          path: |
+            firmware/.pio/build/simulator/firmware.elf
+            firmware/.pio/build/simulator/firmware-merged.bin
+            firmware/diagram.json
+            firmware/wokwi.toml
+          retention-days: 1
+
+  firmware-hil2:
+    name: Firmware HIL-2 (Wokwi)
+    needs: firmware-build
+    # Only runs when the simulator built and the WOKWI_CLI_TOKEN
+    # secret is present. The token gates the entire job — Wokwi CI
+    # licenses are paid (free for personal but require sign-up); we
+    # don't want every PR to red-cross because a fork doesn't have
+    # the secret. The job is informational until the secret lands.
+    if: needs.firmware-build.outputs.sim_built == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: firmware-simulator
+          path: artifact
+      - name: Layout artifacts for wokwi-cli
+        run: |
+          mkdir -p firmware/.pio/build/simulator
+          mv artifact/firmware.elf            firmware/.pio/build/simulator/firmware.elf
+          mv artifact/firmware-merged.bin     firmware/.pio/build/simulator/firmware-merged.bin
+          mv artifact/diagram.json            firmware/diagram.json   2>/dev/null || true
+          mv artifact/wokwi.toml              firmware/wokwi.toml     2>/dev/null || true
+        shell: bash
+      - name: Install wokwi-cli
+        # Pinned version: HIL-2 needs reproducible runs. Bump deliberately.
+        run: curl -L https://wokwi.com/ci/install.sh | sh -s -- v0.13.0
+      - name: Run device for 8 s and capture serial
+        id: run
+        env:
+          WOKWI_CLI_TOKEN: ${{ secrets.WOKWI_CLI_TOKEN }}
+        # No-token path: skip without failing the run. Once the
+        # secret is set, the actual smoke test asserts on serial.
+        run: |
+          if [ -z "$WOKWI_CLI_TOKEN" ]; then
+            echo "::warning::WOKWI_CLI_TOKEN not set — skipping HIL-2"
+            echo "skipped=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          cd firmware
+          wokwi-cli --timeout 8000 --serial-log-file serial.log .
+          echo "skipped=false" >> "$GITHUB_OUTPUT"
+        shell: bash
+      - name: Assert boot output
+        if: steps.run.outputs.skipped == 'false'
+        run: |
+          if ! grep -q '\[howler\] boot ok' firmware/serial.log; then
+            echo "Missing '[howler] boot ok' in serial output:"
+            cat firmware/serial.log || true
+            exit 1
+          fi
+          if ! grep -q '\[howler\] device=' firmware/serial.log; then
+            echo "Missing '[howler] device=' line:"
+            cat firmware/serial.log || true
+            exit 1
+          fi
+          echo "HIL-2 boot smoke green."
+        shell: bash
+      - name: Upload serial log
+        if: always() && steps.run.outputs.skipped == 'false'
+        uses: actions/upload-artifact@v4
+        with:
+          name: hil2-serial-log
+          path: firmware/serial.log
+          retention-days: 7

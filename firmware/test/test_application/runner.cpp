@@ -23,6 +23,8 @@ void test_app_first_boot_lands_on_pair_screen();
 void test_app_paired_token_lands_on_dashboard();
 void test_app_pair_confirm_swaps_to_dashboard();
 void test_app_commit_pending_done_drops_dashboard_row();
+void test_app_wifi_scan_populates_list();
+void test_app_wifi_save_persists_and_connects();
 
 extern "C" void setUp(void) {}
 extern "C" void tearDown(void) {}
@@ -49,6 +51,8 @@ int main(int, char**) {
     RUN_TEST(test_app_paired_token_lands_on_dashboard);
     RUN_TEST(test_app_pair_confirm_swaps_to_dashboard);
     RUN_TEST(test_app_commit_pending_done_drops_dashboard_row);
+    RUN_TEST(test_app_wifi_scan_populates_list);
+    RUN_TEST(test_app_wifi_save_persists_and_connects);
 
     return UNITY_END();
 }

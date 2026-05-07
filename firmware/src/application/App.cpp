@@ -44,9 +44,10 @@ App::App(INetwork& net,
          IRandom& rng,
          IStorage& storage,
          IInputDevice& input,
+         IWifi& wifi,
          std::string deviceId)
     : net_(net), pairApi_(pairApi), clock_(clock), rng_(rng),
-      storage_(storage), input_(input),
+      storage_(storage), input_(input), wifi_(wifi),
       sync_(net_, clock_, occList_, dashboard_, users_, resultTypes_, watermark_),
       markDoneSvc_(net_, clock_, rng_, storage_, queue_),
       pairCoord_(pairApi_, storage_, clock_),
@@ -75,6 +76,27 @@ void App::tick(uint32_t /*millisNow*/) {
         router_.replaceRoot(howler::domain::ScreenId::Dashboard);
         sync_.requestSync();
     }
+}
+
+bool App::refreshWifiScan() {
+    return wifi_.scan(wifiScan_);
+}
+
+bool App::saveAndConnectWifi(const howler::domain::WifiConfig& cfg) {
+    // Persist before the connect attempt so a successful association
+    // immediately survives a reboot. Plaintext for now (plan §10 #3).
+    std::string blob;
+    blob.reserve(cfg.ssid.size() + cfg.secret.size() + 4);
+    auto putStr = [&](const std::string& s) {
+        const uint16_t n = static_cast<uint16_t>(s.size() & 0xFFFF);
+        blob.push_back(static_cast<char>(n & 0xFF));
+        blob.push_back(static_cast<char>((n >> 8) & 0xFF));
+        blob.append(s);
+    };
+    putStr(cfg.ssid);
+    putStr(cfg.secret);
+    storage_.writeBlob("howler.wifi", blob);
+    return wifi_.connect(cfg);
 }
 
 void App::commitPendingDone() {

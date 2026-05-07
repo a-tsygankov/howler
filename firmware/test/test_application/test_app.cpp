@@ -23,6 +23,27 @@ public:
     Event poll() override { return Event::None; }
 };
 
+class StubWifi : public howler::application::IWifi {
+public:
+    bool isConnected() const override { return connected_; }
+    std::string currentSsid() const override { return ssid_; }
+    bool scan(std::vector<howler::domain::WifiNetwork>& out) override {
+        out = scanResult_; return scanOk_;
+    }
+    bool connect(const howler::domain::WifiConfig& cfg) override {
+        ssid_ = cfg.ssid;
+        connected_ = connectOk_;
+        return connectOk_;
+    }
+    void disconnect() override { connected_ = false; }
+
+    bool connected_ = false;
+    std::string ssid_;
+    bool scanOk_ = true;
+    std::vector<howler::domain::WifiNetwork> scanResult_;
+    bool connectOk_ = true;
+};
+
 }  // namespace
 
 void test_app_first_boot_lands_on_pair_screen() {
@@ -33,7 +54,8 @@ void test_app_first_boot_lands_on_pair_screen() {
     StubStorage storage;
     StubInput input;
 
-    App app(net, pairApi, clock, rng, storage, input, "deviceA");
+    StubWifi wifi;
+    App app(net, pairApi, clock, rng, storage, input, wifi, "deviceA");
     app.begin();
     TEST_ASSERT_EQUAL(static_cast<int>(ScreenId::Pair),
                       static_cast<int>(app.router().current()));
@@ -50,7 +72,8 @@ void test_app_paired_token_lands_on_dashboard() {
     StubInput input;
     storage.writeBlob(PairCoordinator::kTokenKey, "existing-token");
 
-    App app(net, pairApi, clock, rng, storage, input, "deviceA");
+    StubWifi wifi;
+    App app(net, pairApi, clock, rng, storage, input, wifi, "deviceA");
     app.begin();
     TEST_ASSERT_EQUAL(static_cast<int>(ScreenId::Dashboard),
                       static_cast<int>(app.router().current()));
@@ -66,7 +89,8 @@ void test_app_pair_confirm_swaps_to_dashboard() {
     pairApi.checkPhase_ = PairPhase::Confirmed;
     pairApi.checkToken_ = "tok-xyz";
 
-    App app(net, pairApi, clock, rng, storage, input, "deviceA");
+    StubWifi wifi;
+    App app(net, pairApi, clock, rng, storage, input, wifi, "deviceA");
     app.begin();
     TEST_ASSERT_EQUAL(static_cast<int>(ScreenId::Pair),
                       static_cast<int>(app.router().current()));
@@ -85,7 +109,8 @@ void test_app_commit_pending_done_drops_dashboard_row() {
     StubInput input;
     storage.writeBlob(PairCoordinator::kTokenKey, "tok");
 
-    App app(net, pairApi, clock, rng, storage, input, "deviceA");
+    StubWifi wifi;
+    App app(net, pairApi, clock, rng, storage, input, wifi, "deviceA");
     app.begin();
     // Seed the dashboard with one item, then commit a done.
     howler::domain::DashboardItem d;
@@ -105,4 +130,44 @@ void test_app_commit_pending_done_drops_dashboard_row() {
     app.commitPendingDone();
     TEST_ASSERT_EQUAL_size_t(0, app.dashboard().size());
     TEST_ASSERT_EQUAL_size_t(1, app.queue().size());
+}
+
+void test_app_wifi_scan_populates_list() {
+    StubClock clock;
+    StubNetwork net;
+    StubPairApi pairApi;
+    StubRandom rng;
+    StubStorage storage;
+    StubInput input;
+    StubWifi wifi;
+    howler::domain::WifiNetwork w; w.ssid = "home"; w.rssi = -50; w.secured = true;
+    wifi.scanResult_ = { w };
+
+    App app(net, pairApi, clock, rng, storage, input, wifi, "deviceA");
+    app.begin();
+    TEST_ASSERT_TRUE(app.refreshWifiScan());
+    TEST_ASSERT_EQUAL_size_t(1, app.wifiScan().size());
+    TEST_ASSERT_EQUAL_STRING("home", app.wifiScan()[0].ssid.c_str());
+}
+
+void test_app_wifi_save_persists_and_connects() {
+    StubClock clock;
+    StubNetwork net;
+    StubPairApi pairApi;
+    StubRandom rng;
+    StubStorage storage;
+    StubInput input;
+    StubWifi wifi;
+
+    App app(net, pairApi, clock, rng, storage, input, wifi, "deviceA");
+    app.begin();
+    howler::domain::WifiConfig cfg;
+    cfg.ssid = "home";
+    cfg.secret = "hunter2";
+    TEST_ASSERT_TRUE(app.saveAndConnectWifi(cfg));
+    TEST_ASSERT_TRUE(wifi.isConnected());
+    std::string blob;
+    TEST_ASSERT_TRUE(storage.readBlob("howler.wifi", blob));
+    TEST_ASSERT_TRUE(blob.find("home") != std::string::npos);
+    TEST_ASSERT_TRUE(blob.find("hunter2") != std::string::npos);
 }
