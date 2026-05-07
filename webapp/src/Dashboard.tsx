@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   apiLogout,
@@ -163,6 +163,28 @@ export const Dashboard = ({ session, onLogout, view }: Props) => {
     | null
   >(null);
 
+  // CreateTaskForm starts collapsed — only the "+ Add task" CTA
+  // is visible until the user opts in. Today view's CTA writes a
+  // one-shot flag to sessionStorage, navigates to /all, and the
+  // /all view consumes the flag in a `view`-keyed effect. Routing
+  // between sibling routes here keeps the same Dashboard instance
+  // (only the `view` prop changes), so the open-on-arrive trigger
+  // has to fire from a `view` dependency, not a mount.
+  const navigate = useNavigate();
+  const ADD_KEY = "howler.openCreateTask.v1";
+  const [addOpen, setAddOpen] = useState(false);
+  useEffect(() => {
+    if (view !== "all") return;
+    try {
+      if (sessionStorage.getItem(ADD_KEY) === "1") {
+        sessionStorage.removeItem(ADD_KEY);
+        setAddOpen(true);
+      }
+    } catch {
+      /* private mode / quota — silently no-op */
+    }
+  }, [view]);
+
   return (
     <main
       data-testid="dashboard"
@@ -210,23 +232,66 @@ export const Dashboard = ({ session, onLogout, view }: Props) => {
           {!dashboard.isLoading && dashboardItems.length === 0 && (
             <Empty>Nothing urgent. All caught up.</Empty>
           )}
+          <div className="flex justify-center px-5 pb-4 pt-2">
+            <Btn
+              variant="outline"
+              size="pillSm"
+              data-testid="add-task-cta"
+              onClick={() => {
+                try {
+                  sessionStorage.setItem(ADD_KEY, "1");
+                } catch {
+                  /* private mode — fall through, /all just won't auto-open */
+                }
+                navigate("/all");
+              }}
+            >
+              + Add task
+            </Btn>
+          </div>
         </>
       )}
 
       {view === "all" && (
         <>
-          <section className="px-5 py-6">
-            <h2 className="cap mb-2">New task</h2>
-            <CreateTaskForm
-              labels={labels.data ?? []}
-              taskResults={taskResults.data ?? []}
-              templates={templates.data ?? []}
-              users={users.data ?? []}
-              onCreated={() => {
-                void qc.invalidateQueries({ queryKey: ["tasks"] });
-                void qc.invalidateQueries({ queryKey: ["dashboard"] });
-              }}
-            />
+          <section className="px-5 py-4">
+            {addOpen ? (
+              <>
+                <div className="mb-2 flex items-center justify-between">
+                  <h2 className="cap">New task</h2>
+                  <button
+                    type="button"
+                    onClick={() => setAddOpen(false)}
+                    aria-label="Close new-task form"
+                    className="cap text-ink-3 hover:text-ink"
+                  >
+                    Close
+                  </button>
+                </div>
+                <CreateTaskForm
+                  labels={labels.data ?? []}
+                  taskResults={taskResults.data ?? []}
+                  templates={templates.data ?? []}
+                  users={users.data ?? []}
+                  onCreated={() => {
+                    void qc.invalidateQueries({ queryKey: ["tasks"] });
+                    void qc.invalidateQueries({ queryKey: ["dashboard"] });
+                    // Collapse the form once a task is created so
+                    // the page returns to the All Tasks list view.
+                    setAddOpen(false);
+                  }}
+                />
+              </>
+            ) : (
+              <Btn
+                variant="primary"
+                size="block"
+                data-testid="add-task-cta"
+                onClick={() => setAddOpen(true)}
+              >
+                + Add task
+              </Btn>
+            )}
           </section>
 
           <Section title="All tasks">

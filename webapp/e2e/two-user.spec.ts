@@ -48,11 +48,13 @@ const setupUser = async (
 };
 
 const createTaskViaUI = async (u: UserSession): Promise<void> => {
-  // Create-task form lives on the All-tasks tab now.
+  // Create-task form lives on the All-tasks tab now and is
+  // collapsed behind a CTA — expand before filling.
   await u.page.getByTestId("tab-all").click();
   await expect(
     u.page.getByTestId("dashboard"),
   ).toHaveAttribute("data-view", "all");
+  await u.page.getByTestId("add-task-cta").click();
   await u.page
     .getByPlaceholder(/what do you want to remember/i)
     .fill(u.taskTitle);

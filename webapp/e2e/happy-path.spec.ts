@@ -37,11 +37,13 @@ test.describe("happy path", () => {
     });
 
     // The create-task form lives on the All-tasks tab now (post-
-    // BottomTabs split). Navigate there before filling the form.
+    // BottomTabs split) and is collapsed behind a "+ Add task"
+    // CTA. Tap the tab, then expand the form before filling it.
     await page.getByTestId("tab-all").click();
     await expect(
       page.getByTestId("dashboard"),
     ).toHaveAttribute("data-view", "all");
+    await page.getByTestId("add-task-cta").click();
 
     const title = `e2e-${Date.now()}`;
     await page.getByPlaceholder(/what do you want to remember/i).fill(title);
