@@ -33,11 +33,18 @@ label{display:block;margin:14px 0 4px;font-size:13px;color:#A8A099;text-transfor
 input,select{width:100%;padding:12px;border:1px solid #2E2A20;background:#0E0905;color:#F6EFDC;border-radius:6px;font-size:16px;box-sizing:border-box;}
 button{margin-top:24px;width:100%;padding:14px;border:0;background:#C13D1E;color:#F6EFDC;font-size:16px;font-weight:600;border-radius:6px;cursor:pointer;}
 .hint{font-size:12px;color:#A8A099;margin-top:14px;padding:12px;background:#0E0905;border:1px solid #2E2A20;border-radius:6px;line-height:1.4;}
+.sub{font-size:12px;color:#A8A099;margin-top:4px;}
 </style></head><body>
 <h1>Howler setup</h1>
 <form method="POST" action="/save">
 <label>Wi-Fi network</label>
-<select name="ssid" required>{SSID_OPTIONS}</select>
+<select name="ssid_pick">
+<option value="">-- pick a visible network --</option>
+{SSID_OPTIONS}
+</select>
+<label>Or type SSID</label>
+<input type="text" name="ssid_text" placeholder="hidden / not in the list" autocapitalize="none" autocorrect="off">
+<div class="sub">Free text wins over the dropdown if both are filled.</div>
 <label>Password</label>
 <input type="password" name="pass" autocomplete="off">
 <div class="hint">After Save, the device reboots and shows a 6-digit pairing code.
@@ -57,8 +64,12 @@ h1{color:#C13D1E;font-weight:400;}</style>
 </body></html>)HTML";
 
 String buildSsidOptions() {
+    // Always returns the visible networks as <option>s. The form
+    // template wraps these in a <select> with a leading "pick one"
+    // placeholder so the user can also leave it blank and use the
+    // free-text field below for hidden SSIDs.
     if (gScannedSsids.empty()) {
-        return "<option value=\"\" disabled selected>(no networks found)</option>";
+        return "<option value=\"\" disabled>(no networks found)</option>";
     }
     String options;
     for (const auto& s : gScannedSsids) {
@@ -74,10 +85,17 @@ void serveForm() {
 }
 
 void handleSave() {
-    gPendingSsid = gHttp.arg("ssid");
+    // Free-text wins so hidden SSIDs work even if a stale dropdown
+    // value sneaks in. Trim leading/trailing whitespace because phone
+    // keyboards love appending a space after the auto-suggest pop.
+    String text = gHttp.arg("ssid_text");
+    text.trim();
+    String pick = gHttp.arg("ssid_pick");
+    pick.trim();
+    gPendingSsid = text.length() > 0 ? text : pick;
     gPendingPass = gHttp.arg("pass");
     if (gPendingSsid.isEmpty()) {
-        gHttp.send(400, "text/plain", "ssid required");
+        gHttp.send(400, "text/plain", "ssid required (pick or type)");
         return;
     }
     String body = kDoneHtml;
@@ -106,13 +124,25 @@ void WifiCaptivePortal::begin(application::IStorage& storage) {
 
     // Scan first while still in pure STA — scans take ~3 s but happen
     // once at portal start; results cache for the whole session.
+    //
+    // The scan needs the radio in a clean state. If anything left
+    // Wi-Fi in AP mode (or with a half-failed STA association) the
+    // scan returns 0 networks even when several are in range — that
+    // matches the "(no networks found)" symptom seen in the wild.
+    // Force STA + disconnect + brief settle, then `show_hidden=true`
+    // so we surface APs broadcasting nothing.
     WiFi.mode(WIFI_STA);
-    const int n = WiFi.scanNetworks();
+    WiFi.disconnect(true, true);  // wifioff=true, eraseap=true
+    delay(150);
+    const int n = WiFi.scanNetworks(/*async=*/false, /*show_hidden=*/true);
     gScannedSsids.clear();
     for (int i = 0; i < n; ++i) {
-        gScannedSsids.push_back(WiFi.SSID(i));
+        const String s = WiFi.SSID(i);
+        if (s.length() == 0) continue;  // skip the unnamed hidden APs
+        gScannedSsids.push_back(s);
     }
-    Serial.printf("[setup] scanned %d networks\n", n);
+    Serial.printf("[setup] scanned %d networks (kept %u with names)\n",
+                  n, (unsigned)gScannedSsids.size());
 
     // Open SoftAP — no creds needed to join the setup AP itself; the
     // form captures the real creds.
