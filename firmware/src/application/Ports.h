@@ -138,6 +138,13 @@ public:
     /// always returns false so legacy stubs without hold-tracking
     /// don't have to opt in.
     virtual bool isHeld() const { return false; }
+    /// Inertial-swipe magnitude for the most-recently dequeued
+    /// Swipe* event. Slow swipes return 1; fast flicks return larger
+    /// values (capped at ~5) so callers can advance their cursor by
+    /// multiple items in one gesture, iPhone-list-style. Reading
+    /// after a non-Swipe event returns 1. Implementations without
+    /// velocity tracking always return 1.
+    virtual int lastSwipeMagnitude() const { return 1; }
 };
 
 /// LVGL-or-whatever display abstraction. Application calls `tick()`

@@ -5,6 +5,7 @@
 #include "../domain/LongPressArc.h"
 #include "../domain/RoundMenuModel.h"
 #include "../domain/Router.h"
+#include "components/DrumScroller.h"
 #include "components/LongPressArcWidget.h"
 #include "components/RoundMenu.h"
 #include "components/ValueWidget.h"
@@ -139,6 +140,19 @@ private:
     /// menu_ — ScreenManager::onEvent reads this to decide whether
     /// to forward events to the menu.
     bool menuActive_ = false;
+
+    /// Shared drum scroller for the Dashboard + TaskList three-up
+    /// (selected detailed card + neighbour minis sliding on tier
+    /// rotations). Built fresh by `buildDashboard` / `buildTaskList`;
+    /// subsequent cursor changes drive scrollBy() WITHOUT a full
+    /// screen rebuild so the inertial slide animation actually plays.
+    components::DrumScroller taskDrum_;
+    bool                     taskDrumActive_ = false;
+    /// Cursor-dots label inside the same task screens — needs an
+    /// in-place text update on each scroll because the surrounding
+    /// chrome (tab strip, tier counts, footer hint) doesn't rebuild
+    /// while the drum animates.
+    lv_obj_t*                taskCursorDots_ = nullptr;
 
     void rebuildScreen();
     void teardownScreen();

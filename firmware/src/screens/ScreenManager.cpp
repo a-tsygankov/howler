@@ -3,10 +3,13 @@
 // framework concerns. LVGL 9 API.
 
 #include "ScreenManager.h"
+#include "components/DrumScroller.h"
 #include "components/RoundCard.h"
 #include "../application/PairCoordinator.h"
 
 namespace howler::screens {
+
+using components::updateDrumCursorDots;
 
 namespace {
 
@@ -223,15 +226,19 @@ void ScreenManager::pollAndDispatch(uint32_t /*millisNow*/) {
     while (true) {
         const auto e = input_.poll();
         if (e == IInputDevice::Event::None) break;
+        // Inertial-swipe magnitude: a fast flick reads as N>1 here so
+        // downstream handlers can move their cursor by N items in one
+        // gesture (iPhone-list-flick feel). Encoder events always
+        // contribute ±1; only Swipe* carries velocity.
         if      (e == IInputDevice::Event::RotateCW)   ++delta;
         else if (e == IInputDevice::Event::RotateCCW)  --delta;
         else if (e == IInputDevice::Event::Press)      tap = true;
         else if (e == IInputDevice::Event::DoubleTap)  doubleTap = true;
         else if (e == IInputDevice::Event::LongPress)  longPress = true;
-        else if (e == IInputDevice::Event::SwipeUp)    ++vert;
-        else if (e == IInputDevice::Event::SwipeDown)  --vert;
-        else if (e == IInputDevice::Event::SwipeLeft)  ++horz;
-        else if (e == IInputDevice::Event::SwipeRight) --horz;
+        else if (e == IInputDevice::Event::SwipeUp)    vert += input_.lastSwipeMagnitude();
+        else if (e == IInputDevice::Event::SwipeDown)  vert -= input_.lastSwipeMagnitude();
+        else if (e == IInputDevice::Event::SwipeLeft)  horz += input_.lastSwipeMagnitude();
+        else if (e == IInputDevice::Event::SwipeRight) horz -= input_.lastSwipeMagnitude();
     }
     if (delta == 0 && vert == 0 && horz == 0 &&
         !tap && !doubleTap && !longPress) return;
@@ -256,6 +263,12 @@ void ScreenManager::teardownScreen() {
     resultValueLabel_ = nullptr;
     valueWidget_.reset();  // ResultPicker's specialised value visual
     menuActive_ = false;
+    // taskDrum_'s LVGL pointers are about to be deleted with root_;
+    // clear the active flag so onEvent doesn't try to scroll a drum
+    // whose container_ is dangling. The drum's value-typed slots
+    // get overwritten on the next build() so nothing leaks.
+    taskDrumActive_ = false;
+    taskCursorDots_ = nullptr;
 }
 
 void ScreenManager::rebuildScreen() {
@@ -323,9 +336,19 @@ void ScreenManager::onEvent(int rotateDelta, bool tap, bool doubleTap,
     //    versions of these screens used to ride; the RoundMenu
     //    centre container isn't in the encoder group, so we
     //    forward the press event explicitly.
+    //
+    // Inertial-swipe path: vertSwipe already absorbed each Swipe
+    // event's per-event magnitude (see pollAndDispatch), so a fast
+    // flick lands in `vertSwipe` as e.g. ±3. The menu's onScroll
+    // takes (direction, magnitude) and plays one ease-out animation
+    // covering the multi-item jump.
     if (menuActive_) {
         if (rotateDelta != 0) menu_.onRotate(rotateDelta);
-        if (vertSwipe   != 0) menu_.onRotate(vertSwipe);
+        if (vertSwipe   != 0) {
+            const int dir = vertSwipe > 0 ? 1 : -1;
+            const int mag = vertSwipe > 0 ? vertSwipe : -vertSwipe;
+            menu_.onScroll(dir, mag);
+        }
         if (tap)              menu_.fireActivate();
     }
 
@@ -349,30 +372,41 @@ void ScreenManager::onEvent(int rotateDelta, bool tap, bool doubleTap,
         return;
     }
 
-    // ── RoundMenu screens (Settings, UserPicker, Wi-Fi list) ────
-    // Forward the rotary delta and tap to the menu component;
-    // long-press is handled per-screen below for any destructive
-    // confirm. Build* sets menuActive_ when this routing should
-    // engage.
-    if (menuActive_) {
-        if (rotateDelta != 0) menu_.onRotate(rotateDelta);
-        if (tap) menu_.fireActivate();
-    }
+    // (Earlier block already forwarded rotation + scroll + tap to
+    //  the menu when active — no second forwarder here, that used to
+    //  duplicate-fire taps and double-step the cursor on rotation.)
 
     switch (rendered_) {
         case ScreenId::Dashboard: {
             // Knob rotation AND vertical swipe both move the dashboard
             // cursor — knob is the primary, swipe is touch parity.
-            // Pills switch only via horizontal swipe (above). Cursor
-            // movement triggers a rebuild because the centre + mini
-            // cards depend on which item is selected.
+            // Pills switch only via horizontal swipe (above).
+            //
+            // Drum scroll path: the DrumScroller renders the centre
+            // detailed card + neighbour minis with a slide animation
+            // on each cursor change. We feed (direction, magnitude)
+            // into scrollBy so a fast flick lands multiple items
+            // away with a single ease-out animation, then mirror the
+            // drum's resulting cursor back into the model so the
+            // mark-done dispatch below picks the right task. NO
+            // requestRebuild — the drum animates in place; the
+            // surrounding chrome (tab strip, tier counts, footer
+            // hint) doesn't depend on the cursor and stays put.
+            auto applyScroll = [this](int direction, int magnitude) {
+                if (!taskDrumActive_) return;
+                taskDrum_.scrollBy(direction, magnitude);
+                app_.dashboard().setCursor(taskDrum_.cursor());
+                updateDrumCursorDots(taskCursorDots_,
+                                      app_.dashboard().size(),
+                                      app_.dashboard().cursor());
+            };
             if (rotateDelta != 0) {
-                app.dashboard().moveCursor(rotateDelta);
-                requestRebuild();
+                applyScroll(rotateDelta > 0 ? 1 : -1,
+                            rotateDelta > 0 ? rotateDelta : -rotateDelta);
             }
             if (vertSwipe != 0) {
-                app.dashboard().moveCursor(vertSwipe);
-                requestRebuild();
+                applyScroll(vertSwipe > 0 ? 1 : -1,
+                            vertSwipe > 0 ? vertSwipe : -vertSwipe);
             }
             const auto* sel = app.dashboard().selected();
             if (!sel) break;
@@ -397,6 +431,12 @@ void ScreenManager::onEvent(int rotateDelta, bool tap, bool doubleTap,
                 app.pendingDone().hasResultValue = false;
                 app.commitPendingDone();
                 playDoneAnimation();
+                // The dashboard model just shed the acknowledged item.
+                // Force a rebuild so the drum reconstructs against the
+                // new item list — without it we'd render the still-live
+                // drum with a stale items reference behind the green
+                // check overlay.
+                requestRebuild();
             }
             break;
         }
@@ -459,15 +499,23 @@ void ScreenManager::onEvent(int rotateDelta, bool tap, bool doubleTap,
             // Same UX as Dashboard, just driven by `allTasks()` so
             // every active task is reachable (not just the urgency
             // tier the home screen surfaces). Knob + vertical swipe
-            // move the cursor; tap enters the standard mark-done
-            // flow; long-press is the quick-done shortcut.
+            // spin the drum; tap enters the standard mark-done flow;
+            // long-press is the quick-done shortcut.
+            auto applyScroll = [this](int direction, int magnitude) {
+                if (!taskDrumActive_) return;
+                taskDrum_.scrollBy(direction, magnitude);
+                app_.allTasks().setCursor(taskDrum_.cursor());
+                updateDrumCursorDots(taskCursorDots_,
+                                      app_.allTasks().size(),
+                                      app_.allTasks().cursor());
+            };
             if (rotateDelta != 0) {
-                app.allTasks().moveCursor(rotateDelta);
-                requestRebuild();
+                applyScroll(rotateDelta > 0 ? 1 : -1,
+                            rotateDelta > 0 ? rotateDelta : -rotateDelta);
             }
             if (vertSwipe != 0) {
-                app.allTasks().moveCursor(vertSwipe);
-                requestRebuild();
+                applyScroll(vertSwipe > 0 ? 1 : -1,
+                            vertSwipe > 0 ? vertSwipe : -vertSwipe);
             }
             const auto* sel = app.allTasks().selected();
             if (!sel) break;
@@ -488,6 +536,11 @@ void ScreenManager::onEvent(int rotateDelta, bool tap, bool doubleTap,
                 app.pendingDone().hasResultValue = false;
                 app.commitPendingDone();
                 playDoneAnimation();
+                // Same rebuild reason as the Dashboard branch — the
+                // drum still references the pre-commit items vector;
+                // letting it stay would render the just-dropped task
+                // until the next navigation event.
+                requestRebuild();
             }
             break;
         }

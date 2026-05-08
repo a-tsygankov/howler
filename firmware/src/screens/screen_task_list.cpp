@@ -1,19 +1,24 @@
-// All-tasks screen — same detailed + mini layout as Dashboard, just
-// driven by `app.allTasks()` (every active task in the home, not the
-// urgency-filtered subset). Per the user spec 2026-05-08:
+// All-tasks screen — same drum-style three-up layout as Dashboard,
+// just driven by `app.allTasks()` (every active task in the home,
+// not the urgency-filtered subset). Per the user spec 2026-05-08:
 //
 //   "show at least 3 tasks at once: 1 selected with details, and 2
 //    others (if exist) as mini versions higher or lower or both
 //    higher or both lower (depending on place in list). Detailed
 //    view should have Icon."
 //
-// Knob rotation + vertical swipe move the cursor; tap on the centre
+// Knob rotation + vertical swipe spin the drum; tap on the centre
 // task enters the standard mark-done flow (ResultPicker if the task
 // has a result type, else UserPicker). Double-tap goes back to
 // Dashboard via the universal pop. Long-press = quick mark-done with
 // no result + no user attribution, same shortcut as Dashboard.
+//
+// Dev-22: drum carousel + inertial swipe match the Dashboard. The
+// only structural difference between the two screens is which model
+// they pull items from + which tab pill is highlighted.
 
 #include "ScreenManager.h"
+#include "components/DrumScroller.h"
 #include "components/RoundCard.h"
 #include "components/TaskCard.h"
 #include "components/LongPressArcWidget.h"
@@ -26,7 +31,9 @@ using components::buildRoundBackground;
 using components::buildCenterCard;
 using components::buildDetailedTaskCard;
 using components::buildMiniTaskCard;
+using components::renderTaskInDrumSlot;
 using components::countTiers;
+using components::updateDrumCursorDots;
 
 void ScreenManager::buildTaskList() {
     root_ = buildRoundBackground();
@@ -55,23 +62,22 @@ void ScreenManager::buildTaskList() {
         return;
     }
 
-    // Three-up layout matches Dashboard: previous mini above the
-    // centre, detailed centre card, next mini below. Edge handling
-    // shows a single neighbour when at the start or end of the list
-    // — but if there are only 2 items total we still want both
-    // visible, so we always show whichever neighbour exists.
     const size_t n = all.size();
-    const size_t cur = all.cursor();
     const auto& items = all.items();
+    const int64_t serverNow = lastServerNowSec_;
 
-    if (n > 1 && cur > 0) {
-        buildMiniTaskCard(root_, items[cur - 1], /*yOffset=*/-72);
-    }
-    if (n > 1 && cur + 1 < n) {
-        buildMiniTaskCard(root_, items[cur + 1], /*yOffset=*/72);
-    }
-
-    buildDetailedTaskCard(root_, items[cur], lastServerNowSec_);
+    // Build the drum carousel first so subsequent overlay widgets
+    // (tier counts header, cursor dots) sit on top in z-order.
+    taskDrum_.build(root_, /*viewWidth=*/220, /*viewHeight=*/220,
+                    /*tierSpacing=*/80);
+    taskDrum_.setItemCount(n);
+    taskDrum_.setCursor(all.cursor());
+    taskDrum_.setRender([this, &items, serverNow](
+        lv_obj_t* slot, size_t idx, int tier) {
+        if (idx >= items.size()) return;
+        renderTaskInDrumSlot(slot, items[idx], tier, serverNow);
+    });
+    taskDrumActive_ = true;
 
     // Tier counts row at the very top under the tab strip.
     {
@@ -105,20 +111,14 @@ void ScreenManager::buildTaskList() {
         }
     }
 
-    // Cursor dots.
+    // Cursor dots — kept in a member so onEvent can repaint without
+    // rebuilding the whole screen.
     {
-        char dots[64] = {0};
-        size_t off = 0;
-        const size_t cap = n > 12 ? 12 : n;
-        for (size_t i = 0; i < cap && off < sizeof(dots) - 4; ++i) {
-            dots[off++] = (i == cur) ? '#' : '-';
-            dots[off++] = ' ';
-        }
-        if (n > cap && off < sizeof(dots) - 1) dots[off++] = '+';
         auto* d = lv_label_create(root_);
-        lv_label_set_text(d, dots);
         lv_obj_set_style_text_color(d, Palette::ink3(), 0);
         lv_obj_align(d, LV_ALIGN_BOTTOM_MID, 0, -28);
+        taskCursorDots_ = d;
+        updateDrumCursorDots(d, n, all.cursor());
     }
 
     auto* hint = lv_label_create(root_);

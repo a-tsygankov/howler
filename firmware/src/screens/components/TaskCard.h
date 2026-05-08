@@ -203,8 +203,10 @@ inline lv_obj_t* buildDetailedTaskCard(
 }
 
 /// Mini task card — pill-shaped, a tiny accent dot + truncated title.
-/// `yOffset` is from screen centre (negative = above, positive = below).
-/// Caller passes the parent root_ — the pill aligns relative to it.
+/// `yOffset` is from parent centre (negative = above, positive = below).
+/// Caller passes the parent — the pill aligns relative to it. When
+/// rendering inside a DrumScroller slot, pass yOffset=0 (the slot is
+/// already positioned at the right tier).
 inline lv_obj_t* buildMiniTaskCard(
     lv_obj_t* parent,
     const domain::DashboardItem& item,
@@ -239,6 +241,25 @@ inline lv_obj_t* buildMiniTaskCard(
     lv_obj_align(title, LV_ALIGN_LEFT_MID, 28, 0);
 
     return row;
+}
+
+/// Render task card content inside a DrumScroller slot. The drum
+/// already positioned the slot at the right tier — we just need to
+/// pick the right card flavour and render it centered. Tier 0 gets
+/// the full detailed card; tiers ±1 get the mini pill; tier ±2 is
+/// off-disc on a 240×240 round display so we render nothing.
+inline void renderTaskInDrumSlot(lv_obj_t* slot,
+                                 const domain::DashboardItem& item,
+                                 int tier,
+                                 int64_t serverNowSec) {
+    if (tier == 0) {
+        buildDetailedTaskCard(slot, item, serverNowSec);
+    } else if (tier == 1 || tier == -1) {
+        buildMiniTaskCard(slot, item, /*yOffset=*/0);
+    }
+    // Far edges (|tier| >= 2) intentionally render nothing — the
+    // round display can't fit a fourth row outside the centre + two
+    // neighbours and any extra would clip awkwardly against the bezel.
 }
 
 /// Tier counts header — three small pills at the top showing how

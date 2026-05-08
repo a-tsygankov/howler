@@ -60,6 +60,14 @@ public:
         cursor_ = 0;
     }
 
+    /// Drop the cursor on a specific index, modulo size. Used by the
+    /// drum-scrolling screens to mirror the drum's resulting cursor
+    /// back into the model after an inertial swipe — the drum already
+    /// did the wrap arithmetic; we just align the model to match.
+    void setCursor(size_t i) {
+        cursor_ = items_.empty() ? 0 : (i % items_.size());
+    }
+
     /// Drop a single item (e.g., one we just acknowledged) so the
     /// screen reflects the change before the next sync arrives.
     void removeById(const std::string& id) {
