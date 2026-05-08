@@ -93,6 +93,13 @@ void ScreenManager::tick(uint32_t millisNow) {
         toastUntilMs_ = 0;
     }
 
+    // Same lifecycle for the done-animation overlay.
+    if (doneOverlay_ && doneUntilMs_ != 0 && millisNow >= doneUntilMs_) {
+        lv_obj_del(doneOverlay_);
+        doneOverlay_ = nullptr;
+        doneUntilMs_ = 0;
+    }
+
     if (app_.router().current() != rendered_ || rebuildPending_) {
         rebuildPending_ = false;
         rebuildScreen();
@@ -108,6 +115,67 @@ size_t ScreenManager::mainScreenIndex() const {
     constexpr auto N = sizeof(kMainScreens) / sizeof(kMainScreens[0]);
     for (size_t i = 0; i < N; ++i) if (kMainScreens[i] == rendered_) return i;
     return N;
+}
+
+void ScreenManager::playDoneAnimation(uint32_t durationMs) {
+    // Replace any in-flight overlay so back-to-back commits don't
+    // queue a stack of identical checks.
+    if (doneOverlay_) {
+        lv_obj_del(doneOverlay_);
+        doneOverlay_ = nullptr;
+    }
+
+    // The overlay is a circular green badge with the LV_SYMBOL_OK
+    // glyph in the centre. Built on lv_layer_top so it floats above
+    // every screen tree and is unaffected by rebuilds.
+    auto* circle = lv_obj_create(lv_layer_top());
+    lv_obj_set_size(circle, 120, 120);
+    lv_obj_center(circle);
+    lv_obj_clear_flag(circle, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_radius(circle, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(circle, components::Palette::success(), 0);
+    lv_obj_set_style_bg_opa(circle, LV_OPA_90, 0);
+    lv_obj_set_style_border_width(circle, 0, 0);
+    lv_obj_set_style_pad_all(circle, 0, 0);
+
+    auto* check = lv_label_create(circle);
+    lv_label_set_text(check, LV_SYMBOL_OK);
+    lv_obj_set_style_text_color(check, components::Palette::paper(), 0);
+    lv_obj_set_style_text_font(check, &lv_font_montserrat_22, 0);
+    lv_obj_center(check);
+
+    // Scale + fade animation. The badge grows from ~70 % to 100 %
+    // over the first ~250 ms (a "stamp" feel), holds, then fades
+    // out at the end of the window.
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, circle);
+    lv_anim_set_values(&a, 70, 100);
+    lv_anim_set_time(&a, 220);
+    lv_anim_set_path_cb(&a, lv_anim_path_overshoot);
+    lv_anim_set_exec_cb(&a, [](void* var, int32_t v) {
+        const int side = (120 * v) / 100;
+        lv_obj_set_size(static_cast<lv_obj_t*>(var), side, side);
+        lv_obj_center(static_cast<lv_obj_t*>(var));
+    });
+    lv_anim_start(&a);
+
+    // Fade-out at the tail end so the screen comes back to the
+    // detailed task view without a hard cut.
+    lv_anim_t fade;
+    lv_anim_init(&fade);
+    lv_anim_set_var(&fade, circle);
+    lv_anim_set_values(&fade, LV_OPA_90, LV_OPA_TRANSP);
+    lv_anim_set_time(&fade, 250);
+    lv_anim_set_delay(&fade, durationMs > 300 ? durationMs - 300 : 0);
+    lv_anim_set_exec_cb(&fade, [](void* var, int32_t v) {
+        lv_obj_set_style_bg_opa(static_cast<lv_obj_t*>(var),
+                                static_cast<lv_opa_t>(v), 0);
+    });
+    lv_anim_start(&fade);
+
+    doneOverlay_ = circle;
+    doneUntilMs_ = millis() + durationMs;
 }
 
 void ScreenManager::showToast(const char* text, uint32_t durationMs) {
@@ -169,6 +237,7 @@ void ScreenManager::teardownScreen() {
     // them before any next frame can read them.
     longPressArcWidget_.reset();
     resultValueLabel_ = nullptr;
+    valueWidget_.reset();  // ResultPicker's specialised value visual
     menuActive_ = false;
 }
 
@@ -310,13 +379,23 @@ void ScreenManager::onEvent(int rotateDelta, bool tap, bool doubleTap,
                 app.pendingDone().userId = "";
                 app.pendingDone().hasResultValue = false;
                 app.commitPendingDone();
+                playDoneAnimation();
             }
             break;
         }
         case ScreenId::ResultPicker: {
-            if (rotateDelta != 0) {
-                app.resultEdit().nudge(rotateDelta);
-                if (resultValueLabel_) {
+            // Rotation + horizontal swipe both nudge the active
+            // value editor; `vertSwipe` is reserved for the bowl
+            // (Grams) widget so it's also routed in. The widget's
+            // `update()` repaints the visual in place — no rebuild.
+            const int delta = rotateDelta + horzSwipe + vertSwipe;
+            if (delta != 0) {
+                app.resultEdit().nudge(delta);
+                const auto* rt = app.findResultType(
+                    app.pendingDone().resultTypeId);
+                if (valueWidget_ && rt) {
+                    valueWidget_->update(app.resultEdit().value(), *rt);
+                } else if (resultValueLabel_) {
                     lv_label_set_text(resultValueLabel_,
                                       app.resultEdit().formatValue().c_str());
                 }
@@ -340,6 +419,7 @@ void ScreenManager::onEvent(int rotateDelta, bool tap, bool doubleTap,
             if (longPress) {
                 app.pendingDone().userId = "";
                 app.commitPendingDone();
+                playDoneAnimation();
                 router.replaceRoot(ScreenId::Dashboard);
             }
             break;
@@ -390,6 +470,7 @@ void ScreenManager::onEvent(int rotateDelta, bool tap, bool doubleTap,
                 app.pendingDone().userId = "";
                 app.pendingDone().hasResultValue = false;
                 app.commitPendingDone();
+                playDoneAnimation();
             }
             break;
         }
