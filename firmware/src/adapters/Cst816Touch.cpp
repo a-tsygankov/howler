@@ -51,18 +51,32 @@ void Cst816Touch::begin() {
     Serial.println("[cst816] ready (timing-based gesture detector)");
 }
 
-void Cst816Touch::enqueue(Event ev) {
+void Cst816Touch::enqueue(Event ev, int magnitude) {
     const uint8_t next = static_cast<uint8_t>((qTail_ + 1) % kQueueCap);
     if (next == qHead_) return;  // queue full; drop oldest sentinel
-    queue_[qTail_] = ev;
+    queue_[qTail_] = {ev, magnitude};
     qTail_ = next;
 }
 
 application::IInputDevice::Event Cst816Touch::dequeue() {
     if (qHead_ == qTail_) return Event::None;
-    const Event ev = queue_[qHead_];
+    const auto qe = queue_[qHead_];
     qHead_ = static_cast<uint8_t>((qHead_ + 1) % kQueueCap);
-    return ev;
+    // Only swipes carry meaningful magnitude — taps / long-press are
+    // always magnitude=1. Reset proactively so a stale magnitude can't
+    // leak into a non-swipe event read through `lastSwipeMagnitude()`.
+    switch (qe.ev) {
+        case Event::SwipeUp:
+        case Event::SwipeDown:
+        case Event::SwipeLeft:
+        case Event::SwipeRight:
+            lastSwipeMagnitude_ = qe.magnitude;
+            break;
+        default:
+            lastSwipeMagnitude_ = 1;
+            break;
+    }
+    return qe.ev;
 }
 
 application::IInputDevice::Event Cst816Touch::poll() {
@@ -125,18 +139,40 @@ application::IInputDevice::Event Cst816Touch::poll() {
             started && absDx >= kSwipeMinDelta &&
             absDy <= absDx * kSwipeMaxOffOverOn;
 
+        // Velocity (px/s along the dominant axis) over the full touch
+        // duration. Cheap proxy for instantaneous flick velocity —
+        // for the swipes we care about (sub-300 ms gestures from one
+        // edge of the disc to the other) the average and peak are
+        // close enough that this stays inside ±20 % of a per-sample
+        // estimate while costing one division.
+        const uint32_t durMs = (touchStartMs_ != 0 && now > touchStartMs_)
+            ? (now - touchStartMs_) : 1;
+        auto magnitudeFor = [this, durMs](int travelPx) -> int {
+            if (travelPx < kSwipeMinDelta) return 1;
+            const long velPxPerSec =
+                (static_cast<long>(travelPx) * 1000L) /
+                static_cast<long>(durMs ? durMs : 1);
+            long mag = (velPxPerSec + (kSwipeVelocityPerStep / 2))
+                       / kSwipeVelocityPerStep;
+            if (mag < 1) mag = 1;
+            if (mag > kSwipeMagnitudeCap) mag = kSwipeMagnitudeCap;
+            return static_cast<int>(mag);
+        };
+
         if (longTouchFired_) {
             // already fired LongPress mid-hold; release is a no-op
         } else if (vertical) {
             // Touch coords: Y grows DOWNWARD, so a finger that moved
             // toward the top of the screen has dy < 0 → SwipeUp.
-            enqueue(dy < 0 ? Event::SwipeUp : Event::SwipeDown);
+            const int mag = magnitudeFor(absDy);
+            enqueue(dy < 0 ? Event::SwipeUp : Event::SwipeDown, mag);
             pendingTap_ = false;
         } else if (horizontal) {
             // X grows LEFT-TO-RIGHT. A finger that moved right has
             // dx > 0 → SwipeRight (back / previous in mobile carousel
             // convention); leftward → SwipeLeft (forward / next).
-            enqueue(dx < 0 ? Event::SwipeLeft : Event::SwipeRight);
+            const int mag = magnitudeFor(absDx);
+            enqueue(dx < 0 ? Event::SwipeLeft : Event::SwipeRight, mag);
             pendingTap_ = false;
         } else if (pendingTap_ && (now - lastTapEndMs_) < kDoubleTapMs) {
             enqueue(Event::DoubleTap);

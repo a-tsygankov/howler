@@ -63,6 +63,13 @@ public:
     SyncService& sync() { return sync_; }
     MarkDoneService& markDone() { return markDoneSvc_; }
     PairCoordinator& pair() { return pairCoord_; }
+    /// Surface the network + clock ports for components that need
+    /// either directly. The IconCache lives on ScreenManager and
+    /// composes both — the App is the canonical place to read the
+    /// adapter handles, since main.cpp holds them by reference and
+    /// nothing else does.
+    INetwork& network() { return net_; }
+    IClock& clock() { return clock_; }
     /// Server's notion of "now" at the most recent dashboard fetch.
     /// 0 until the first sync round succeeds. Screens render relative
     /// time labels ("in 14 m") from this rather than the local clock.

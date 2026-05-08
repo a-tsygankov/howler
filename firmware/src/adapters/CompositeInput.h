@@ -22,14 +22,14 @@ public:
         // monopolize the queue.
         if (preferA_) {
             const Event e = a_.poll();
-            if (e != Event::None) { preferA_ = false; return e; }
+            if (e != Event::None) { preferA_ = false; lastWasA_ = true; return e; }
             const Event f = b_.poll();
-            if (f != Event::None) return f;
+            if (f != Event::None) { lastWasA_ = false; return f; }
         } else {
             const Event e = b_.poll();
-            if (e != Event::None) { preferA_ = true; return e; }
+            if (e != Event::None) { preferA_ = true; lastWasA_ = false; return e; }
             const Event f = a_.poll();
-            if (f != Event::None) return f;
+            if (f != Event::None) { lastWasA_ = true; return f; }
         }
         return Event::None;
     }
@@ -38,10 +38,22 @@ public:
         return a_.isHeld() || b_.isHeld();
     }
 
+    /// Forward to whichever source produced the last event. The
+    /// encoder source returns the default (1); the touch source
+    /// returns its velocity-derived magnitude. Reading without a
+    /// preceding event yields whichever source served the previous
+    /// gesture — fine because callers only consult this directly
+    /// after a poll() that returned a Swipe event.
+    int lastSwipeMagnitude() const override {
+        return lastWasA_ ? a_.lastSwipeMagnitude()
+                         : b_.lastSwipeMagnitude();
+    }
+
 private:
     A& a_;
     B& b_;
     bool preferA_ = true;
+    bool lastWasA_ = true;
 };
 
 }  // namespace howler::adapters

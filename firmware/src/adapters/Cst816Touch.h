@@ -48,6 +48,17 @@ public:
     /// swipes from getting flagged as both vertical and horizontal
     /// when the user's flick is diagonal.
     static constexpr int      kSwipeMaxOffOverOn = 1;
+    /// Velocity (pixels/second along the swipe axis) below which a
+    /// gesture counts as a single-item nudge. A "deliberate" tap-and-
+    /// drag at ~150 px/s reads as magnitude 1; a confident flick around
+    /// 600 px/s reads as 2; firehose flicks past ~1500 px/s clamp at 5.
+    /// Tuned empirically against the CST816D's 50 Hz polling.
+    static constexpr int      kSwipeVelocityPerStep = 350;
+    /// Cap on inertial magnitude. Beyond this the visual would become
+    /// chaotic (drum slot positions can't keep up) without buying
+    /// any UX value — five items per flick already covers the deepest
+    /// menu we surface.
+    static constexpr int      kSwipeMagnitudeCap = 5;
 
     void begin();
 
@@ -62,8 +73,13 @@ public:
 
     bool isHeld() const override { return wasTouching_; }
 
+    /// Magnitude attached to the most-recently dequeued Swipe* event.
+    /// Always 1 for Tap / Press / LongPress / DoubleTap. Reset to 1
+    /// when a non-Swipe event surfaces.
+    int lastSwipeMagnitude() const override { return lastSwipeMagnitude_; }
+
 private:
-    void enqueue(Event ev);
+    void enqueue(Event ev, int magnitude = 1);
     Event dequeue();
 
     bool      wasTouching_     = false;
@@ -81,11 +97,17 @@ private:
     int       touchStartY_     = -1;
 
     // Tiny ring buffer — at most we ever queue Press + DoubleTap
-    // back-to-back, so 4 slots is plenty.
+    // back-to-back, so 4 slots is plenty. Each slot carries its event
+    // type plus the per-event magnitude (only meaningful for swipes).
+    struct QueuedEvent {
+        Event ev = Event::None;
+        int   magnitude = 1;
+    };
     static constexpr size_t kQueueCap = 4;
-    Event   queue_[kQueueCap]{};
-    uint8_t qHead_ = 0;
-    uint8_t qTail_ = 0;
+    QueuedEvent queue_[kQueueCap]{};
+    uint8_t     qHead_ = 0;
+    uint8_t     qTail_ = 0;
+    int         lastSwipeMagnitude_ = 1;
 };
 
 }  // namespace howler::adapters

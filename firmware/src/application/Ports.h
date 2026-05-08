@@ -75,6 +75,20 @@ public:
     virtual NetResult postMarkDone(const howler::domain::MarkDoneDraft& d) = 0;
 
     virtual NetResult postHeartbeat(const std::string& fwVersion) = 0;
+
+    /// Pull a 24×24 1-bit icon bitmap from the server, keyed by name
+    /// (matches webapp Icon.tsx). On success, `outBitmap` receives the
+    /// 72-byte raw blob and `outHash` the response's content hash so
+    /// the cache can do conditional-revalidation on subsequent calls.
+    /// Returning Permanent for 404 lets the device skip re-requesting
+    /// names the server doesn't carry. The default impl returns
+    /// transient so host stubs that don't override see "not yet
+    /// loaded" instead of crashing.
+    virtual NetResult fetchIcon(const std::string& /*name*/,
+                                std::string& /*outBitmap*/,
+                                std::string& /*outHash*/) {
+        return NetResult::transient(0);
+    }
 };
 
 /// Pair flow client. Separate from INetwork because PairApi can be
@@ -138,6 +152,13 @@ public:
     /// always returns false so legacy stubs without hold-tracking
     /// don't have to opt in.
     virtual bool isHeld() const { return false; }
+    /// Inertial-swipe magnitude for the most-recently dequeued
+    /// Swipe* event. Slow swipes return 1; fast flicks return larger
+    /// values (capped at ~5) so callers can advance their cursor by
+    /// multiple items in one gesture, iPhone-list-style. Reading
+    /// after a non-Swipe event returns 1. Implementations without
+    /// velocity tracking always return 1.
+    virtual int lastSwipeMagnitude() const { return 1; }
 };
 
 /// LVGL-or-whatever display abstraction. Application calls `tick()`
