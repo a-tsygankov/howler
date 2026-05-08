@@ -6,9 +6,11 @@
 #include "../domain/RoundMenuModel.h"
 #include "../domain/Router.h"
 #include "components/DrumScroller.h"
+#include "components/IconCache.h"
 #include "components/LongPressArcWidget.h"
 #include "components/RoundMenu.h"
 #include "components/ValueWidget.h"
+#include "components/TaskCard.h"
 
 #include <Arduino.h>
 #include <TFT_eSPI.h>
@@ -153,6 +155,18 @@ private:
     /// chrome (tab strip, tier counts, footer hint) doesn't rebuild
     /// while the drum animates.
     lv_obj_t*                taskCursorDots_ = nullptr;
+
+    /// LRU cache of icon bitmaps fetched from /api/icons/:name. Lives
+    /// here (not on App) so the LVGL types it owns (lv_image_dsc_t)
+    /// don't bleed into the application layer. Wired into the task
+    /// drum's render closure so each detail / mini avatar looks up
+    /// its icon by name on every rebuild — cheap because the cache
+    /// is in PSRAM and the bitmap is 72 bytes.
+    components::IconCache    iconCache_;
+    /// Stable lookup-fn handle the render closures pass into
+    /// buildStatusAvatar — pre-bound to iconCache_ so we don't
+    /// allocate per-render.
+    components::IconLookupFn iconLookup_;
 
     void rebuildScreen();
     void teardownScreen();

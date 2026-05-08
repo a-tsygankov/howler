@@ -39,6 +39,9 @@ public:
     NetResult fetchResultTypes(std::vector<howler::domain::ResultType>& out) override;
     NetResult postMarkDone(const howler::domain::MarkDoneDraft& d) override;
     NetResult postHeartbeat(const std::string& fwVersion) override;
+    NetResult fetchIcon(const std::string& name,
+                        std::string& outBitmap,
+                        std::string& outHash) override;
 
 private:
     const char* backendUrl_;

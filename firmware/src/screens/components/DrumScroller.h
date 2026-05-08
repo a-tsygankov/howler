@@ -152,6 +152,21 @@ public:
         applyLayout();
     }
 
+    /// Cap how many neighbours render above / below the centre. A
+    /// task drum on the 240×240 disc only has room for 2 minis on
+    /// each side without the rim clipping them; menu screens that
+    /// can use 3 leave this at the default. Distance 0 (the centre)
+    /// always renders. Slots beyond the cap are hidden via opacity 0
+    /// AND skipped during rebuild() so the render fn isn't called
+    /// for them.
+    void setMaxVisibleDistance(int d) {
+        if (d < 0) d = 0;
+        if (d > kMaxDistance) d = kMaxDistance;
+        maxVisibleDistance_ = d;
+        applyLayout();
+        rebuild();
+    }
+
     void setRender(RenderFn fn)  { render_ = std::move(fn); rebuild(); }
     void setOnActivate(ActivateFn fn) { onActivate_ = std::move(fn); }
 
@@ -230,6 +245,8 @@ public:
             //                           rotates cleanly with two)
             //   tier ±2 safe iff n ≥ 5
             //   tier ±3 safe iff n ≥ 7
+            const int dist = tier < 0 ? -tier : tier;
+            if (dist > maxVisibleDistance_) continue;
             if (itemCount_ == 0) continue;
             if (itemCount_ == 1 && tier != 0) continue;
             if (itemCount_ < 5  && (tier == -2 || tier == 2)) continue;
@@ -335,7 +352,13 @@ private:
             const int h = L.height > 0 ? L.height : tierSpacing_;
             lv_obj_set_size(slots_[i], w, h);
             lv_obj_align(slots_[i], LV_ALIGN_CENTER, 0, signedY);
-            lv_obj_set_style_opa(slots_[i], L.opacity, 0);
+            // Beyond the visibility cap → fully transparent so the
+            // slot still exists (drum logic stays simple) but the
+            // user sees nothing. Slot content is also skipped in
+            // rebuild() to avoid wasting LVGL allocations on it.
+            const lv_opa_t opa = (dist > maxVisibleDistance_)
+                ? LV_OPA_TRANSP : L.opacity;
+            lv_obj_set_style_opa(slots_[i], opa, 0);
         }
         // Z-order: walk distances from the rim inward, calling
         // move_foreground each step so the centre ends up on top.
@@ -361,18 +384,16 @@ private:
     int        tierSpacing_ = 56;
     size_t     itemCount_   = 0;
     size_t     cursor_      = 0;
+    int        maxVisibleDistance_ = kMaxDistance;
     TierLayout tierLayouts_[kMaxDistance + 1] = {};
     RenderFn   render_;
     ActivateFn onActivate_;
 };
 
 /// Render a "# - - - -" cursor-dots strip for the given (size, cursor)
-/// pair. Used by drum-scrolling screens (Dashboard, TaskList) to give
-/// the user a static "where am I in the list" indicator that updates
-/// in lockstep with the drum's slide animation. Caller owns the
-/// label; we only set its text. Capped at 12 dots — longer lists
-/// get a trailing "+" so a 50-item home doesn't overrun the bottom
-/// of the disc.
+/// pair. Legacy bottom-of-screen indicator; the design handoff replaces
+/// it with the rim indicator below for the task drum but other screens
+/// still use this. Caller owns the label; we only set its text.
 inline void updateDrumCursorDots(lv_obj_t* label, size_t n, size_t cur) {
     if (!label) return;
     char dots[64] = {0};
@@ -384,6 +405,78 @@ inline void updateDrumCursorDots(lv_obj_t* label, size_t n, size_t cur) {
     }
     if (n > cap && off < sizeof(dots) - 1) dots[off++] = '+';
     lv_label_set_text(label, dots);
+}
+
+/// Right-rim vertical scroll indicator per the design handoff:
+/// 3 px wide dots stacked at x ≈ 226 (8 px from rim), centred on
+/// the disc, with the active dot drawn as a 10 px tall pill in
+/// foreground colour. Returns the wrapping container so callers
+/// can keep a member ref + call updateDrumRimIndicator on each
+/// scroll. Caller owns parent; we only build into it.
+inline lv_obj_t* buildDrumRimIndicator(lv_obj_t* parent,
+                                       size_t n, size_t cur) {
+    auto* col = lv_obj_create(parent);
+    // Cap dot count so long lists don't overrun the disc's vertical
+    // safe area. The design says 3 px wide dots; a 12-dot column
+    // with 3 px gaps is 12*3 + 11*3 = 69 px tall, comfortably
+    // inside the 200 px safe height.
+    const size_t cap = n > 12 ? 12 : n;
+    const int dotH   = 3;
+    const int gap    = 3;
+    const int colH   = static_cast<int>(cap) * dotH
+                     + (static_cast<int>(cap) - 1) * gap
+                     + (10 - dotH);  // active dot is 10 px tall
+    lv_obj_set_size(col, 6, colH);
+    lv_obj_align(col, LV_ALIGN_RIGHT_MID, -8, 0);
+    lv_obj_clear_flag(col, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(col, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_bg_opa(col, LV_OPA_0, 0);
+    lv_obj_set_style_border_width(col, 0, 0);
+    lv_obj_set_style_pad_all(col, 0, 0);
+    // Dots are positioned manually so the active one can grow taller
+    // without throwing off the column rhythm.
+    int y = 0;
+    for (size_t i = 0; i < cap; ++i) {
+        const bool active = (i == cur);
+        auto* dot = lv_obj_create(col);
+        lv_obj_set_size(dot, 3, active ? 10 : dotH);
+        lv_obj_set_pos(dot, 0, y);
+        lv_obj_clear_flag(dot, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_clear_flag(dot, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_style_radius(dot, 2, 0);
+        lv_obj_set_style_bg_color(dot,
+            active ? Palette::ink() : Palette::lineSoft(), 0);
+        lv_obj_set_style_border_width(dot, 0, 0);
+        lv_obj_set_style_pad_all(dot, 0, 0);
+        y += (active ? 10 : dotH) + gap;
+    }
+    return col;
+}
+
+/// Re-render the rim indicator in place — wipes children and rebuilds
+/// at the new cursor. Called from the screen's scroll handler so the
+/// active-dot position tracks the drum's animation.
+inline void updateDrumRimIndicator(lv_obj_t* col, size_t n, size_t cur) {
+    if (!col) return;
+    lv_obj_clean(col);
+    const size_t cap = n > 12 ? 12 : n;
+    const int dotH   = 3;
+    const int gap    = 3;
+    int y = 0;
+    for (size_t i = 0; i < cap; ++i) {
+        const bool active = (i == cur);
+        auto* dot = lv_obj_create(col);
+        lv_obj_set_size(dot, 3, active ? 10 : dotH);
+        lv_obj_set_pos(dot, 0, y);
+        lv_obj_clear_flag(dot, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_clear_flag(dot, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_style_radius(dot, 2, 0);
+        lv_obj_set_style_bg_color(dot,
+            active ? Palette::ink() : Palette::lineSoft(), 0);
+        lv_obj_set_style_border_width(dot, 0, 0);
+        lv_obj_set_style_pad_all(dot, 0, 0);
+        y += (active ? 10 : dotH) + gap;
+    }
 }
 
 }  // namespace howler::screens::components

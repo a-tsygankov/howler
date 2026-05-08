@@ -24,12 +24,22 @@
 #include "../../domain/DashboardItem.h"
 
 #include <Arduino.h>
+#include <functional>
 #include <lvgl.h>
 #include <ctype.h>
 #include <stdio.h>
+#include <string>
 #include <vector>
 
 namespace howler::screens::components {
+
+/// Caller-provided icon lookup. Returns the LVGL image descriptor
+/// for the bitmap matching `name`, or nullptr when the cache hasn't
+/// resolved one yet (in which case we fall back to the text badge).
+/// Pulling this out as a function lets TaskCard.h stay decoupled
+/// from IconCache.h — the screen layer wires the two together.
+using IconLookupFn =
+    std::function<const lv_image_dsc_t*(const std::string& name)>;
 
 // ─── Urgency tier (0..3) — design vocabulary ─────────────────────
 //
@@ -229,7 +239,8 @@ inline const char* taskInitials(const std::string& title) {
 inline lv_obj_t* buildStatusAvatar(lv_obj_t* parent,
                                    const domain::DashboardItem& item,
                                    int size,
-                                   int ringWidth = 3) {
+                                   int ringWidth = 3,
+                                   const IconLookupFn* iconLookup = nullptr) {
     const int tier = designUrgencyTier(item);
     const lv_color_t tone = urgencyTone(tier);
     const int fillDeg = urgencyFillDegrees(tier);
@@ -280,22 +291,46 @@ inline lv_obj_t* buildStatusAvatar(lv_obj_t* parent,
     lv_obj_set_style_border_width(disc, 0, 0);
     lv_obj_set_style_pad_all(disc, 0, 0);
 
-    // Inner glyph — icon name → FontAwesome / 2-letter code, or the
-    // title's initials when the avatarId isn't an icon reference.
+    // Inner glyph. Lookup order:
+    //   1. iconLookup callback (the screen's IconCache) — if it
+    //      returns a real bitmap, render via lv_image with recolour
+    //      to ink; this is the production path with backend-served
+    //      icons matching the webapp.
+    //   2. badgeTextForIcon — LVGL FontAwesome subset / 2-letter
+    //      code fallback for icon names the cache hasn't resolved.
+    //   3. taskInitials — last resort when the avatarId isn't an
+    //      icon reference at all (e.g. uploaded photo by UUID).
     const char* iconKey = iconKeyFromAvatar(item.avatarId);
-    const char* glyph   = iconKey ? badgeTextForIcon(iconKey)
-                                   : taskInitials(item.title);
-    auto* lbl = lv_label_create(disc);
-    lv_label_set_text(lbl, glyph);
-    lv_obj_set_style_text_color(lbl, Palette::ink(), 0);
-    // Pick a font that fits the disc — 22 for the 42-px detail
-    // avatar, 18 for the 32-px transitional sizes, 14 for everything
-    // smaller (mini at 20 px).
-    const lv_font_t* font = (innerSize >= 32) ? &lv_font_montserrat_22
-                          : (innerSize >= 22) ? &lv_font_montserrat_18
-                                              : &lv_font_montserrat_14;
-    lv_obj_set_style_text_font(lbl, font, 0);
-    lv_obj_center(lbl);
+    const lv_image_dsc_t* iconDsc = nullptr;
+    if (iconKey && iconLookup && *iconLookup) {
+        iconDsc = (*iconLookup)(std::string(iconKey));
+    }
+
+    if (iconDsc) {
+        // Render the cached A1 bitmap. recolor + recolor_opa make
+        // LVGL paint set bits in the ink colour; 0-bits stay
+        // transparent so the disc background shows through.
+        auto* img = lv_image_create(disc);
+        lv_image_set_src(img, iconDsc);
+        lv_obj_set_style_image_recolor(img, Palette::ink(), 0);
+        lv_obj_set_style_image_recolor_opa(img, LV_OPA_COVER, 0);
+        // Bitmap is fixed at 24×24 (see backend seed). Scale to
+        // fit the disc — LVGL's scale is in 256ths (256 = 1.0×).
+        const int scale = (innerSize * 256) / 24;
+        lv_image_set_scale(img, scale);
+        lv_obj_center(img);
+    } else {
+        const char* glyph = iconKey ? badgeTextForIcon(iconKey)
+                                     : taskInitials(item.title);
+        auto* lbl = lv_label_create(disc);
+        lv_label_set_text(lbl, glyph);
+        lv_obj_set_style_text_color(lbl, Palette::ink(), 0);
+        const lv_font_t* font = (innerSize >= 32) ? &lv_font_montserrat_22
+                              : (innerSize >= 22) ? &lv_font_montserrat_18
+                                                  : &lv_font_montserrat_14;
+        lv_obj_set_style_text_font(lbl, font, 0);
+        lv_obj_center(lbl);
+    }
 
     return wrap;
 }
@@ -305,23 +340,42 @@ inline lv_obj_t* buildStatusAvatar(lv_obj_t* parent,
 // Built INTO the parent slot via LV_ALIGN_CENTER (the slot is sized
 // by DrumScroller; we just fill it). Layout, left → right:
 //   • 42 px status-arc avatar (urgency-coloured ring + icon disc)
-//   • title block: title (display-style font, 1 line, ellipsis on
-//     overflow) + status row (6 px tone dot + mono caption like
-//     "4H LATE")
+//   • title (display-style font, 1 line, ellipsis on overflow)
+//     stacked above a status row (6 px tone dot + mono caption like
+//     "LATE  4H")
 //   • 24 px black check button (LV_SYMBOL_OK in paper colour)
 //
 // The card border is 1 px in the urgency tone for tier ≥ 1, soft
 // line otherwise, so even from across the room you can see whether
 // "this thing is urgent". Background = paper2.
+//
+// Title + status are aligned directly on the card via LV_ALIGN_LEFT_MID
+// with computed offsets — the previous "intermediate block container"
+// approach hit a layout-not-yet-computed race where title width came
+// out as 0 and the labels rendered as empty.
 inline lv_obj_t* buildDetailedTaskCard(
     lv_obj_t* parent,
     const domain::DashboardItem& item,
-    int64_t serverNowSec) {
+    int64_t serverNowSec,
+    const IconLookupFn* iconLookup = nullptr) {
     const int tier = designUrgencyTier(item);
     const lv_color_t tone = urgencyTone(tier);
 
+    // Card width tracks parent slot width with a 4 px breathing
+    // margin. Force a layout flush so the parent's width is computed
+    // before we read it (otherwise the very first build sees 0 and
+    // every child collapses to a hairline).
+    lv_obj_update_layout(parent);
+    const int parentW = lv_obj_get_width(parent);
+    const int cardW   = (parentW > 4 ? parentW - 4 : 200);
+    constexpr int kCardH    = 58;
+    constexpr int kAvatarSz = 42;
+    constexpr int kCheckSz  = 24;
+    constexpr int kPadL     = 8;     // card inner pad each side
+    constexpr int kGap      = 8;     // avatar→title and title→check
+
     auto* card = lv_obj_create(parent);
-    lv_obj_set_size(card, lv_obj_get_width(parent) - 4, 58);
+    lv_obj_set_size(card, cardW, kCardH);
     lv_obj_align(card, LV_ALIGN_CENTER, 0, 0);
     lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_radius(card, 16, 0);
@@ -329,23 +383,18 @@ inline lv_obj_t* buildDetailedTaskCard(
     lv_obj_set_style_border_color(card,
         tier >= 1 ? tone : Palette::lineSoft(), 0);
     lv_obj_set_style_border_width(card, tier >= 2 ? 2 : 1, 0);
-    lv_obj_set_style_pad_left(card, 8, 0);
-    lv_obj_set_style_pad_right(card, 8, 0);
-    lv_obj_set_style_pad_top(card, 6, 0);
-    lv_obj_set_style_pad_bottom(card, 6, 0);
+    lv_obj_set_style_pad_all(card, 0, 0);
 
-    // Avatar — fixed at the left edge of the card. 42 px outer with
-    // a 3 px ring; inner disc holds the icon / initials.
-    auto* avatar = buildStatusAvatar(card, item, /*size=*/42, /*ring=*/3);
-    lv_obj_align(avatar, LV_ALIGN_LEFT_MID, 4, 0);
+    // Avatar — left edge.
+    auto* avatar = buildStatusAvatar(card, item,
+                                     /*size=*/kAvatarSz, /*ring=*/3,
+                                     iconLookup);
+    lv_obj_align(avatar, LV_ALIGN_LEFT_MID, kPadL, 0);
 
-    // Check button — 24 px black disc on the right; LV_SYMBOL_OK
-    // glyph centred. Tap routing happens at the slot level via
-    // DrumScroller's CLICKED handler / ScreenManager fireActivate,
-    // not here — this is a visual affordance.
+    // Check button — right edge.
     auto* check = lv_obj_create(card);
-    lv_obj_set_size(check, 24, 24);
-    lv_obj_align(check, LV_ALIGN_RIGHT_MID, -4, 0);
+    lv_obj_set_size(check, kCheckSz, kCheckSz);
+    lv_obj_align(check, LV_ALIGN_RIGHT_MID, -kPadL, 0);
     lv_obj_clear_flag(check, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_clear_flag(check, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_style_radius(check, LV_RADIUS_CIRCLE, 0);
@@ -358,45 +407,28 @@ inline lv_obj_t* buildDetailedTaskCard(
     lv_obj_set_style_text_font(checkGlyph, &lv_font_montserrat_14, 0);
     lv_obj_center(checkGlyph);
 
-    // Title block — fills the gap between avatar and check button.
-    // Two stacked labels: serif-style title (we use montserrat_18 as
-    // the closest 18 px option in the embedded font set) and a mono-
-    // ish status row.
-    const int blockW = lv_obj_get_width(card) - 16 - 42 - 8 - 24 - 8;
-    auto* block = lv_obj_create(card);
-    lv_obj_set_size(block, blockW > 60 ? blockW : 60, 44);
-    lv_obj_align(block, LV_ALIGN_LEFT_MID, 4 + 42 + 8, 0);
-    lv_obj_clear_flag(block, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_clear_flag(block, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_set_style_bg_opa(block, LV_OPA_0, 0);
-    lv_obj_set_style_border_width(block, 0, 0);
-    lv_obj_set_style_pad_all(block, 0, 0);
+    // Title + status row positioned directly on the card. Title block
+    // x-origin = padL + avatar + gap; available width = card -
+    // (padL + avatar + gap + check + gap + padL).
+    const int blockX = kPadL + kAvatarSz + kGap;
+    const int blockW = cardW - blockX - kCheckSz - kGap - kPadL;
+    const int titleW = blockW > 40 ? blockW : 40;
 
-    auto* title = lv_label_create(block);
+    auto* title = lv_label_create(card);
     lv_label_set_long_mode(title, LV_LABEL_LONG_DOT);
-    lv_obj_set_width(title, lv_obj_get_width(block));
+    lv_obj_set_width(title, titleW);
     lv_label_set_text(title, item.title.empty()
                               ? "(untitled)" : item.title.c_str());
     lv_obj_set_style_text_color(title, Palette::ink(), 0);
     lv_obj_set_style_text_font(title, &lv_font_montserrat_18, 0);
-    lv_obj_align(title, LV_ALIGN_TOP_LEFT, 0, 0);
+    // y = -10 puts the title's baseline ~10 px above the card centre,
+    // leaving room for the status row to sit at y ≈ +12.
+    lv_obj_align(title, LV_ALIGN_LEFT_MID, blockX, -10);
 
-    auto* statusRow = lv_obj_create(block);
-    lv_obj_set_size(statusRow, lv_obj_get_width(block), 12);
-    lv_obj_align(statusRow, LV_ALIGN_BOTTOM_LEFT, 0, 0);
-    lv_obj_clear_flag(statusRow, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_clear_flag(statusRow, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_set_style_bg_opa(statusRow, LV_OPA_0, 0);
-    lv_obj_set_style_border_width(statusRow, 0, 0);
-    lv_obj_set_style_pad_all(statusRow, 0, 0);
-
-    // 6 px urgency-tone dot + mono caption "4H LATE · 50 GR" (we
-    // omit the result-value half today; the dashboard payload
-    // doesn't carry the last-execution value at row level — the
-    // ResultPicker fetches that on tap).
-    auto* dot = lv_obj_create(statusRow);
+    // Status row — 6 px tone dot at blockX, mono caption right of it.
+    auto* dot = lv_obj_create(card);
     lv_obj_set_size(dot, 6, 6);
-    lv_obj_align(dot, LV_ALIGN_LEFT_MID, 0, 0);
+    lv_obj_align(dot, LV_ALIGN_LEFT_MID, blockX, 12);
     lv_obj_clear_flag(dot, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_clear_flag(dot, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_style_radius(dot, 3, 0);
@@ -404,7 +436,7 @@ inline lv_obj_t* buildDetailedTaskCard(
     lv_obj_set_style_border_width(dot, 0, 0);
     lv_obj_set_style_pad_all(dot, 0, 0);
 
-    auto* caption = lv_label_create(statusRow);
+    auto* caption = lv_label_create(card);
     char buf[32];
     const char* due = taskDueChip(item.dueAt, serverNowSec, item.isMissed);
     if (due[0] != 0) {
@@ -416,7 +448,7 @@ inline lv_obj_t* buildDetailedTaskCard(
     lv_label_set_text(caption, buf);
     lv_obj_set_style_text_color(caption, tone, 0);
     lv_obj_set_style_text_font(caption, &lv_font_montserrat_14, 0);
-    lv_obj_align(caption, LV_ALIGN_LEFT_MID, 10, 0);
+    lv_obj_align(caption, LV_ALIGN_LEFT_MID, blockX + 10, 12);
 
     return card;
 }
@@ -436,31 +468,40 @@ inline lv_obj_t* buildMiniTaskCard(
     lv_obj_t* parent,
     const domain::DashboardItem& item,
     int yOffset,
-    int64_t serverNowSec) {
+    int64_t serverNowSec,
+    const IconLookupFn* iconLookup = nullptr) {
     const int tier = designUrgencyTier(item);
     const lv_color_t tone = urgencyTone(tier);
 
-    auto* row = lv_obj_create(parent);
+    // Force layout flush so parent width is real before we read it.
+    // Same race the detail card hit on first build.
+    lv_obj_update_layout(parent);
     const int parentW = lv_obj_get_width(parent);
-    lv_obj_set_size(row, parentW > 0 ? parentW - 4 : 168, 26);
+    const int rowW    = (parentW > 4 ? parentW - 4 : 168);
+    constexpr int kRowH    = 26;
+    constexpr int kAvatar  = 20;
+    constexpr int kPadL    = 4;
+    constexpr int kPadR    = 6;
+    constexpr int kGap     = 6;
+
+    auto* row = lv_obj_create(parent);
+    lv_obj_set_size(row, rowW, kRowH);
     lv_obj_align(row, LV_ALIGN_CENTER, 0, yOffset);
     lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_radius(row, 10, 0);
     lv_obj_set_style_bg_color(row, Palette::paper2(), 0);
     lv_obj_set_style_border_color(row, Palette::lineSoft(), 0);
     lv_obj_set_style_border_width(row, 1, 0);
-    lv_obj_set_style_pad_left(row, 4, 0);
-    lv_obj_set_style_pad_right(row, 6, 0);
-    lv_obj_set_style_pad_top(row, 0, 0);
-    lv_obj_set_style_pad_bottom(row, 0, 0);
+    lv_obj_set_style_pad_all(row, 0, 0);
 
-    // 20 px status-arc avatar at the left. Ring width 2 px reads
-    // cleaner at this size than the detail-card 3 px would.
-    auto* avatar = buildStatusAvatar(row, item, /*size=*/20, /*ring=*/2);
-    lv_obj_align(avatar, LV_ALIGN_LEFT_MID, 2, 0);
+    // 20 px status-arc avatar at the left.
+    auto* avatar = buildStatusAvatar(row, item, /*size=*/kAvatar, /*ring=*/2,
+                                      iconLookup);
+    lv_obj_align(avatar, LV_ALIGN_LEFT_MID, kPadL, 0);
 
-    // Due chip — fixed-ish width on the right. Empty for tasks
-    // without a due time, in which case the title just flows wider.
+    // Due chip — right edge. Width approximated from char count so
+    // we can reserve space for the title without depending on a
+    // post-layout width read.
     const char* due = taskDueChip(item.dueAt, serverNowSec, item.isMissed);
     int dueW = 0;
     if (due[0] != 0) {
@@ -468,10 +509,7 @@ inline lv_obj_t* buildMiniTaskCard(
         lv_label_set_text(chip, due);
         lv_obj_set_style_text_color(chip, tone, 0);
         lv_obj_set_style_text_font(chip, &lv_font_montserrat_14, 0);
-        lv_obj_align(chip, LV_ALIGN_RIGHT_MID, -2, 0);
-        // Approximate width: ~7 px per char in 14-pt mono. Used to
-        // reserve space for the title's right edge so the chip
-        // doesn't get clobbered by an over-wide title.
+        lv_obj_align(chip, LV_ALIGN_RIGHT_MID, -kPadR, 0);
         dueW = static_cast<int>(strlen(due)) * 7 + 4;
     }
 
@@ -479,11 +517,11 @@ inline lv_obj_t* buildMiniTaskCard(
     lv_label_set_text(title, item.title.empty()
                               ? "(untitled)" : item.title.c_str());
     lv_label_set_long_mode(title, LV_LABEL_LONG_DOT);
-    const int titleW = lv_obj_get_width(row) - 8 - 20 - 6 - dueW - 4;
+    const int titleW = rowW - kPadL - kAvatar - kGap - dueW - kPadR;
     lv_obj_set_width(title, titleW > 30 ? titleW : 30);
     lv_obj_set_style_text_color(title, Palette::ink(), 0);
     lv_obj_set_style_text_font(title, &lv_font_montserrat_14, 0);
-    lv_obj_align(title, LV_ALIGN_LEFT_MID, 2 + 20 + 6, 0);
+    lv_obj_align(title, LV_ALIGN_LEFT_MID, kPadL + kAvatar + kGap, 0);
 
     return row;
 }
@@ -509,11 +547,13 @@ inline lv_obj_t* buildMiniTaskCard(
 inline void renderTaskInDrumSlot(lv_obj_t* slot,
                                  const domain::DashboardItem& item,
                                  int tier,
-                                 int64_t serverNowSec) {
+                                 int64_t serverNowSec,
+                                 const IconLookupFn* iconLookup = nullptr) {
     if (tier == 0) {
-        buildDetailedTaskCard(slot, item, serverNowSec);
+        buildDetailedTaskCard(slot, item, serverNowSec, iconLookup);
     } else {
-        buildMiniTaskCard(slot, item, /*yOffset=*/0, serverNowSec);
+        buildMiniTaskCard(slot, item, /*yOffset=*/0, serverNowSec,
+                          iconLookup);
     }
 }
 

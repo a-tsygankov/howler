@@ -9,7 +9,7 @@
 
 namespace howler::screens {
 
-using components::updateDrumCursorDots;
+using components::updateDrumRimIndicator;
 
 namespace {
 
@@ -62,7 +62,11 @@ void encoder_read_cb(lv_indev_t*, lv_indev_data_t* data) {
 }  // namespace
 
 ScreenManager::ScreenManager(application::App& app, application::IInputDevice& input)
-    : app_(app), input_(input) {}
+    : app_(app), input_(input),
+      iconCache_(app.network(), app.clock()),
+      iconLookup_([this](const std::string& name) {
+          return iconCache_.get(name);
+      }) {}
 
 void ScreenManager::begin(TFT_eSPI& tft) {
     g_tft = &tft;
@@ -396,7 +400,7 @@ void ScreenManager::onEvent(int rotateDelta, bool tap, bool doubleTap,
                 if (!taskDrumActive_) return;
                 taskDrum_.scrollBy(direction, magnitude);
                 app_.dashboard().setCursor(taskDrum_.cursor());
-                updateDrumCursorDots(taskCursorDots_,
+                updateDrumRimIndicator(taskCursorDots_,
                                       app_.dashboard().size(),
                                       app_.dashboard().cursor());
             };
@@ -505,7 +509,7 @@ void ScreenManager::onEvent(int rotateDelta, bool tap, bool doubleTap,
                 if (!taskDrumActive_) return;
                 taskDrum_.scrollBy(direction, magnitude);
                 app_.allTasks().setCursor(taskDrum_.cursor());
-                updateDrumCursorDots(taskCursorDots_,
+                updateDrumRimIndicator(taskCursorDots_,
                                       app_.allTasks().size(),
                                       app_.allTasks().cursor());
             };

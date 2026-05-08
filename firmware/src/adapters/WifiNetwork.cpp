@@ -191,4 +191,48 @@ howler::application::NetResult WifiNetwork::postHeartbeat(const std::string& fwV
     return doPost("/api/devices/heartbeat", body);
 }
 
+howler::application::NetResult WifiNetwork::fetchIcon(
+    const std::string& name,
+    std::string& outBitmap,
+    std::string& outHash) {
+    using NetResult = howler::application::NetResult;
+    if (!isOnline()) return NetResult::transient();
+
+    WiFiClientSecure client;
+    client.setInsecure();
+    HTTPClient http;
+    http.setTimeout(kHttpTimeoutMs);
+    const String url = String(backendUrl_) + "/api/icons/" + name.c_str();
+    if (!http.begin(client, url)) return NetResult::transient();
+    http.addHeader("Authorization", String("Bearer ") + deviceToken_.c_str());
+    // Tell HTTPClient to retain headers we care about so we can read
+    // the X-Icon-Hash echo without parsing the full response. The
+    // fourth arg is the count of names below.
+    static const char* kCollect[] = {"X-Icon-Hash"};
+    http.collectHeaders(kCollect, 1);
+
+    const int code = http.GET();
+    if (code < 200 || code >= 300) {
+        const String body = http.getString();
+        http.end();
+        return fromHttp(code, body);
+    }
+
+    // Pull the raw body into outBitmap. HTTPClient::getString() is
+    // safe for binary on Arduino-ESP32 — the underlying String holds
+    // arbitrary bytes; we just copy length + data.
+    const int contentLen = http.getSize();
+    outBitmap.clear();
+    if (contentLen > 0) {
+        outBitmap.reserve(static_cast<size_t>(contentLen));
+    }
+    {
+        const String body = http.getString();
+        outBitmap.assign(body.c_str(), body.length());
+    }
+    outHash.assign(http.header("X-Icon-Hash").c_str());
+    http.end();
+    return NetResult::ok();
+}
+
 }  // namespace howler::adapters
