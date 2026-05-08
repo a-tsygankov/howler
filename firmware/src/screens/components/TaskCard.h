@@ -15,6 +15,7 @@
 // screen routes taps via ScreenManager's centralised dispatch.
 
 #include "RoundCard.h"
+#include "MarqueeLabel.h"
 #include "../../domain/DashboardItem.h"
 
 #include <Arduino.h>
@@ -129,14 +130,19 @@ inline lv_obj_t* buildDetailedTaskCard(
         lv_obj_center(gl);
     }
 
-    auto* title = lv_label_create(card);
-    lv_label_set_text(title, item.title.empty() ? "(untitled)" : item.title.c_str());
-    lv_label_set_long_mode(title, LV_LABEL_LONG_WRAP);
-    lv_obj_set_width(title, 130);
-    lv_obj_set_style_text_align(title, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_color(title, Palette::ink(), 0);
-    lv_obj_set_style_text_font(title, &lv_font_montserrat_18, 0);
-    lv_obj_align(title, LV_ALIGN_CENTER, 0, iconKey ? 0 : -6);
+    // Title rendered through MarqueeLabel: short titles stay static,
+    // long ones auto-scroll. The MarqueeLabel value is stack-only —
+    // LVGL owns the widgets it builds via the parent-child tree, so
+    // letting the wrapper go out of scope at return is fine.
+    {
+        MarqueeLabel marquee;
+        marquee.setSegments({
+            {item.title.empty() ? std::string{"(untitled)"} : item.title,
+             Palette::ink()},
+        });
+        marquee.build(card, /*viewWidth=*/130, iconKey ? 0 : -6,
+                      /*xOffset=*/0, &lv_font_montserrat_18);
+    }
 
     auto* sub = lv_label_create(card);
     char st[48];

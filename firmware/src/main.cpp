@@ -18,6 +18,7 @@
 #include "adapters/CompositeInput.h"
 #include "adapters/Cst816Touch.h"
 #include "adapters/EspRandom.h"
+#include "adapters/LedRing.h"
 #include "adapters/NoopNetwork.h"
 #include "adapters/NvsStorage.h"
 #include "adapters/RotaryInput.h"
@@ -49,6 +50,7 @@ howler::adapters::CompositeInput<
     howler::adapters::RotaryInput,
     howler::adapters::Cst816Touch>    compositeInput(rotaryInput, touchInput);
 howler::adapters::WifiStation         wifiStation;
+howler::adapters::LedRing             ledRing;
 howler::adapters::WifiCaptivePortal   captivePortal;
 
 howler::adapters::NoopNetwork  noopNet;
@@ -185,10 +187,16 @@ void setup() {
         runCaptivePortalAndReboot();   // never returns
     }
 
+    // LED ring init AFTER Wi-Fi has settled — Adafruit_NeoPixel's
+    // RMT bus init can be touchy if it shares timing with the radio
+    // bring-up. The ring is dim and steady so a few hundred ms of
+    // late start is invisible to the user.
+    ledRing.begin();
+
     auto* net = pickNetwork();
     static howler::application::App app(
         *net, pairApi, arduinoClock, espRandom, nvsStorage, compositeInput,
-        wifiStation, deviceIdFromMac());
+        wifiStation, ledRing, deviceIdFromMac());
     static howler::screens::ScreenManager screens(app, compositeInput);
     g_app = &app;
     g_screens = &screens;
