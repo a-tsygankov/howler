@@ -121,6 +121,21 @@ void ScreenManager::tick(uint32_t millisNow) {
         doneUntilMs_ = 0;
     }
 
+    // Sync-aware refresh: when the dashboard / all-tasks model
+    // generation advances (i.e. a sync round replaced items, or a
+    // mark-done removed one), rebuild the matching screen so the
+    // user sees the new state without having to scroll first. Only
+    // triggers when we're CURRENTLY on the affected screen — other
+    // navigations refresh naturally on their next entry.
+    if (rendered_ == domain::ScreenId::Dashboard &&
+        app_.dashboard().generation() != lastDashboardGen_) {
+        rebuildPending_ = true;
+    }
+    if (rendered_ == domain::ScreenId::TaskList &&
+        app_.allTasks().generation() != lastAllTasksGen_) {
+        rebuildPending_ = true;
+    }
+
     if (app_.router().current() != rendered_ || rebuildPending_) {
         rebuildPending_ = false;
         rebuildScreen();
@@ -285,6 +300,13 @@ void ScreenManager::rebuildScreen() {
     components::Palette::setDark(
         app_.settings().theme == domain::Theme::Dark);
     rendered_ = app_.router().current();
+    // Snapshot the model generations so the sync-aware refresh in
+    // tick() can detect future data updates relative to "what we
+    // last rendered with". Doing this here (after teardown, before
+    // build) guarantees we never see a generation bump from an
+    // update that happened during the rebuild itself.
+    lastDashboardGen_ = app_.dashboard().generation();
+    lastAllTasksGen_  = app_.allTasks().generation();
     using domain::ScreenId;
     switch (rendered_) {
         case ScreenId::Boot:               buildBoot();              break;

@@ -156,6 +156,17 @@ private:
     /// while the drum animates.
     lv_obj_t*                taskCursorDots_ = nullptr;
 
+    /// Cached generation snapshot of the dashboard / all-tasks model
+    /// at the time the current screen was built. tick() compares the
+    /// live generation each frame and triggers a screen rebuild when
+    /// it changes — that's the path by which a sync round's data
+    /// refresh propagates to the rendered drum without requiring the
+    /// user to scroll first. We track both even when only one screen
+    /// is rendered so that a navigation back to the other surfaces
+    /// the latest data.
+    uint32_t                 lastDashboardGen_ = 0;
+    uint32_t                 lastAllTasksGen_  = 0;
+
     /// LRU cache of icon bitmaps fetched from /api/icons/:name. Lives
     /// here (not on App) so the LVGL types it owns (lv_image_dsc_t)
     /// don't bleed into the application layer. Wired into the task
