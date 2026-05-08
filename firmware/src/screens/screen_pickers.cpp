@@ -19,6 +19,7 @@
 #include "ScreenManager.h"
 #include "components/RoundCard.h"
 #include "components/LongPressArcWidget.h"
+#include "components/ValueWidget.h"
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -67,23 +68,17 @@ void ScreenManager::buildResultPicker() {
         lv_obj_align(name, LV_ALIGN_TOP_MID, 0, 22);
     }
 
-    // Center: big value + unit, on a circular card. The value label
-    // pointer is cached on ScreenManager so onEvent can update it
-    // in place per detent (avoids screen-tree rebuild flicker).
-    auto* card = buildCenterCard(root_, 156, Palette::paper2());
-    {
-        auto* val = lv_label_create(card);
-        lv_label_set_text(val, edit.formatValue().c_str());
-        lv_obj_set_style_text_color(val, Palette::ink(), 0);
-        lv_obj_set_style_text_font(val, &lv_font_montserrat_22, 0);
-        lv_obj_align(val, LV_ALIGN_CENTER, 0, -8);
-        resultValueLabel_ = val;
-
-        auto* unit = lv_label_create(card);
-        lv_label_set_text(unit, rt->unitName.c_str());
-        lv_obj_set_style_text_color(unit, Palette::ink2(), 0);
-        lv_obj_align(unit, LV_ALIGN_CENTER, 0, 18);
-    }
+    // Centre value visual — picked by unit name. The factory returns
+    // a NumericValueWidget for anything not in the specialised list,
+    // so the picker stays a one-screen shape no matter what unit
+    // the home configures. We park the widget on ScreenManager so
+    // ::onEvent can call update() per detent without a full rebuild.
+    valueWidget_ = components::makeValueWidget(*rt);
+    valueWidget_->build(root_, *rt);
+    valueWidget_->update(edit.value(), *rt);
+    // Legacy single-label cache stays nullptr — the new path drives
+    // updates through valueWidget_ instead.
+    resultValueLabel_ = nullptr;
 
     // Bottom: last-value chip when applicable.
     if (hasLast) {
@@ -152,6 +147,11 @@ void ScreenManager::buildUserPicker() {
         auto& app = this->app();
         app.pendingDone().userId = (it.id == "skip") ? std::string{} : it.id;
         app.commitPendingDone();
+        // Show the green-check animation BEFORE the router transition
+        // so the overlay (on lv_layer_top) survives the screen rebuild
+        // and the user sees the confirmation beat against whichever
+        // screen we land on.
+        this->playDoneAnimation();
         app.router().replaceRoot(domain::ScreenId::Dashboard);
     });
     menuActive_ = true;

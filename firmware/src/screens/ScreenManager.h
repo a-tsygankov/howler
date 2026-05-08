@@ -7,6 +7,7 @@
 #include "../domain/Router.h"
 #include "components/LongPressArcWidget.h"
 #include "components/RoundMenu.h"
+#include "components/ValueWidget.h"
 
 #include <Arduino.h>
 #include <TFT_eSPI.h>
@@ -61,6 +62,13 @@ public:
     /// re-render with the new colours.
     void requestRebuild() { rebuildPending_ = true; }
 
+    /// Show a brief green-checkmark animation over whatever is on
+    /// screen. Used after a mark-done so the user sees a clear
+    /// "task confirmed" beat before the row drops out. The screen
+    /// stays interactive but the checkmark sits above on the top
+    /// layer; it fades on its own after `durationMs`.
+    void playDoneAnimation(uint32_t durationMs = 900);
+
     /// Helper for screens that show a tab strip — returns the index
     /// of the current main screen in `kMainScreens`, or kMainScreens
     /// length if the current screen isn't a main one.
@@ -89,15 +97,30 @@ private:
 
     /// Cached pointer to the ResultPicker's big number label so the
     /// rotation-handler in onEvent can refresh it in place without
-    /// rebuilding the whole screen tree (which would flicker on
-    /// every detent of the encoder). Cleared in teardownScreen().
+    /// rebuilding the whole screen tree. Kept for backwards
+    /// compatibility — the new specialised value widgets drive
+    /// updates through `valueWidget_` instead. Cleared in
+    /// teardownScreen().
     lv_obj_t* resultValueLabel_ = nullptr;
+
+    /// Active ResultPicker value widget (numeric, stars, bowl, clock,
+    /// ruler — whichever the unit name selects). Recreated on every
+    /// ResultPicker entry by `buildResultPicker`; reset to nullptr
+    /// in `teardownScreen` so the LVGL pointers it owns don't outlive
+    /// the parent root_.
+    std::unique_ptr<components::ValueWidget> valueWidget_;
 
     /// Toast overlay (parent = lv_layer_top so it floats above any
     /// screen tree and survives router transitions). Used by
     /// Settings → "Sync now" to surface "syncing..." for ~1.5 s.
     lv_obj_t* toastLabel_ = nullptr;
     uint32_t  toastUntilMs_ = 0;
+
+    /// Done-animation overlay: green check on the top layer that
+    /// fades in + scales up briefly when `playDoneAnimation()` fires.
+    /// Auto-cleaned in tick() once `doneUntilMs_` passes.
+    lv_obj_t* doneOverlay_ = nullptr;
+    uint32_t  doneUntilMs_ = 0;
 
     /// Set by handlers that mutate visual state without changing the
     /// router. Read + cleared in tick().
