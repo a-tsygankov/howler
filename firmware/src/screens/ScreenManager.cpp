@@ -121,6 +121,54 @@ void ScreenManager::tick(uint32_t millisNow) {
         doneUntilMs_ = 0;
     }
 
+    // Sync-aware refresh: when the dashboard / all-tasks model
+    // generation advances (i.e. a sync round replaced items, or a
+    // mark-done removed one), rebuild the matching screen so the
+    // user sees the new state without having to scroll first. Only
+    // triggers when we're CURRENTLY on the affected screen — other
+    // navigations refresh naturally on their next entry.
+    if (rendered_ == domain::ScreenId::Dashboard &&
+        app_.dashboard().generation() != lastDashboardGen_) {
+        rebuildPending_ = true;
+    }
+    if (rendered_ == domain::ScreenId::TaskList &&
+        app_.allTasks().generation() != lastAllTasksGen_) {
+        rebuildPending_ = true;
+    }
+
+    // Drain at most one pending icon fetch per tick so the network
+    // round-trip never lands on the render path (a synchronous
+    // fetch from inside a draw callback can block LVGL for 100s of
+    // ms — visible as a stutter when the dashboard first paints).
+    // If a fetch lands, the cache's generation bumps; the rebuild
+    // path below picks that up to repaint the avatars whose
+    // fallback glyph is now backed by a real bitmap.
+    //
+    // First time we have a usable network, prewarm the cache with
+    // the LABEL_ICON_CHOICES set the backend seeds. Avatars on the
+    // dashboard's first paint then render real icons within ~1–2 s
+    // of the device coming online, instead of waiting for each
+    // avatar to lazy-fetch as the user scrolls past it.
+    if (!iconCachePrewarmed_ && app_.network().isOnline()) {
+        // Mirror of LABEL_ICON_CHOICES in webapp/src/Dashboard.tsx
+        // and the seed list in backend/scripts/seed-icons.mjs.
+        // Keep all three in sync if the icon set changes.
+        const std::vector<std::string> kPrewarm = {
+            "paw", "dog", "cat", "broom", "home", "bowl",
+            "heart", "sparkle", "star", "plant", "flame", "bell",
+            "briefcase", "book", "run", "pill", "tooth", "clock",
+            "calendar", "check",
+        };
+        iconCache_.prewarm(kPrewarm);
+        iconCachePrewarmed_ = true;
+    }
+    iconCache_.tickPrefetch(/*maxPerTick=*/1);
+    if ((rendered_ == domain::ScreenId::Dashboard ||
+         rendered_ == domain::ScreenId::TaskList) &&
+        iconCache_.generation() != lastIconCacheGen_) {
+        rebuildPending_ = true;
+    }
+
     if (app_.router().current() != rendered_ || rebuildPending_) {
         rebuildPending_ = false;
         rebuildScreen();
@@ -285,6 +333,14 @@ void ScreenManager::rebuildScreen() {
     components::Palette::setDark(
         app_.settings().theme == domain::Theme::Dark);
     rendered_ = app_.router().current();
+    // Snapshot the model generations so the sync-aware refresh in
+    // tick() can detect future data updates relative to "what we
+    // last rendered with". Doing this here (after teardown, before
+    // build) guarantees we never see a generation bump from an
+    // update that happened during the rebuild itself.
+    lastDashboardGen_ = app_.dashboard().generation();
+    lastAllTasksGen_  = app_.allTasks().generation();
+    lastIconCacheGen_ = iconCache_.generation();
     using domain::ScreenId;
     switch (rendered_) {
         case ScreenId::Boot:               buildBoot();              break;

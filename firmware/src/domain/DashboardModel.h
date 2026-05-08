@@ -14,16 +14,28 @@ namespace howler::domain {
 /// the cursor to its new index.
 class DashboardModel {
 public:
+    /// Monotonic generation counter, bumped on every replace /
+    /// removeById. Screens snapshot this once per frame and rebuild
+    /// when it changes — the source of the "auto-refresh on sync
+    /// round" behaviour. Wraps at 2³², but only inequality matters;
+    /// wraparound just means one missed rebuild every 4 G updates.
+    uint32_t generation() const { return generation_; }
+
     void replace(std::vector<DashboardItem> next) {
         const std::string sticky = selectedId();
         items_ = std::move(next);
         sort();
         if (!sticky.empty()) {
             for (size_t i = 0; i < items_.size(); ++i) {
-                if (items_[i].id == sticky) { cursor_ = i; return; }
+                if (items_[i].id == sticky) {
+                    cursor_ = i;
+                    ++generation_;
+                    return;
+                }
             }
         }
         if (cursor_ >= items_.size()) cursor_ = items_.empty() ? 0 : items_.size() - 1;
+        ++generation_;
     }
 
     const std::vector<DashboardItem>& items() const { return items_; }
@@ -78,11 +90,13 @@ public:
         items_.erase(it);
         if (cursor_ >= items_.size()) cursor_ = items_.empty() ? 0 : items_.size() - 1;
         else if (cursor_ > idx) --cursor_;
+        ++generation_;
     }
 
 private:
     std::vector<DashboardItem> items_;
-    size_t cursor_ = 0;
+    size_t   cursor_     = 0;
+    uint32_t generation_ = 0;
 
     std::string selectedId() const {
         return items_.empty() ? std::string{} : items_[cursor_].id;

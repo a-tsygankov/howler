@@ -32,12 +32,20 @@ namespace howler::screens::components {
 
 class IconCache {
 public:
-    /// 1-bit bitmap dimensions. Both seed and runtime fix this at
-    /// 24×24 today; bumping it would require regenerating the seed
+    /// On-the-wire bitmap dimensions. Both seed and runtime fix this
+    /// at 24×24 today; bumping it would require regenerating the seed
     /// migration AND adapting buildStatusAvatar's inner content.
     static constexpr int kIconW = 24;
     static constexpr int kIconH = 24;
-    static constexpr size_t kBitmapBytes = (kIconW * kIconH) / 8;  // 72
+    /// Bytes received from the server: 1-bit packed (24 px / 8 = 3
+    /// bytes per row × 24 rows = 72 bytes). LVGL 9's software
+    /// renderer doesn't support LV_COLOR_FORMAT_A1 (lv_color.h line
+    /// 137 explicitly excludes A1/A2/A4 as "GPU-only"), so on the
+    /// device we unpack 1bpp → 8bpp A8 and feed THAT to lv_image —
+    /// 0xFF for set pixels, 0x00 for unset. The unpacked buffer is
+    /// 24 × 24 = 576 bytes per icon.
+    static constexpr size_t kPackedBytes   = (kIconW * kIconH) / 8;  // 72
+    static constexpr size_t kUnpackedBytes = kIconW * kIconH;        // 576
 
     /// Cache TTL — once an entry is `kTtlSec` old we'll re-fetch it
     /// on the next access. The backend's icons rarely change, so an
@@ -52,85 +60,156 @@ public:
               application::IClock& clock)
         : net_(net), clock_(clock) {}
 
-    /// Look up `name` in the cache; if missing or stale, attempts a
-    /// fetch via the network. Returns nullptr on miss + fetch failure
-    /// so callers can render a fallback (initials / 2-letter code).
-    /// The returned pointer is valid until the next fetch (eviction
-    /// safety: callers that store the pointer for animation should
-    /// re-resolve each frame, but this is cheap — cache lookup is a
-    /// linear scan over ≤ 32 entries).
+    /// Look up `name` in the cache. NEVER blocks on the network —
+    /// returns nullptr if not cached and silently enqueues the name
+    /// for `tickPrefetch` to fetch in the background. Callers
+    /// render a fallback glyph (badgeTextForIcon / initials) when
+    /// the result is null, then re-render after a future tick once
+    /// the icon lands in the cache (`generation()` bumps when an
+    /// async fetch completes).
     const lv_image_dsc_t* get(const std::string& name) {
         if (name.empty()) return nullptr;
-        const int64_t now = clock_.nowEpochSeconds();
         for (auto& e : entries_) {
-            if (e.name != name) continue;
-            // Hit. If stale and online, kick a refresh — but still
-            // return the (potentially stale) bytes so the user sees
-            // SOMETHING while the new fetch races. Refresh is
-            // synchronous in this path; future evolution could move
-            // it onto a background queue.
-            if (e.fetchedAt > 0 &&
-                static_cast<uint32_t>(now - e.fetchedAt) > kTtlSec) {
-                tryFetchInto(name, e);
-            }
-            return &e.descriptor;
+            if (e.name == name) return &e.descriptor;
         }
-        // Miss — fetch + insert. Eviction: when full, drop the
-        // oldest by fetchedAt (vector's front-ish; actual stale-LRU
-        // would need a touched-at column, but we never re-touch on
-        // hits in this codebase).
-        if (entries_.size() >= kMaxEntries) {
-            entries_.erase(entries_.begin());
+        // Miss — queue it. Dedup against pending list so a screen
+        // with many copies of the same icon (multiple tasks with
+        // avatarId="icon:paw") only triggers one fetch.
+        for (const auto& q : pending_) {
+            if (q == name) return nullptr;
         }
-        entries_.emplace_back();
-        Entry& e = entries_.back();
-        e.name = name;
-        if (!tryFetchInto(name, e)) {
-            entries_.pop_back();
-            return nullptr;
-        }
-        return &e.descriptor;
+        pending_.push_back(name);
+        return nullptr;
     }
+
+    /// Drain up to `maxPerTick` queued fetches. Called from the
+    /// main tick loop so the synchronous HTTP I/O happens off the
+    /// render path. Returns how many fetches actually completed
+    /// (server might 404 or be offline); callers that want to
+    /// re-render on cache change can watch `generation()` instead.
+    int tickPrefetch(int maxPerTick = 1) {
+        int fetched = 0;
+        while (maxPerTick-- > 0 && !pending_.empty()) {
+            const std::string name = std::move(pending_.front());
+            pending_.erase(pending_.begin());
+            // Race guard: another get() may have ended up with this
+            // name in entries_ via a manual seed path. Skip the dup.
+            bool already = false;
+            for (auto& e : entries_) {
+                if (e.name == name) { already = true; break; }
+            }
+            if (already) continue;
+            if (entries_.size() >= kMaxEntries) {
+                entries_.erase(entries_.begin());
+            }
+            entries_.emplace_back();
+            Entry& e = entries_.back();
+            e.name = name;
+            if (!tryFetchInto(name, e)) {
+                // Drop the empty slot; don't requeue (avoid thrash on
+                // permanent failures like 404). Caller's next get()
+                // will re-enqueue if it still wants the icon.
+                entries_.pop_back();
+                continue;
+            }
+            ++fetched;
+            ++generation_;
+        }
+        return fetched;
+    }
+
+    /// True iff at least one name is queued for background fetch.
+    /// ScreenManager uses this to schedule the next tickPrefetch
+    /// without polling.
+    bool hasPending() const { return !pending_.empty(); }
+
+    /// Bulk-enqueue a list of icon names — used to pre-warm the
+    /// cache at boot so the first dashboard render shows real
+    /// icons instead of fallback letters. Already-cached and
+    /// already-queued names are skipped, so this is idempotent.
+    void prewarm(const std::vector<std::string>& names) {
+        for (const auto& name : names) {
+            if (name.empty()) continue;
+            bool seen = false;
+            for (const auto& e : entries_) {
+                if (e.name == name) { seen = true; break; }
+            }
+            if (seen) continue;
+            for (const auto& q : pending_) {
+                if (q == name) { seen = true; break; }
+            }
+            if (seen) continue;
+            pending_.push_back(name);
+        }
+    }
+
+    /// Monotonically advancing counter, bumped by every successful
+    /// background fetch. Screens watch this to trigger a rebuild
+    /// when icons that previously rendered as fallback glyphs are
+    /// now available as bitmaps.
+    uint32_t generation() const { return generation_; }
 
     /// Drop everything. Useful for tests + after a sign-out where
     /// the device token rotated and the cached icons are still
     /// "valid" but tied to the old auth boundary.
-    void clear() { entries_.clear(); }
+    void clear() {
+        entries_.clear();
+        pending_.clear();
+        ++generation_;
+    }
 
     size_t size() const { return entries_.size(); }
 
 private:
     struct Entry {
         std::string      name;
-        uint8_t          bitmap[kBitmapBytes] = {};
+        uint8_t          bitmap[kUnpackedBytes] = {};  // 576 B unpacked A8
         lv_image_dsc_t   descriptor{};
         int64_t          fetchedAt = 0;
         std::string      contentHash;
     };
 
-    application::INetwork& net_;
-    application::IClock&   clock_;
-    std::vector<Entry>     entries_;
+    application::INetwork&   net_;
+    application::IClock&     clock_;
+    std::vector<Entry>       entries_;
+    std::vector<std::string> pending_;
+    uint32_t                 generation_ = 0;
 
-    /// Pull bytes from the network into `e`. Sets up the LVGL image
-    /// descriptor pointing at e.bitmap (stable for the lifetime of
-    /// the entry). Returns true on success.
+    /// Pull bytes from the network into `e`. The wire payload is
+    /// 1-bit packed (72 bytes); we unpack to A8 (576 bytes) on the
+    /// way in so LVGL's software renderer can paint it. Sets up the
+    /// LVGL image descriptor pointing at the unpacked buffer
+    /// (stable for the lifetime of the entry). Returns true on
+    /// success.
     bool tryFetchInto(const std::string& name, Entry& e) {
         std::string body;
         std::string hash;
         const auto r = net_.fetchIcon(name, body, hash);
         if (!r.isOk()) return false;
-        if (body.size() != kBitmapBytes) return false;
-        std::memcpy(e.bitmap, body.data(), kBitmapBytes);
+        if (body.size() != kPackedBytes) return false;
 
-        // LVGL 9 image descriptor for an A1 (1-bit alpha) bitmap.
-        // The header carries width / height / colour-format so the
-        // renderer knows how to walk the data buffer below.
-        e.descriptor.header.cf      = LV_COLOR_FORMAT_A1;
+        // Unpack 1bpp MSB-first → A8. Set bits become 0xFF (fully
+        // opaque, painted in the recolor); unset stays 0x00
+        // (transparent → disc background shows through).
+        const uint8_t* packed = reinterpret_cast<const uint8_t*>(body.data());
+        for (int y = 0; y < kIconH; ++y) {
+            for (int x = 0; x < kIconW; ++x) {
+                const int byteIdx = y * (kIconW / 8) + (x >> 3);
+                const int bitIdx  = 7 - (x & 7);
+                const bool set    = (packed[byteIdx] >> bitIdx) & 1;
+                e.bitmap[y * kIconW + x] = set ? 0xFF : 0x00;
+            }
+        }
+
+        // LVGL 9 image descriptor for an A8 (8-bit alpha) bitmap —
+        // explicitly listed as software-renderer-supported (lv_color.h
+        // line 126); A1 is GPU-only and silently produces garbage on
+        // a CPU-render path like ours.
+        e.descriptor.header.cf      = LV_COLOR_FORMAT_A8;
         e.descriptor.header.w       = kIconW;
         e.descriptor.header.h       = kIconH;
-        e.descriptor.header.stride  = kIconW / 8;  // 3 bytes / row
-        e.descriptor.data_size      = kBitmapBytes;
+        e.descriptor.header.stride  = kIconW;             // 24 bytes / row
+        e.descriptor.data_size      = kUnpackedBytes;
         e.descriptor.data           = e.bitmap;
         e.fetchedAt                 = clock_.nowEpochSeconds();
         e.contentHash               = std::move(hash);

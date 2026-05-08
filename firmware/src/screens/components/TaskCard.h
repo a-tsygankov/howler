@@ -307,17 +307,22 @@ inline lv_obj_t* buildStatusAvatar(lv_obj_t* parent,
     }
 
     if (iconDsc) {
-        // Render the cached A1 bitmap. recolor + recolor_opa make
-        // LVGL paint set bits in the ink colour; 0-bits stay
-        // transparent so the disc background shows through.
+        // Render the cached A8 bitmap. recolor + recolor_opa make
+        // LVGL paint alpha-set pixels in the ink colour; 0-alpha
+        // stays transparent so the disc background shows through.
         auto* img = lv_image_create(disc);
         lv_image_set_src(img, iconDsc);
         lv_obj_set_style_image_recolor(img, Palette::ink(), 0);
         lv_obj_set_style_image_recolor_opa(img, LV_OPA_COVER, 0);
         // Bitmap is fixed at 24×24 (see backend seed). Scale to
         // fit the disc — LVGL's scale is in 256ths (256 = 1.0×).
+        // Antialiasing off because pixel-art at sub-1.5× scale looks
+        // crisper with nearest-neighbour than bilinear (the icons
+        // are line drawings; their thin strokes blur away if we
+        // average pixels).
         const int scale = (innerSize * 256) / 24;
         lv_image_set_scale(img, scale);
+        lv_image_set_antialias(img, false);
         lv_obj_center(img);
     } else {
         const char* glyph = iconKey ? badgeTextForIcon(iconKey)
@@ -325,9 +330,14 @@ inline lv_obj_t* buildStatusAvatar(lv_obj_t* parent,
         auto* lbl = lv_label_create(disc);
         lv_label_set_text(lbl, glyph);
         lv_obj_set_style_text_color(lbl, Palette::ink(), 0);
+        // Pick a font that fits the disc — full ramp now that
+        // 10/12 are enabled in lv_conf, so the mini's 12-px inner
+        // disc no longer truncates a 14-pt glyph.
         const lv_font_t* font = (innerSize >= 32) ? &lv_font_montserrat_22
                               : (innerSize >= 22) ? &lv_font_montserrat_18
-                                                  : &lv_font_montserrat_14;
+                              : (innerSize >= 14) ? &lv_font_montserrat_14
+                              : (innerSize >= 11) ? &lv_font_montserrat_12
+                                                  : &lv_font_montserrat_10;
         lv_obj_set_style_text_font(lbl, font, 0);
         lv_obj_center(lbl);
     }
@@ -478,11 +488,17 @@ inline lv_obj_t* buildMiniTaskCard(
     lv_obj_update_layout(parent);
     const int parentW = lv_obj_get_width(parent);
     const int rowW    = (parentW > 4 ? parentW - 4 : 168);
-    constexpr int kRowH    = 26;
-    constexpr int kAvatar  = 20;
+    constexpr int kRowH    = 24;
+    constexpr int kAvatar  = 18;       // shrunk from 20 → tighter pill
     constexpr int kPadL    = 4;
     constexpr int kPadR    = 6;
-    constexpr int kGap     = 6;
+    constexpr int kGap     = 5;
+    // Mini font is montserrat_12 — about 30 % smaller line height
+    // than the detail card's montserrat_18 title. The chip uses
+    // montserrat_10 so the urgency time stamp doesn't compete with
+    // the title for visual weight at a glance.
+    const lv_font_t* titleFont = &lv_font_montserrat_12;
+    const lv_font_t* chipFont  = &lv_font_montserrat_10;
 
     auto* row = lv_obj_create(parent);
     lv_obj_set_size(row, rowW, kRowH);
@@ -494,36 +510,77 @@ inline lv_obj_t* buildMiniTaskCard(
     lv_obj_set_style_border_width(row, 1, 0);
     lv_obj_set_style_pad_all(row, 0, 0);
 
-    // 20 px status-arc avatar at the left.
+    // Status-arc avatar at the left; ring 2 px reads cleaner at this
+    // smaller diameter than the detail card's 3 px would.
     auto* avatar = buildStatusAvatar(row, item, /*size=*/kAvatar, /*ring=*/2,
                                       iconLookup);
     lv_obj_align(avatar, LV_ALIGN_LEFT_MID, kPadL, 0);
 
     // Due chip — right edge. Width approximated from char count so
     // we can reserve space for the title without depending on a
-    // post-layout width read.
+    // post-layout width read. Montserrat_10 is ~5 px / char.
     const char* due = taskDueChip(item.dueAt, serverNowSec, item.isMissed);
     int dueW = 0;
     if (due[0] != 0) {
         auto* chip = lv_label_create(row);
         lv_label_set_text(chip, due);
         lv_obj_set_style_text_color(chip, tone, 0);
-        lv_obj_set_style_text_font(chip, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_font(chip, chipFont, 0);
         lv_obj_align(chip, LV_ALIGN_RIGHT_MID, -kPadR, 0);
-        dueW = static_cast<int>(strlen(due)) * 7 + 4;
+        dueW = static_cast<int>(strlen(due)) * 5 + 4;
     }
 
+    // Title — explicit width AND height so LVGL truncates with "..."
+    // on overflow rather than wrapping to a second line that overflows
+    // the row. Without the height clamp LV_LABEL_LONG_DOT lets the
+    // label grow vertically until the text fits, which is what made
+    // mini titles wrap on the on-device screenshot.
     auto* title = lv_label_create(row);
     lv_label_set_text(title, item.title.empty()
                               ? "(untitled)" : item.title.c_str());
     lv_label_set_long_mode(title, LV_LABEL_LONG_DOT);
     const int titleW = rowW - kPadL - kAvatar - kGap - dueW - kPadR;
-    lv_obj_set_width(title, titleW > 30 ? titleW : 30);
+    const int titleH = lv_font_get_line_height(titleFont);
+    lv_obj_set_size(title, titleW > 30 ? titleW : 30, titleH);
     lv_obj_set_style_text_color(title, Palette::ink(), 0);
-    lv_obj_set_style_text_font(title, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(title, titleFont, 0);
     lv_obj_align(title, LV_ALIGN_LEFT_MID, kPadL + kAvatar + kGap, 0);
 
     return row;
+}
+
+// ─── Shadow card — tier ±2 silhouette ────────────────────────────
+//
+// Per the dev-23 user spec: the dashboard / all-tasks drum should
+// only render real data for 3 cards (centre + ±1). The next ring of
+// neighbours (±2) shows just a "shadow" — same rounded shape as the
+// mini, no avatar / title / chip. This both reinforces the depth
+// effect (the pile recedes into shapes you can't read) and makes
+// the design's spec ("for the +2 and -2 tasks display only the
+// shadow of the card without real data") explicit in code.
+//
+// The shadow is rendered translucent — solid bg + soft border at
+// reduced opacity. The drum's per-distance opacity setting is what
+// dims it in proportion; we keep colour values at full strength here
+// so the dim factor is the only knob the screen passes in.
+inline lv_obj_t* buildShadowTaskCard(lv_obj_t* parent) {
+    lv_obj_update_layout(parent);
+    const int parentW = lv_obj_get_width(parent);
+    const int rowW    = (parentW > 4 ? parentW - 4 : 148);
+    constexpr int kRowH = 24;
+
+    auto* shadow = lv_obj_create(parent);
+    lv_obj_set_size(shadow, rowW, kRowH);
+    lv_obj_align(shadow, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_clear_flag(shadow, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(shadow, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_radius(shadow, 10, 0);
+    lv_obj_set_style_bg_color(shadow, Palette::paper3(), 0);
+    lv_obj_set_style_bg_opa(shadow, LV_OPA_70, 0);
+    lv_obj_set_style_border_color(shadow, Palette::lineSoft(), 0);
+    lv_obj_set_style_border_width(shadow, 1, 0);
+    lv_obj_set_style_pad_all(shadow, 0, 0);
+    return shadow;
 }
 
 /// Convenience overload: legacy callers that don't carry a server-
@@ -549,11 +606,19 @@ inline void renderTaskInDrumSlot(lv_obj_t* slot,
                                  int tier,
                                  int64_t serverNowSec,
                                  const IconLookupFn* iconLookup = nullptr) {
-    if (tier == 0) {
+    const int dist = tier < 0 ? -tier : tier;
+    if (dist == 0) {
         buildDetailedTaskCard(slot, item, serverNowSec, iconLookup);
-    } else {
+    } else if (dist == 1) {
         buildMiniTaskCard(slot, item, /*yOffset=*/0, serverNowSec,
                           iconLookup);
+    } else {
+        // dist >= 2 — shadow only, no real data.
+        // The drum's per-distance opacity dims this further so the
+        // ±2 ring fades into the rim. ±3+ never reaches this code
+        // path because DrumScroller's setMaxVisibleDistance(2) on
+        // the task drum hides those slots entirely.
+        buildShadowTaskCard(slot);
     }
 }
 

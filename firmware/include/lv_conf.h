@@ -31,6 +31,12 @@
 #define LV_USE_QRCODE          1
 
 /* ── fonts ────────────────────────────────────────────────── */
+/* 10/12 added in dev-23 so the mini task pill renders its title at
+ * a clearly smaller scale than the detail card without resorting to
+ * lv_obj_set_style_transform_scale (which produces fuzzy output for
+ * text and the status-arc avatar). */
+#define LV_FONT_MONTSERRAT_10  1
+#define LV_FONT_MONTSERRAT_12  1
 #define LV_FONT_MONTSERRAT_14  1
 #define LV_FONT_MONTSERRAT_18  1
 #define LV_FONT_MONTSERRAT_22  1
