@@ -132,6 +132,7 @@ void ScreenManager::showToast(const char* text, uint32_t durationMs) {
 void ScreenManager::pollAndDispatch(uint32_t /*millisNow*/) {
     int delta = 0;
     int vert = 0;
+    int horz = 0;
     bool tap = false;
     bool doubleTap = false;
     bool longPress = false;
@@ -139,18 +140,21 @@ void ScreenManager::pollAndDispatch(uint32_t /*millisNow*/) {
     while (true) {
         const auto e = input_.poll();
         if (e == IInputDevice::Event::None) break;
-        if      (e == IInputDevice::Event::RotateCW)  ++delta;
-        else if (e == IInputDevice::Event::RotateCCW) --delta;
-        else if (e == IInputDevice::Event::Press)     tap = true;
-        else if (e == IInputDevice::Event::DoubleTap) doubleTap = true;
-        else if (e == IInputDevice::Event::LongPress) longPress = true;
-        else if (e == IInputDevice::Event::SwipeUp)   ++vert;
-        else if (e == IInputDevice::Event::SwipeDown) --vert;
+        if      (e == IInputDevice::Event::RotateCW)   ++delta;
+        else if (e == IInputDevice::Event::RotateCCW)  --delta;
+        else if (e == IInputDevice::Event::Press)      tap = true;
+        else if (e == IInputDevice::Event::DoubleTap)  doubleTap = true;
+        else if (e == IInputDevice::Event::LongPress)  longPress = true;
+        else if (e == IInputDevice::Event::SwipeUp)    ++vert;
+        else if (e == IInputDevice::Event::SwipeDown)  --vert;
+        else if (e == IInputDevice::Event::SwipeLeft)  ++horz;
+        else if (e == IInputDevice::Event::SwipeRight) --horz;
     }
-    if (delta == 0 && vert == 0 && !tap && !doubleTap && !longPress) return;
+    if (delta == 0 && vert == 0 && horz == 0 &&
+        !tap && !doubleTap && !longPress) return;
     g_enc.pendingDelta += delta;
     if (tap || longPress) g_enc.pendingPress = true;
-    onEvent(delta, tap, doubleTap, longPress, vert);
+    onEvent(delta, tap, doubleTap, longPress, vert, horz);
     if (tap || longPress) g_enc.pendingPress = false;
 }
 
@@ -190,41 +194,48 @@ void ScreenManager::rebuildScreen() {
 }
 
 void ScreenManager::onEvent(int rotateDelta, bool tap, bool doubleTap,
-                            bool longPress, int vertSwipe) {
+                            bool longPress, int vertSwipe, int horzSwipe) {
     using domain::ScreenId;
     auto& app = app_;
     auto& router = app.router();
 
-    // ── Vertical swipe at any root → cycle main screens ────────
-    // SwipeUp moves forward in kMainScreens (Dashboard → TaskList),
-    // SwipeDown moves backward. Setting screens (Settings root etc.)
-    // are reachable by DoubleTap, not by vertical swipe — we don't
-    // want a misfired flick to drop the user into a config screen.
-    if (vertSwipe != 0 && router.atRoot()) {
-        const ScreenId cur = rendered_;
-        const auto N = sizeof(kMainScreens) / sizeof(kMainScreens[0]);
-        // Only swap if the current root is one of the main screens.
-        // (The Pair root, for instance, doesn't participate.)
-        size_t idx = N;  // sentinel "not found"
-        for (size_t i = 0; i < N; ++i) if (kMainScreens[i] == cur) idx = i;
-        if (idx < N) {
-            const long step = (vertSwipe > 0) ? 1 : -1;
-            const long next = ((static_cast<long>(idx) + step) % static_cast<long>(N)
-                              + static_cast<long>(N)) % static_cast<long>(N);
-            router.replaceRoot(kMainScreens[next]);
-            return;
-        }
+    // Helper: cycle the active root through `kMainScreens`. step=+1
+    // moves forward (Dashboard → TaskList → Settings → wraps), -1
+    // back. No-op if the current root isn't a main-screen entry
+    // (e.g., Pair while unauthenticated).
+    auto cycleMainScreen = [&](int step) {
+        constexpr auto N = sizeof(kMainScreens) / sizeof(kMainScreens[0]);
+        size_t idx = N;
+        for (size_t i = 0; i < N; ++i) if (kMainScreens[i] == rendered_) idx = i;
+        if (idx >= N) return false;
+        const long s = (step > 0) ? 1 : -1;
+        const long next = ((static_cast<long>(idx) + s) % static_cast<long>(N)
+                          + static_cast<long>(N)) % static_cast<long>(N);
+        router.replaceRoot(kMainScreens[next]);
+        return true;
+    };
+
+    // ── Root navigation: knob rotation OR horizontal swipe ─────
+    // Both cycle through the main pills (today / all / menu). Knob
+    // CW = next (forward in kMainScreens); SwipeLeft = next (mobile
+    // carousel convention where finger sweeps the new screen in
+    // from the right). Vertical swipe at root scrolls the current
+    // screen's content cursor (handled below).
+    if (router.atRoot()) {
+        if (rotateDelta != 0 && cycleMainScreen(rotateDelta)) return;
+        if (horzSwipe   != 0 && cycleMainScreen(horzSwipe))   return;
     }
 
-    // ── Vertical swipe inside a round-menu screen → cursor nudge ──
-    // Acts as a touch-only equivalent of rotation so users can
-    // browse without spinning the knob. SwipeUp moves toward the
-    // next item (the one rendered below the centre), SwipeDown
-    // toward the previous (above the centre).
-    if (vertSwipe != 0 && menuActive_ && !router.atRoot()) {
-        // SwipeUp = next item = +1 cursor delta. The natural mapping
-        // (eyes look down, item below moves up to centre) feels
-        // right under thumb on a round display.
+    // ── Off-root menus: rotation OR vertical swipe nudge cursor ──
+    if (menuActive_ && !router.atRoot()) {
+        if (rotateDelta != 0) menu_.onRotate(rotateDelta);
+        if (vertSwipe   != 0) menu_.onRotate(vertSwipe);
+    }
+    // ── Root menus (Settings): vertical swipe nudges menu cursor ──
+    // Settings is a root screen but also a menu; rotation already
+    // cycles main pills, so vertical swipe is the only way to move
+    // through Settings entries with a single hand on the knob.
+    if (router.atRoot() && menuActive_ && vertSwipe != 0) {
         menu_.onRotate(vertSwipe);
         return;
     }
@@ -261,7 +272,10 @@ void ScreenManager::onEvent(int rotateDelta, bool tap, bool doubleTap,
 
     switch (rendered_) {
         case ScreenId::Dashboard: {
-            if (rotateDelta != 0) app.dashboard().moveCursor(rotateDelta);
+            // Knob at root cycles main pills (handled above). Vertical
+            // swipe moves the dashboard cursor through tasks; tap
+            // activates the centre item.
+            if (vertSwipe != 0) app.dashboard().moveCursor(vertSwipe);
             const auto* sel = app.dashboard().selected();
             if (!sel) break;
             if (tap) {

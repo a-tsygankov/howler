@@ -116,14 +116,19 @@ public:
         Press,
         DoubleTap,
         LongPress,
-        /// Vertical touch swipes — SwipeUp = finger moved from low Y
-        /// to high Y (toward the top of the screen), SwipeDown = the
-        /// inverse. The encoder doesn't have a vertical axis so the
-        /// rotary input never emits these. Reusable by any touch
-        /// adapter; ScreenManager translates them into "next/previous
-        /// main screen" at root and "scroll cursor" inside menus.
+        /// Vertical touch swipes — SwipeUp = finger moved toward the
+        /// top of the screen, SwipeDown = the inverse. ScreenManager
+        /// translates these into content-cursor scrolling inside
+        /// menus and on the Dashboard / TaskList carousels.
         SwipeUp,
         SwipeDown,
+        /// Horizontal touch swipes — SwipeLeft = finger moved toward
+        /// the left edge (typical "next" direction in mobile UIs),
+        /// SwipeRight = the inverse ("back"). At root level these
+        /// cycle the main-screen pills (today / all / menu); inside
+        /// non-root flows they're not currently mapped.
+        SwipeLeft,
+        SwipeRight,
     };
     virtual ~IInputDevice() = default;
     virtual Event poll() = 0;

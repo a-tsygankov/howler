@@ -49,20 +49,25 @@ inline lv_obj_t* buildRoundBackground(lv_obj_t* parent = nullptr) {
     return root;
 }
 
-/// Tab strip for the main screens. Two pills side-by-side at the
-/// top of the disc; the active one fills with `ink`, the inactive
-/// stays paper-toned. Touch targets register click events that
-/// the caller wires to `Router::replaceRoot`. Ordering matches
-/// `ScreenManager::kMainScreens` so the activeIndex lines up.
-struct TabStripEntry { const char* label; const void* tag; };
+/// Visual tab strip for the main screens. N pills side-by-side at
+/// the top of the disc; the active one fills with ink (paper text),
+/// the inactive ones stay paper3 (ink2 text). Pills are NOT
+/// individually tappable — touch targets at pill width feel cramped
+/// on the round display, so navigation between main screens is
+/// owned by the round-display gestures (knob rotation + horizontal
+/// swipe). The strip is purely a "you are here / these are
+/// available" indicator.
+struct TabStripEntry { const char* label; };
 inline lv_obj_t* buildTabStrip(lv_obj_t* parent,
                                const TabStripEntry* entries, size_t count,
-                               size_t activeIndex,
-                               lv_event_cb_t onClick, void* userData) {
+                               size_t activeIndex) {
     auto* row = lv_obj_create(parent);
-    lv_obj_set_size(row, 168, 26);
+    // Outer pill row; same width regardless of pill count so layout
+    // stays steady.
+    lv_obj_set_size(row, 192, 26);
     lv_obj_align(row, LV_ALIGN_TOP_MID, 0, 18);
     lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(row, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_style_bg_color(row, Palette::paper3(), 0);
     lv_obj_set_style_radius(row, 13, 0);
     lv_obj_set_style_border_width(row, 0, 0);
@@ -72,27 +77,27 @@ inline lv_obj_t* buildTabStrip(lv_obj_t* parent,
     lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_EVENLY,
                           LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
+    // Per-pill width. The outer is 192 minus 2×2 padding = 188; we
+    // leave a small gap between pills via flex space-evenly.
+    const int pillW = (count == 0) ? 60 : (188 / static_cast<int>(count)) - 2;
     for (size_t i = 0; i < count; ++i) {
         const bool active = (i == activeIndex);
-        auto* pill = lv_btn_create(row);
-        lv_obj_set_size(pill, 78, 22);
+        auto* pill = lv_obj_create(row);
+        lv_obj_set_size(pill, pillW, 22);
+        lv_obj_clear_flag(pill, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_clear_flag(pill, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_set_style_radius(pill, 11, 0);
         lv_obj_set_style_bg_color(pill,
             active ? Palette::ink() : Palette::paper3(), 0);
         lv_obj_set_style_shadow_width(pill, 0, 0);
         lv_obj_set_style_border_width(pill, 0, 0);
         lv_obj_set_style_pad_all(pill, 0, 0);
-        lv_obj_set_user_data(pill, const_cast<void*>(entries[i].tag));
 
         auto* l = lv_label_create(pill);
         lv_label_set_text(l, entries[i].label);
         lv_obj_set_style_text_color(l,
             active ? Palette::paper() : Palette::ink2(), 0);
         lv_obj_center(l);
-
-        if (!active) {
-            lv_obj_add_event_cb(pill, onClick, LV_EVENT_CLICKED, userData);
-        }
     }
     return row;
 }
