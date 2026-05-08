@@ -108,7 +108,7 @@ void ScreenManager::buildResultPicker() {
     // Hint: rotate / tap / hold semantics.
     {
         auto* hint = lv_label_create(root_);
-        lv_label_set_text(hint, "rotate · tap save · hold skip");
+        lv_label_set_text(hint, "rotate | tap save | hold skip");
         lv_obj_set_style_text_color(hint, Palette::ink3(), 0);
         lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -10);
     }
@@ -157,7 +157,7 @@ void ScreenManager::buildUserPicker() {
     menuActive_ = true;
 
     auto* hint = lv_label_create(root_);
-    lv_label_set_text(hint, "rotate · tap pick · hold skip");
+    lv_label_set_text(hint, "rotate | tap pick | hold skip");
     lv_obj_set_style_text_color(hint, Palette::ink3(), 0);
     lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -10);
 }

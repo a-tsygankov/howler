@@ -1,15 +1,22 @@
-// All-tasks screen — round-menu carousel over `App::allTasks()`. The
-// dashboard model holds only the urgency-filtered subset; this view
-// shows every active task in the home regardless of tier so the user
-// can mark anything done from the dial without waiting for the
-// urgency rule to surface it.
+// All-tasks screen — same detailed + mini layout as Dashboard, just
+// driven by `app.allTasks()` (every active task in the home, not the
+// urgency-filtered subset). Per the user spec 2026-05-08:
 //
-// Tap = enter the same mark-done flow the dashboard uses; double-tap
-// = pop back to Settings; long-press = quick mark-done (no result,
-// no user) the same as on the dashboard.
+//   "show at least 3 tasks at once: 1 selected with details, and 2
+//    others (if exist) as mini versions higher or lower or both
+//    higher or both lower (depending on place in list). Detailed
+//    view should have Icon."
+//
+// Knob rotation + vertical swipe move the cursor; tap on the centre
+// task enters the standard mark-done flow (ResultPicker if the task
+// has a result type, else UserPicker). Double-tap goes back to
+// Dashboard via the universal pop. Long-press = quick mark-done with
+// no result + no user attribution, same shortcut as Dashboard.
 
 #include "ScreenManager.h"
 #include "components/RoundCard.h"
+#include "components/TaskCard.h"
+#include "components/LongPressArcWidget.h"
 #include <stdio.h>
 
 namespace howler::screens {
@@ -17,20 +24,9 @@ namespace howler::screens {
 using components::Palette;
 using components::buildRoundBackground;
 using components::buildCenterCard;
-
-namespace {
-
-const char* tierLabel(howler::domain::Urgency u, bool missed) {
-    if (missed) return "missed";
-    switch (u) {
-        case howler::domain::Urgency::Urgent:    return "urgent";
-        case howler::domain::Urgency::NonUrgent: return "soon";
-        case howler::domain::Urgency::Hidden:    return "scheduled";
-    }
-    return "";
-}
-
-}  // namespace
+using components::buildDetailedTaskCard;
+using components::buildMiniTaskCard;
+using components::countTiers;
 
 void ScreenManager::buildTaskList() {
     root_ = buildRoundBackground();
@@ -59,59 +55,82 @@ void ScreenManager::buildTaskList() {
         return;
     }
 
-    // Build the menu from every task in the home. The id is the
-    // taskHex so the activate callback can find the source row in
-    // the model when the user taps.
-    std::vector<domain::RoundMenuItem> items;
-    items.reserve(all.size());
-    for (const auto& t : all.items()) {
-        domain::RoundMenuItem it;
-        it.id = t.taskId.hex();
-        it.title = t.title.empty() ? std::string{"(untitled)"} : t.title;
-        it.subtitle = tierLabel(t.urgency, t.isMissed);
-        // Only Urgent + missed get the destructive accent so the user
-        // can spot what's actually overdue at a glance while spinning
-        // through the carousel.
-        it.destructive =
-            (t.urgency == domain::Urgency::Urgent) || t.isMissed;
-        items.push_back(std::move(it));
-    }
-    menuModel_.replace(std::move(items));
-    menu_.build(root_, menuModel_);
-    menu_.refresh();
+    // Three-up layout matches Dashboard: previous mini above the
+    // centre, detailed centre card, next mini below. Edge handling
+    // shows a single neighbour when at the start or end of the list
+    // — but if there are only 2 items total we still want both
+    // visible, so we always show whichever neighbour exists.
+    const size_t n = all.size();
+    const size_t cur = all.cursor();
+    const auto& items = all.items();
 
-    menu_.setOnActivate([this](const domain::RoundMenuItem& it) {
-        // Find the matching task in the all-tasks model so we can
-        // pull its result_type_id + occurrence_id (if any) into the
-        // mark-done draft. The carousel id is the taskHex so a
-        // straight match works.
-        const auto& all = this->app().allTasks();
-        const howler::domain::DashboardItem* match = nullptr;
-        for (const auto& d : all.items()) {
-            if (d.taskId.hex() == it.id) { match = &d; break; }
+    if (n > 1 && cur > 0) {
+        buildMiniTaskCard(root_, items[cur - 1], /*yOffset=*/-72);
+    }
+    if (n > 1 && cur + 1 < n) {
+        buildMiniTaskCard(root_, items[cur + 1], /*yOffset=*/72);
+    }
+
+    buildDetailedTaskCard(root_, items[cur], lastServerNowSec_);
+
+    // Tier counts row at the very top under the tab strip.
+    {
+        const auto counts = countTiers(items);
+        auto* row = lv_obj_create(root_);
+        lv_obj_set_size(row, 168, 18);
+        lv_obj_align(row, LV_ALIGN_TOP_MID, 0, 50);
+        lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_style_bg_opa(row, LV_OPA_0, 0);
+        lv_obj_set_style_border_width(row, 0, 0);
+        lv_obj_set_style_pad_all(row, 0, 0);
+        lv_obj_set_layout(row, LV_LAYOUT_FLEX);
+        lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(row, LV_FLEX_ALIGN_CENTER,
+                              LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+        struct Tier { size_t count; lv_color_t accent; const char* label; };
+        const Tier tiers[] = {
+            {counts.urgent, Palette::accent(), "urgent"},
+            {counts.soon,   Palette::warn(),   "soon"},
+            {counts.hidden, Palette::ink3(),   "later"},
+        };
+        for (const auto& t : tiers) {
+            if (t.count == 0) continue;
+            auto* l = lv_label_create(row);
+            char buf[24];
+            snprintf(buf, sizeof(buf), "%u %s", (unsigned)t.count, t.label);
+            lv_label_set_text(l, buf);
+            lv_obj_set_style_text_color(l, t.accent, 0);
+            lv_obj_set_style_pad_right(l, 8, 0);
         }
-        if (!match) return;
-        auto& app = this->app();
-        app.pendingDone() = {};
-        app.pendingDone().taskId = match->taskId;
-        app.pendingDone().occurrenceId = match->occurrenceId;
-        app.pendingDone().resultTypeId = match->resultTypeId;
-        app.router().push(match->resultTypeId.empty()
-                          ? domain::ScreenId::UserPicker
-                          : domain::ScreenId::ResultPicker);
-    });
-    menuActive_ = true;
+    }
+
+    // Cursor dots.
+    {
+        char dots[64] = {0};
+        size_t off = 0;
+        const size_t cap = n > 12 ? 12 : n;
+        for (size_t i = 0; i < cap && off < sizeof(dots) - 4; ++i) {
+            dots[off++] = (i == cur) ? '#' : '-';
+            dots[off++] = ' ';
+        }
+        if (n > cap && off < sizeof(dots) - 1) dots[off++] = '+';
+        auto* d = lv_label_create(root_);
+        lv_label_set_text(d, dots);
+        lv_obj_set_style_text_color(d, Palette::ink3(), 0);
+        lv_obj_align(d, LV_ALIGN_BOTTOM_MID, 0, -28);
+    }
 
     auto* hint = lv_label_create(root_);
-    lv_label_set_text(hint, "rotate · tap done · double back");
+    lv_label_set_text(hint, "tap done | hold confirm");
     lv_obj_set_style_text_color(hint, Palette::ink3(), 0);
     lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -10);
 }
 
 void ScreenManager::buildTaskDetail() {
-    // Reserved for a future "row → detail" path. Today the All-tasks
-    // and Dashboard screens go straight into the mark-done flow on
-    // tap, so this screen exists only to satisfy the ScreenId enum.
+    // Reserved for a future "row → detail" path. Today both list
+    // screens go straight into the mark-done flow on tap, so this
+    // screen exists only to satisfy the ScreenId enum.
     root_ = buildRoundBackground();
     auto* l = lv_label_create(root_);
     lv_label_set_text(l, "task detail\n(double back)");

@@ -132,6 +132,7 @@ private:
     void buildSettings();
     void buildSettingsBrightness();
     void buildSettingsAbout();
+    void buildSettingsTheme();
     void buildWifi();
     void buildWifiConnect();
     void buildLoginQr();

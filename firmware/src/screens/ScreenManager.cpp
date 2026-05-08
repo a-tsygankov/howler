@@ -194,6 +194,7 @@ void ScreenManager::rebuildScreen() {
         case ScreenId::Settings:           buildSettings();          break;
         case ScreenId::SettingsBrightness: buildSettingsBrightness(); break;
         case ScreenId::SettingsAbout:      buildSettingsAbout();     break;
+        case ScreenId::SettingsTheme:      buildSettingsTheme();     break;
         case ScreenId::Wifi:               buildWifi();              break;
         case ScreenId::WifiConnect:        buildWifiConnect();       break;
         case ScreenId::LoginQr:            buildLoginQr();           break;
@@ -276,9 +277,17 @@ void ScreenManager::onEvent(int rotateDelta, bool tap, bool doubleTap,
         case ScreenId::Dashboard: {
             // Knob rotation AND vertical swipe both move the dashboard
             // cursor — knob is the primary, swipe is touch parity.
-            // Pills switch only via horizontal swipe (above).
-            if (rotateDelta != 0) app.dashboard().moveCursor(rotateDelta);
-            if (vertSwipe   != 0) app.dashboard().moveCursor(vertSwipe);
+            // Pills switch only via horizontal swipe (above). Cursor
+            // movement triggers a rebuild because the centre + mini
+            // cards depend on which item is selected.
+            if (rotateDelta != 0) {
+                app.dashboard().moveCursor(rotateDelta);
+                requestRebuild();
+            }
+            if (vertSwipe != 0) {
+                app.dashboard().moveCursor(vertSwipe);
+                requestRebuild();
+            }
             const auto* sel = app.dashboard().selected();
             if (!sel) break;
             if (tap) {
@@ -350,21 +359,33 @@ void ScreenManager::onEvent(int rotateDelta, bool tap, bool doubleTap,
             break;
         }
         case ScreenId::TaskList: {
-            // Long-press on a task in All-tasks = quick mark-done
-            // (no result, no user) — same shortcut as the Dashboard
-            // root, so a power-user keystroke works regardless of
-            // which list view they're spinning through.
-            if (longPress) {
-                const auto* sel = menuModel_.selected();
-                if (!sel) break;
-                const howler::domain::DashboardItem* match = nullptr;
-                for (const auto& d : app.allTasks().items()) {
-                    if (d.taskId.hex() == sel->id) { match = &d; break; }
-                }
-                if (!match) break;
+            // Same UX as Dashboard, just driven by `allTasks()` so
+            // every active task is reachable (not just the urgency
+            // tier the home screen surfaces). Knob + vertical swipe
+            // move the cursor; tap enters the standard mark-done
+            // flow; long-press is the quick-done shortcut.
+            if (rotateDelta != 0) {
+                app.allTasks().moveCursor(rotateDelta);
+                requestRebuild();
+            }
+            if (vertSwipe != 0) {
+                app.allTasks().moveCursor(vertSwipe);
+                requestRebuild();
+            }
+            const auto* sel = app.allTasks().selected();
+            if (!sel) break;
+            if (tap) {
                 app.pendingDone() = {};
-                app.pendingDone().taskId = match->taskId;
-                app.pendingDone().occurrenceId = match->occurrenceId;
+                app.pendingDone().taskId = sel->taskId;
+                app.pendingDone().occurrenceId = sel->occurrenceId;
+                app.pendingDone().resultTypeId = sel->resultTypeId;
+                router.push(sel->resultTypeId.empty()
+                            ? ScreenId::UserPicker
+                            : ScreenId::ResultPicker);
+            } else if (longPress) {
+                app.pendingDone() = {};
+                app.pendingDone().taskId = sel->taskId;
+                app.pendingDone().occurrenceId = sel->occurrenceId;
                 app.pendingDone().resultTypeId = "";
                 app.pendingDone().userId = "";
                 app.pendingDone().hasResultValue = false;

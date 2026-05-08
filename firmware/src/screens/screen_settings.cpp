@@ -47,7 +47,7 @@ void ScreenManager::buildSettings() {
     // the carousel below — knob rotation cycles main pills here.
     {
         auto* h = lv_label_create(root_);
-        lv_label_set_text(h, "swipe up/down · tap pick");
+        lv_label_set_text(h, "swipe up/down | tap pick");
         lv_obj_set_style_text_color(h, Palette::ink3(), 0);
         lv_obj_align(h, LV_ALIGN_BOTTOM_MID, 0, -10);
     }
@@ -57,8 +57,8 @@ void ScreenManager::buildSettings() {
     const bool isDark = app_.settings().theme == domain::Theme::Dark;
     menuModel_.replace({
         mk("sync",      "Sync now",    "fetch latest"),
-        mk("theme",     "Theme",       isDark ? "dark · tap to flip"
-                                              : "light · tap to flip"),
+        mk("theme",     "Theme",       isDark ? "dark | tap to flip"
+                                              : "light | tap to flip"),
         mk("wifi",      "Wi-Fi",       "scan + connect"),
         mk("login-qr",  "Login by QR", "phone link"),
         mk("brightness","Brightness",  "screen level"),
@@ -79,12 +79,12 @@ void ScreenManager::buildSettings() {
             this->showToast("syncing...", 1500);
         }
         else if (id == "theme") {
-            // Flip between light and dark; persists to NVS. Force
-            // a rebuild on the next tick — replaceRoot(same id) is
-            // a no-op for the screen manager, so we use the explicit
-            // requestRebuild path so the new palette renders.
-            app.toggleTheme();
-            this->requestRebuild();
+            // Push the dedicated Theme switcher screen so the user
+            // sees the choice (Light vs Dark) explicitly. The flip-
+            // in-place toggle previous versions used had no visible
+            // UI when tapped — the user couldn't tell anything had
+            // happened.
+            app.router().push(domain::ScreenId::SettingsTheme);
         }
         else if (id == "wifi")       app.router().push(domain::ScreenId::Wifi);
         else if (id == "login-qr")   app.router().push(domain::ScreenId::LoginQr);
@@ -133,7 +133,7 @@ void ScreenManager::buildSettingsBrightness() {
     lv_obj_center(val);
 
     auto* hint = lv_label_create(root_);
-    lv_label_set_text(hint, "rotate · double back");
+    lv_label_set_text(hint, "rotate | double back");
     lv_obj_set_style_text_color(hint, Palette::ink3(), 0);
     lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -12);
 
@@ -143,6 +143,88 @@ void ScreenManager::buildSettingsBrightness() {
         const int v = lv_arc_get_value(lv_event_get_target_obj(e));
         mgr->app().settings().brightness = static_cast<uint8_t>(v);
     }, LV_EVENT_VALUE_CHANGED, this);
+}
+
+void ScreenManager::buildSettingsTheme() {
+    root_ = buildRoundBackground();
+
+    {
+        auto* h = lv_label_create(root_);
+        lv_label_set_text(h, "Theme");
+        lv_obj_set_style_text_color(h, Palette::ink2(), 0);
+        lv_obj_align(h, LV_ALIGN_TOP_MID, 0, 18);
+    }
+
+    const bool isDark = app_.settings().theme == domain::Theme::Dark;
+
+    // Two pills, side by side. The active one fills with ink + paper
+    // text; the inactive stays paper-toned + ink2. Tap on either
+    // commits + pops back. Initial knob focus lands on the inactive
+    // tile so a single press flips the theme.
+    struct PillSpec {
+        const char* label;
+        domain::Theme value;
+    };
+    static const PillSpec specs[2] = {
+        {"Light", domain::Theme::Light},
+        {"Dark",  domain::Theme::Dark},
+    };
+
+    for (int i = 0; i < 2; ++i) {
+        const bool active = specs[i].value == app_.settings().theme;
+        auto* btn = lv_btn_create(root_);
+        lv_obj_set_size(btn, 86, 64);
+        const int x = (i == 0) ? -50 : 50;
+        lv_obj_align(btn, LV_ALIGN_CENTER, x, 0);
+        lv_obj_set_style_radius(btn, 18, 0);
+        lv_obj_set_style_shadow_width(btn, 0, 0);
+        lv_obj_set_style_border_width(btn, active ? 0 : 1, 0);
+        lv_obj_set_style_border_color(btn, Palette::lineSoft(), 0);
+        lv_obj_set_style_bg_color(btn,
+            active ? Palette::ink() : Palette::paper2(), 0);
+
+        auto* l = lv_label_create(btn);
+        lv_label_set_text(l, specs[i].label);
+        lv_obj_set_style_text_color(l,
+            active ? Palette::paper() : Palette::ink2(), 0);
+        lv_obj_set_style_text_font(l, &lv_font_montserrat_18, 0);
+        lv_obj_center(l);
+
+        // Stash the pill's theme value as user data so the click
+        // handler can persist directly without recomputing index.
+        lv_obj_set_user_data(btn, (void*)(intptr_t)
+            (specs[i].value == domain::Theme::Dark ? 1 : 0));
+        lv_obj_add_event_cb(btn, [](lv_event_t* e) {
+            if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
+            auto* mgr = static_cast<ScreenManager*>(lv_event_get_user_data(e));
+            auto* btn = lv_event_get_target_obj(e);
+            const intptr_t darkIntent = (intptr_t)lv_obj_get_user_data(btn);
+            mgr->app().setTheme(darkIntent != 0
+                ? domain::Theme::Dark
+                : domain::Theme::Light);
+            mgr->requestRebuild();
+            mgr->app().router().pop();
+        }, LV_EVENT_CLICKED, this);
+
+        if (group_) {
+            lv_group_add_obj(group_, btn);
+            // Focus the OPPOSITE of the current theme so a knob
+            // press flips it; tapping the touch screen still works
+            // either way because the click handler is bound per-pill.
+            if (!active) lv_group_focus_obj(btn);
+        }
+    }
+
+    // Hint at the bottom: which is current.
+    auto* hint = lv_label_create(root_);
+    lv_label_set_text(hint, isDark ? "now: dark" : "now: light");
+    lv_obj_set_style_text_color(hint, Palette::ink3(), 0);
+    lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -28);
+
+    auto* hint2 = lv_label_create(root_);
+    lv_label_set_text(hint2, "rotate | tap pick | double back");
+    lv_obj_set_style_text_color(hint2, Palette::ink3(), 0);
+    lv_obj_align(hint2, LV_ALIGN_BOTTOM_MID, 0, -10);
 }
 
 void ScreenManager::buildSettingsAbout() {

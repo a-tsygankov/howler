@@ -29,6 +29,11 @@ export interface HowlerAvatarProps {
   urgency?: Urgency | undefined;
   size?: number | undefined;
   className?: string | undefined;
+  /// Explicit "#RRGGBB" override for the badge background. When set,
+  /// it wins over the seed-derived BG_PALETTE pick — used by the
+  /// User editor's colour picker so the row's badge matches the
+  /// user's chosen accent.
+  backgroundColor?: string | undefined;
 }
 
 const RING_CLASS: Record<Urgency, string> = {
@@ -70,16 +75,30 @@ export const HowlerAvatar = ({
   urgency = 0,
   size = 38,
   className = "",
+  backgroundColor,
 }: HowlerAvatarProps) => {
   const ring = RING_CLASS[urgency];
   const glyph = GLYPH[urgency];
+
+  // When backgroundColor is given, skip the seed-derived Tailwind
+  // class and use an inline style. The user-row editor uses this
+  // path; everything else (tasks, schedule templates, etc.) keeps
+  // the deterministic BG_PALETTE so colours stay distinct without
+  // an explicit pick.
+  const explicitBg = backgroundColor
+    ? { background: backgroundColor }
+    : undefined;
+  const seedBgClass = backgroundColor ? "" : bgFromSeed(seed ?? avatarId ?? "");
+  const seedBgInitialsClass =
+    backgroundColor ? "" : bgFromSeed(seed ?? initials ?? "");
 
   let inner: React.ReactNode;
   if (isIconAvatar(avatarId)) {
     const iconName = avatarId.slice(ICON_PREFIX.length) as IconName;
     inner = (
       <div
-        className={`grid h-full w-full place-items-center rounded-full ${bgFromSeed(seed ?? avatarId)} text-paper`}
+        className={`grid h-full w-full place-items-center rounded-full ${seedBgClass} text-paper`}
+        style={explicitBg}
       >
         <Icon name={iconName} size={Math.round(size * 0.55)} color="#fff" />
       </div>
@@ -94,8 +113,8 @@ export const HowlerAvatar = ({
       />
     ) : (
       <div
-        className={`grid h-full w-full place-items-center rounded-full ${bgFromSeed(seed ?? initials ?? "")} text-paper font-display`}
-        style={{ fontSize: size * 0.42 }}
+        className={`grid h-full w-full place-items-center rounded-full ${seedBgInitialsClass} text-paper font-display`}
+        style={{ fontSize: size * 0.42, ...(explicitBg ?? {}) }}
       >
         {initialsFor(initials ?? seed)}
       </div>

@@ -28,6 +28,8 @@ import {
   fetchTasks,
   fetchUsers,
   renameUser,
+  updateUser,
+  type UpdateUserInput,
   revokeDevice,
   updateHome,
   updateLabel,
@@ -906,9 +908,15 @@ const CompleteTaskSheet = ({
       )}
 
       <div className="mt-5 flex gap-2">
-        <Btn variant="outline" onClick={() => submit(true)} disabled={busy}>
-          Skip value
-        </Btn>
+        {/* "Skip value" only makes sense for tasks that *have* a
+            result type to skip. For tasks without one, the only
+            action is "Mark done" — keep the button row clean by
+            hiding the no-op button. */}
+        {rt && (
+          <Btn variant="outline" onClick={() => submit(true)} disabled={busy}>
+            Skip value
+          </Btn>
+        )}
         <Btn
           variant="primary"
           onClick={() => submit(false)}
@@ -1423,7 +1431,10 @@ const TaskRow = ({
         >
           <Icon name="check" size={14} />
         </button>
-        <Btn variant="ghost" size="pillSm" onClick={() => setEditing(true)}>
+        {/* Visual parity with Complete + Delete: all three actions
+            now sit in matching round pill borders so the row reads
+            as a clean three-action group. */}
+        <Btn variant="outline" size="pillSm" onClick={() => setEditing(true)}>
           Edit
         </Btn>
         <Btn
@@ -1992,12 +2003,14 @@ const UsersBlock = ({
       onChanged();
     },
   });
-  const rename = useMutation({
-    mutationFn: (args: { id: string; displayName: string }) =>
-      renameUser(args.id, args.displayName),
+  const update = useMutation({
+    mutationFn: (args: { id: string } & UpdateUserInput) => {
+      const { id, ...patch } = args;
+      return updateUser(id, patch);
+    },
     onSuccess: (_data, vars) => {
       onChanged();
-      // If the user renamed themselves, the session-scoped /auth/me
+      // If the user edited themselves, the session-scoped /auth/me
       // payload (header greeting) is now stale.
       if (vars.id === sessionUserId) {
         void qc.invalidateQueries({ queryKey: ["me"] });
@@ -2016,7 +2029,7 @@ const UsersBlock = ({
           key={u.id}
           user={u}
           isSelf={u.id === sessionUserId}
-          onRename={(n) => rename.mutate({ id: u.id, displayName: n })}
+          onSave={(patch) => update.mutate({ id: u.id, ...patch })}
           onRemove={() => {
             if (
               confirm(
@@ -2063,74 +2076,183 @@ const UsersBlock = ({
   );
 };
 
+/// Curated palette for user backgrounds. Six warm + cool tones,
+/// each readable against ink text. The "no choice" tile (null)
+/// falls back to HowlerAvatar's deterministic seed-derived colour
+/// so existing users without an explicit pick keep their look.
+const USER_BG_CHOICES: string[] = [
+  "#E2D7BE", // line-soft (warm beige)
+  "#E5C9A1", // amber pale
+  "#D9C2E0", // plum pale
+  "#BBD3D6", // sky pale
+  "#C7DBC0", // sage pale
+  "#F1B9B0", // rose pale
+  "#C7B89E", // mushroom
+  "#A1B7B5", // dusk
+];
+
 const UserRow = ({
   user,
   isSelf,
-  onRename,
+  onSave,
   onRemove,
   removing,
 }: {
   user: User;
   isSelf: boolean;
-  onRename: (n: string) => void;
+  onSave: (patch: UpdateUserInput) => void;
   onRemove: () => void;
   removing: boolean;
 }) => {
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(user.displayName);
+  const [avatarId, setAvatarId] = useState<string | null>(user.avatarId);
+  const [bgColor, setBgColor] = useState<string | null>(user.bgColor ?? null);
+
+  // Reset draft fields each time we re-enter edit mode so a previous
+  // cancel doesn't leak into the next session.
+  const startEditing = () => {
+    setName(user.displayName);
+    setAvatarId(user.avatarId);
+    setBgColor(user.bgColor ?? null);
+    setEditing(true);
+  };
+
+  if (editing) {
+    return (
+      <div className="border-t border-line-soft py-3">
+        <div className="flex items-start gap-2">
+          <HowlerAvatar
+            avatarId={avatarId}
+            seed={user.id}
+            initials={(name || user.displayName).slice(0, 2).toUpperCase()}
+            size={32}
+            backgroundColor={bgColor ?? undefined}
+          />
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="Display name"
+            className="flex-1 rounded-md border border-line bg-paper px-3 py-1.5 text-sm focus:border-ink focus:outline-none"
+          />
+        </div>
+
+        <div className="cap mt-3 mb-1">Avatar icon</div>
+        <div className="grid grid-cols-10 gap-1">
+          <button
+            type="button"
+            title="Initials only"
+            onClick={() => setAvatarId(null)}
+            className={`flex h-7 w-7 items-center justify-center rounded-md border text-[10px] ${
+              avatarId === null
+                ? "border-ink bg-paper-3 text-ink"
+                : "border-line text-ink-3 hover:border-ink"
+            }`}
+          >
+            ↺
+          </button>
+          {LABEL_ICON_CHOICES.map((iconName) => {
+            const id = `icon:${iconName}`;
+            const active = avatarId === id;
+            return (
+              <button
+                key={iconName}
+                type="button"
+                title={iconName}
+                onClick={() => setAvatarId(id)}
+                className={`flex h-7 w-7 items-center justify-center rounded-md border ${
+                  active
+                    ? "border-ink bg-paper-3 text-ink"
+                    : "border-line text-ink-3 hover:border-ink hover:text-ink"
+                }`}
+              >
+                <Icon name={iconName} size={16} />
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="cap mt-3 mb-1">Background colour</div>
+        <div className="flex flex-wrap gap-1.5">
+          <button
+            type="button"
+            title="Default (seed colour)"
+            onClick={() => setBgColor(null)}
+            className={`flex h-7 w-7 items-center justify-center rounded-full border text-[10px] ${
+              bgColor === null
+                ? "border-ink text-ink"
+                : "border-line text-ink-3 hover:border-ink"
+            }`}
+          >
+            ↺
+          </button>
+          {USER_BG_CHOICES.map((hex) => {
+            const active = bgColor === hex;
+            return (
+              <button
+                key={hex}
+                type="button"
+                title={hex}
+                onClick={() => setBgColor(hex)}
+                aria-label={`Set colour ${hex}`}
+                className={`h-7 w-7 rounded-full border-2 ${
+                  active ? "border-ink" : "border-transparent"
+                }`}
+                style={{ background: hex }}
+              />
+            );
+          })}
+        </div>
+
+        <div className="mt-4 flex justify-end gap-1">
+          <Btn variant="ghost" size="pillSm" onClick={() => setEditing(false)}>
+            Cancel
+          </Btn>
+          <Btn
+            variant="sage"
+            size="pillSm"
+            onClick={() => {
+              onSave({
+                displayName: name.trim() || user.displayName,
+                avatarId,
+                bgColor,
+              });
+              setEditing(false);
+            }}
+          >
+            Save
+          </Btn>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex items-center justify-between border-t border-line-soft py-2">
-      {editing ? (
-        <input
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          className="mr-2 flex-1 rounded-md border border-line bg-paper px-3 py-1.5 text-sm focus:border-ink focus:outline-none"
+      <div className="flex items-center gap-2">
+        <HowlerAvatar
+          avatarId={user.avatarId}
+          seed={user.id}
+          initials={user.displayName.slice(0, 2).toUpperCase()}
+          size={28}
+          backgroundColor={user.bgColor ?? undefined}
         />
-      ) : (
-        <div className="flex items-center gap-2">
-          <HowlerAvatar
-            avatarId={user.avatarId}
-            seed={user.id}
-            initials={user.displayName.slice(0, 2).toUpperCase()}
-            size={28}
-          />
-          <span className="text-sm">{user.displayName}</span>
-          {isSelf && <span className="cap">you</span>}
-        </div>
-      )}
+        <span className="text-sm">{user.displayName}</span>
+        {isSelf && <span className="cap">you</span>}
+      </div>
       <div className="flex gap-1">
-        {editing ? (
-          <>
-            <Btn variant="ghost" size="pillSm" onClick={() => setEditing(false)}>
-              Cancel
-            </Btn>
-            <Btn
-              variant="sage"
-              size="pillSm"
-              onClick={() => {
-                onRename(name.trim());
-                setEditing(false);
-              }}
-            >
-              Save
-            </Btn>
-          </>
-        ) : (
-          <>
-            <Btn variant="ghost" size="pillSm" onClick={() => setEditing(true)}>
-              Rename
-            </Btn>
-            {!isSelf && (
-              <Btn
-                variant="danger"
-                size="pillSm"
-                onClick={onRemove}
-                disabled={removing}
-              >
-                Remove
-              </Btn>
-            )}
-          </>
+        <Btn variant="outline" size="pillSm" onClick={startEditing}>
+          Edit
+        </Btn>
+        {!isSelf && (
+          <Btn
+            variant="danger"
+            size="pillSm"
+            onClick={onRemove}
+            disabled={removing}
+          >
+            Remove
+          </Btn>
         )}
       </div>
     </div>

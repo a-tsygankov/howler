@@ -1,18 +1,27 @@
-// Polished Dashboard. Round-display-first layout: paper background
-// fills the disc; a circular content card sits centred; a thin
-// hold-progress arc along the perimeter shows long-press fill.
+// Polished Dashboard. Round-display-first layout with reusable
+// task-card components: the selected task renders detailed in the
+// centre, and the previous / next dashboard items render as mini
+// pills above / below so the user sees what's adjacent without
+// scrolling. Knob + vertical swipe cycle through the items; the
+// tab strip at the top names which main pill is active.
 //
-// Layout (top to bottom on the screen):
-//   - top arc / chips: counts ("3 urgent · 1 other") in a small chip
-//     with the urgency-tier accent
-//   - centre card: avatar dot + task title + due / missed status
-//   - cursor dots: little row at the bottom showing position
-//   - perimeter arc (hidden when not held): fills clockwise as the
-//     user holds for confirm. Driven by the LongPressArc model that
-//     ScreenManager updates each tick.
+// Per the user spec 2026-05-08:
+//   "Show selected task large with details and icon, others (from
+//    dashboard — missed or coming up or urgent) show as mini
+//    versions without details and allow to use vertical swipe (and
+//    rotary) to navigate between them all."
+//
+// Layout (top to bottom on the 240×240 disc):
+//   y=18-44   tab strip (today | all | menu)
+//   y=48-78   mini pill: previous task (omitted at index 0)
+//   y=82-178  detailed centre card for the selected task
+//   y=182-212 mini pill: next task (omitted at last index)
+//   y=212-228 footer hint
+//   perimeter long-press arc (hidden when not held)
 
 #include "ScreenManager.h"
 #include "components/RoundCard.h"
+#include "components/TaskCard.h"
 #include "components/LongPressArcWidget.h"
 #include <stdio.h>
 
@@ -21,49 +30,22 @@ namespace howler::screens {
 using components::Palette;
 using components::buildRoundBackground;
 using components::buildCenterCard;
-using components::LongPressArcWidget;
-
-namespace {
-
-const char* dueLabel(int64_t dueAt, int64_t serverNowSec, bool isMissed) {
-    static char buf[32];
-    if (isMissed) return "MISSED";
-    if (dueAt < 0) return "no time set";
-    int64_t now = serverNowSec > 0 ? serverNowSec : 0;
-    if (now == 0) {
-        snprintf(buf, sizeof(buf), "scheduled");
-        return buf;
-    }
-    const int64_t delta = dueAt - now;
-    const int64_t abs = delta < 0 ? -delta : delta;
-    const int64_t hours = abs / 3600;
-    const int64_t mins  = (abs / 60) % 60;
-    if (delta < 0) {
-        if (hours > 0) snprintf(buf, sizeof(buf), "overdue %lldh", (long long)hours);
-        else           snprintf(buf, sizeof(buf), "overdue %lldm", (long long)mins);
-    } else {
-        if (hours > 0) snprintf(buf, sizeof(buf), "in %lldh %lldm",
-                                (long long)hours, (long long)mins);
-        else           snprintf(buf, sizeof(buf), "in %lldm", (long long)mins);
-    }
-    return buf;
-}
-
-}  // namespace
+using components::buildDetailedTaskCard;
+using components::buildMiniTaskCard;
+using components::countTiers;
 
 void ScreenManager::buildDashboard() {
     root_ = buildRoundBackground();
 
     auto& dash = app_.dashboard();
 
-    // ── perimeter arc (hold-to-confirm visual). Always built so the
-    //    update loop can fade it in/out without a rebuild. ──
+    // Perimeter arc — always built so the update loop can fade it
+    // in/out without rebuilding the whole screen.
     longPressArcWidget_.build(root_, Palette::accent());
 
-    // ── tab strip: today / all / menu (visual only) ─────────────
-    // Knob rotation OR horizontal swipe at root cycles between
-    // these. The pills aren't tappable — too small to hit reliably
-    // on the round display.
+    // Tab strip (visual only — pills can't be tapped reliably on
+    // the round display, so the user spec routes pill switching
+    // exclusively through horizontal swipe).
     {
         components::TabStripEntry entries[] = {
             {"today"}, {"all"}, {"menu"},
@@ -71,7 +53,6 @@ void ScreenManager::buildDashboard() {
         components::buildTabStrip(root_, entries, 3, /*activeIndex=*/0);
     }
 
-    // ── empty state ────────────────────────────────────────────
     if (dash.empty()) {
         auto* card = buildCenterCard(root_, 180, Palette::paper2());
         auto* l = lv_label_create(card);
@@ -87,65 +68,80 @@ void ScreenManager::buildDashboard() {
         return;
     }
 
-    const auto* sel = dash.selected();
-    const bool urgent = sel->urgency == domain::Urgency::Urgent;
-    const lv_color_t accent = urgent ? Palette::accent() : Palette::ink2();
+    // Mini pills for the previous / next items. Skip when at the
+    // edges so we never render a card pointing at a non-existent
+    // task. The DashboardModel cursor wraps in code; here we
+    // intentionally don't show a "wrap" pill because that would
+    // imply linear ordering when the model is actually circular —
+    // the cursor dots at the bottom convey the wrap relationship.
+    const size_t n = dash.size();
+    const size_t cur = dash.cursor();
+    const auto& items = dash.items();
 
-    // (Urgency-count chip removed: the tab strip occupies the top
-    // band now, and the centre card + cursor dots already convey
-    // selection + total-count without doubling up the same number.)
-    (void)urgent;  // kept above for the centre-card border accent
+    if (n > 1 && cur > 0) {
+        buildMiniTaskCard(root_, items[cur - 1], /*yOffset=*/-72);
+    }
+    if (n > 1 && cur + 1 < n) {
+        buildMiniTaskCard(root_, items[cur + 1], /*yOffset=*/72);
+    }
 
-    // ── centre circular card with the selected task ──
-    auto* card = buildCenterCard(root_, 156, Palette::paper2());
-    lv_obj_set_style_border_color(card, accent, 0);
-    lv_obj_set_style_border_width(card, urgent ? 3 : 1, 0);
+    // The selected task fills the centre.
+    buildDetailedTaskCard(root_, items[cur], lastServerNowSec_);
 
-    // Title — the headline.
-    auto* title = lv_label_create(card);
-    lv_label_set_text(title, sel->title.empty() ? "(untitled)" : sel->title.c_str());
-    lv_label_set_long_mode(title, LV_LABEL_LONG_WRAP);
-    lv_obj_set_width(title, 130);
-    lv_obj_set_style_text_align(title, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_color(title, Palette::ink(), 0);
-    lv_obj_set_style_text_font(title, &lv_font_montserrat_18, 0);
-    lv_obj_align(title, LV_ALIGN_CENTER, 0, -12);
-
-    // Due / missed line.
-    auto* sub = lv_label_create(card);
-    lv_label_set_text(sub, dueLabel(sel->dueAt, lastServerNowSec_, sel->isMissed));
-    lv_obj_set_style_text_color(sub,
-        sel->isMissed ? Palette::accent() : Palette::ink2(), 0);
-    lv_obj_align(sub, LV_ALIGN_CENTER, 0, 22);
-
-    // ── footer hint ──
-    auto* hint = lv_label_create(root_);
-    lv_label_set_text(hint, "tap: done    hold: confirm");
-    lv_obj_set_style_text_color(hint, Palette::ink2(), 0);
-    lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -10);
-
-    // ── cursor dots ──
+    // Tier counts row at the very top under the tab strip — tiny
+    // dot + count for each non-empty tier. Gives the user a quick
+    // "what's the day shape" without leaving the screen.
     {
-        const size_t total = dash.size();
-        const size_t cur = dash.cursor();
+        const auto counts = countTiers(items);
+        auto* row = lv_obj_create(root_);
+        lv_obj_set_size(row, 168, 18);
+        lv_obj_align(row, LV_ALIGN_TOP_MID, 0, 50);
+        lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_style_bg_opa(row, LV_OPA_0, 0);
+        lv_obj_set_style_border_width(row, 0, 0);
+        lv_obj_set_style_pad_all(row, 0, 0);
+        lv_obj_set_layout(row, LV_LAYOUT_FLEX);
+        lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(row, LV_FLEX_ALIGN_CENTER,
+                              LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+        struct Tier { size_t count; lv_color_t accent; const char* label; };
+        const Tier tiers[] = {
+            {counts.urgent, Palette::accent(), "urgent"},
+            {counts.soon,   Palette::warn(),   "soon"},
+            {counts.hidden, Palette::ink3(),   "later"},
+        };
+        for (const auto& t : tiers) {
+            if (t.count == 0) continue;
+            auto* l = lv_label_create(row);
+            char buf[24];
+            snprintf(buf, sizeof(buf), "%u %s", (unsigned)t.count, t.label);
+            lv_label_set_text(l, buf);
+            lv_obj_set_style_text_color(l, t.accent, 0);
+            lv_obj_set_style_pad_right(l, 8, 0);
+        }
+    }
+
+    // Cursor dots — which position in the list we're on.
+    {
         char dots[64] = {0};
         size_t off = 0;
-        const size_t cap = total > 12 ? 12 : total;  // cap visual count
+        const size_t cap = n > 12 ? 12 : n;
         for (size_t i = 0; i < cap && off < sizeof(dots) - 4; ++i) {
-            // Use bullet (·) for inactive, bigger bullet (•) for active.
-            // ASCII fallback for the default Montserrat 14 set.
             dots[off++] = (i == cur) ? '#' : '-';
             dots[off++] = ' ';
         }
-        if (total > cap) {
-            // overflow tail
-            if (off < sizeof(dots) - 1) dots[off++] = '+';
-        }
+        if (n > cap && off < sizeof(dots) - 1) dots[off++] = '+';
         auto* d = lv_label_create(root_);
         lv_label_set_text(d, dots);
         lv_obj_set_style_text_color(d, Palette::ink3(), 0);
         lv_obj_align(d, LV_ALIGN_BOTTOM_MID, 0, -28);
     }
+
+    auto* hint = lv_label_create(root_);
+    lv_label_set_text(hint, "tap done | hold confirm");
+    lv_obj_set_style_text_color(hint, Palette::ink3(), 0);
+    lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -10);
 }
 
 }  // namespace howler::screens
