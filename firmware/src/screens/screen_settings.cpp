@@ -157,17 +157,32 @@ void ScreenManager::buildSettingsTheme() {
 
     const bool isDark = app_.settings().theme == domain::Theme::Dark;
 
-    // Two pills, side by side. The active one fills with ink + paper
-    // text; the inactive stays paper-toned + ink2. Tap on either
-    // commits + pops back. Initial knob focus lands on the inactive
-    // tile so a single press flips the theme.
+    // Two pills, side by side. Each pill PREVIEWS its own theme so
+    // the user can read the choice at a glance — the Light pill is
+    // always paper-toned with ink text, the Dark pill is always
+    // ink-toned with paper text, regardless of which one is the
+    // current selection. The active one is signalled by a thicker
+    // accent border (won't fight the preview colours).
+    //
+    // Inverted-colour palette inside each pill: Light's bg + text
+    // are the *light theme's* paper + ink (#F6EFDC + #1A1409 — same
+    // hex tokens used by the screen palette), Dark's are the *dark
+    // theme's* (#1A1409 + #F6EFDC). These are baked here rather
+    // than read from the active Palette because the screen needs
+    // the inactive theme's colours visible too.
     struct PillSpec {
         const char* label;
         domain::Theme value;
+        lv_color_t bg;
+        lv_color_t fg;
     };
-    static const PillSpec specs[2] = {
-        {"Light", domain::Theme::Light},
-        {"Dark",  domain::Theme::Dark},
+    const PillSpec specs[2] = {
+        {"Light", domain::Theme::Light,
+         lv_color_make(0xF6, 0xEF, 0xDC),
+         lv_color_make(0x1A, 0x14, 0x09)},
+        {"Dark",  domain::Theme::Dark,
+         lv_color_make(0x1A, 0x14, 0x09),
+         lv_color_make(0xF6, 0xEF, 0xDC)},
     };
 
     for (int i = 0; i < 2; ++i) {
@@ -178,15 +193,15 @@ void ScreenManager::buildSettingsTheme() {
         lv_obj_align(btn, LV_ALIGN_CENTER, x, 0);
         lv_obj_set_style_radius(btn, 18, 0);
         lv_obj_set_style_shadow_width(btn, 0, 0);
-        lv_obj_set_style_border_width(btn, active ? 0 : 1, 0);
-        lv_obj_set_style_border_color(btn, Palette::lineSoft(), 0);
-        lv_obj_set_style_bg_color(btn,
-            active ? Palette::ink() : Palette::paper2(), 0);
+        // Active = thick accent border, inactive = thin neutral.
+        lv_obj_set_style_border_width(btn, active ? 3 : 1, 0);
+        lv_obj_set_style_border_color(btn,
+            active ? Palette::accent() : Palette::lineSoft(), 0);
+        lv_obj_set_style_bg_color(btn, specs[i].bg, 0);
 
         auto* l = lv_label_create(btn);
         lv_label_set_text(l, specs[i].label);
-        lv_obj_set_style_text_color(l,
-            active ? Palette::paper() : Palette::ink2(), 0);
+        lv_obj_set_style_text_color(l, specs[i].fg, 0);
         lv_obj_set_style_text_font(l, &lv_font_montserrat_18, 0);
         lv_obj_center(l);
 
@@ -215,14 +230,17 @@ void ScreenManager::buildSettingsTheme() {
         }
     }
 
-    // Hint at the bottom: which is current.
+    // Hint at the bottom: short enough to fit the round display
+    // viewport without clipping. The previous "rotate | tap pick |
+    // double back" string was wider than the disc radius and got
+    // chopped (visible as "I tap pick | doubl..." in the photo).
     auto* hint = lv_label_create(root_);
     lv_label_set_text(hint, isDark ? "now: dark" : "now: light");
     lv_obj_set_style_text_color(hint, Palette::ink3(), 0);
     lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -28);
 
     auto* hint2 = lv_label_create(root_);
-    lv_label_set_text(hint2, "rotate | tap pick | double back");
+    lv_label_set_text(hint2, "tap pick | double back");
     lv_obj_set_style_text_color(hint2, Palette::ink3(), 0);
     lv_obj_align(hint2, LV_ALIGN_BOTTOM_MID, 0, -10);
 }
