@@ -173,6 +173,15 @@ public:
     void setItemCount(size_t n) {
         itemCount_ = n;
         if (cursor_ >= n) cursor_ = n ? n - 1 : 0;
+        // A live update (e.g. after a sync round shrunk the items
+        // list) should redraw the drum immediately — without this,
+        // a caller that updates the count without then changing the
+        // cursor would render with stale slots until the next swipe
+        // or screen rebuild. Rebuild bails when render_ isn't set
+        // yet, so the build-time call sequence (setItemCount →
+        // setCursor → setRender) stays correct: only the final
+        // setRender actually paints.
+        rebuild();
     }
 
     void setCursor(size_t c) {
