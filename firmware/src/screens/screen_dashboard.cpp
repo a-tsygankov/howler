@@ -60,21 +60,15 @@ void ScreenManager::buildDashboard() {
     //    update loop can fade it in/out without a rebuild. ──
     longPressArcWidget_.build(root_, Palette::accent());
 
-    // ── tab strip: today / all (touch-tap to switch) ─────────────
+    // ── tab strip: today / all / menu (visual only) ─────────────
+    // Knob rotation OR horizontal swipe at root cycles between
+    // these. The pills aren't tappable — too small to hit reliably
+    // on the round display.
     {
         components::TabStripEntry entries[] = {
-            {"today", reinterpret_cast<const void*>(static_cast<intptr_t>(domain::ScreenId::Dashboard))},
-            {"all",   reinterpret_cast<const void*>(static_cast<intptr_t>(domain::ScreenId::TaskList))},
+            {"today"}, {"all"}, {"menu"},
         };
-        components::buildTabStrip(root_, entries, 2, /*activeIndex=*/0,
-            [](lv_event_t* e) {
-                if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
-                auto* mgr = static_cast<ScreenManager*>(lv_event_get_user_data(e));
-                auto* btn = lv_event_get_target_obj(e);
-                const auto target = static_cast<domain::ScreenId>(
-                    reinterpret_cast<intptr_t>(lv_obj_get_user_data(btn)));
-                mgr->app().router().replaceRoot(target);
-            }, this);
+        components::buildTabStrip(root_, entries, 3, /*activeIndex=*/0);
     }
 
     // ── empty state ────────────────────────────────────────────

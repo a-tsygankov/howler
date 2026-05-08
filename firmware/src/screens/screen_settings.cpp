@@ -34,26 +34,31 @@ void ScreenManager::buildSettings() {
     root_ = buildRoundBackground();
     longPressArcWidget_.build(root_, Palette::accent());
 
-    // Header chip.
+    // Tab strip — Settings is the third main pill. Knob and
+    // horizontal swipe at root cycle between Today / All / Menu.
     {
-        auto* h = lv_label_create(root_);
-        lv_label_set_text(h, "settings");
-        lv_obj_set_style_text_color(h, Palette::ink2(), 0);
-        lv_obj_align(h, LV_ALIGN_TOP_MID, 0, 12);
+        components::TabStripEntry entries[] = {
+            {"today"}, {"all"}, {"menu"},
+        };
+        components::buildTabStrip(root_, entries, 3, /*activeIndex=*/2);
     }
 
-    // Footer hint.
+    // Footer hint reminds users that vertical swipe / tap drives
+    // the carousel below — knob rotation cycles main pills here.
     {
         auto* h = lv_label_create(root_);
-        lv_label_set_text(h, "tap pick · double back");
+        lv_label_set_text(h, "swipe up/down · tap pick");
         lv_obj_set_style_text_color(h, Palette::ink3(), 0);
         lv_obj_align(h, LV_ALIGN_BOTTOM_MID, 0, -10);
     }
 
+    // 'Switch view' dropped — main-screen switching is now a
+    // first-class swipe gesture, no menu detour needed.
+    const bool isDark = app_.settings().theme == domain::Theme::Dark;
     menuModel_.replace({
-        mk("all-tasks", "All tasks",   "browse + mark done"),
-        mk("switch",    "Switch view", "toggle today / all"),
         mk("sync",      "Sync now",    "fetch latest"),
+        mk("theme",     "Theme",       isDark ? "dark · tap to flip"
+                                              : "light · tap to flip"),
         mk("wifi",      "Wi-Fi",       "scan + connect"),
         mk("login-qr",  "Login by QR", "phone link"),
         mk("brightness","Brightness",  "screen level"),
@@ -66,32 +71,28 @@ void ScreenManager::buildSettings() {
     menu_.setOnActivate([this](const domain::RoundMenuItem& it) {
         auto& app = this->app();
         const auto& id = it.id;
-        if      (id == "all-tasks")  app.router().push(domain::ScreenId::TaskList);
-        else if (id == "switch") {
-            // Toggle the root between Dashboard and TaskList. Pop
-            // back so the user lands on the new main screen rather
-            // than buried under Settings; the carousel cursor in
-            // either main screen survives because their models are
-            // populated from the same sync payload.
-            const auto next = (this->isOnTaskListRoot())
-                ? domain::ScreenId::Dashboard
-                : domain::ScreenId::TaskList;
-            app.router().replaceRoot(next);
-        }
-        else if (id == "sync") {
-            // Force a sync round on the next tick. The "syncing..."
-            // toast is set by ScreenManager so the user gets visible
-            // feedback even when the actual fetch is fast.
+        if (id == "sync") {
+            // Force a sync round on the next tick. The toast gives
+            // visible feedback even when the network round-trip is
+            // fast.
             app.sync().requestSync();
             this->showToast("syncing...", 1500);
+        }
+        else if (id == "theme") {
+            // Flip between light and dark; persists to NVS. Force
+            // a rebuild on the next tick — replaceRoot(same id) is
+            // a no-op for the screen manager, so we use the explicit
+            // requestRebuild path so the new palette renders.
+            app.toggleTheme();
+            this->requestRebuild();
         }
         else if (id == "wifi")       app.router().push(domain::ScreenId::Wifi);
         else if (id == "login-qr")   app.router().push(domain::ScreenId::LoginQr);
         else if (id == "brightness") app.router().push(domain::ScreenId::SettingsBrightness);
         else if (id == "about")      app.router().push(domain::ScreenId::SettingsAbout);
         // 'unpair' is destructive — must be reached via long-press,
-        // handled in ScreenManager::onEvent below. A bare tap is a
-        // no-op so users can rotate past it without firing.
+        // handled in ScreenManager::onEvent. A bare tap is a no-op
+        // so users can rotate past it without firing.
     });
     menuActive_ = true;
 }

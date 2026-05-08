@@ -54,6 +54,13 @@ public:
     /// Lives outside the screen tree so it survives screen rebuilds.
     void showToast(const char* text, uint32_t durationMs = 1500);
 
+    /// Force a screen rebuild on the next tick even when the active
+    /// router id hasn't changed. Used by handlers that change visual
+    /// state without navigating — e.g. the Theme toggle in Settings,
+    /// which flips the palette and needs the current screen to
+    /// re-render with the new colours.
+    void requestRebuild() { rebuildPending_ = true; }
+
     /// Helper for screens that show a tab strip — returns the index
     /// of the current main screen in `kMainScreens`, or kMainScreens
     /// length if the current screen isn't a main one.
@@ -92,6 +99,10 @@ private:
     lv_obj_t* toastLabel_ = nullptr;
     uint32_t  toastUntilMs_ = 0;
 
+    /// Set by handlers that mutate visual state without changing the
+    /// router. Read + cleared in tick().
+    bool rebuildPending_ = false;
+
     /// Round-menu state. Each screen that opts into the watch-style
     /// carousel layout (Settings, UserPicker, Wi-Fi) populates the
     /// model with items + an activate callback during build*; the
@@ -126,21 +137,22 @@ private:
     void buildLoginQr();
     void buildOfflineNotice();
 
-    // Per-screen event dispatch. `vertSwipe` is +1 for SwipeUp (next
-    // main screen / scroll forward) and -1 for SwipeDown (previous
-    // main screen / scroll back). At root level it cycles through
-    // mainScreenAt() entries; inside menu screens it nudges the
-    // cursor like a knob detent so touch-only users have parity
-    // with the rotary.
+    /// Per-screen event dispatch. `vertSwipe` and `horzSwipe` are
+    /// +1/-1 for the corresponding direction (or 0 if not present).
+    /// At root, knob rotation AND horizontal swipe cycle the main
+    /// pills; vertical swipe scrolls the current screen's content
+    /// cursor. Off-root, knob rotation cycles the menu cursor and
+    /// taps activate.
     void onEvent(int rotateDelta, bool tap, bool doubleTap, bool longPress,
-                 int vertSwipe);
+                 int vertSwipe, int horzSwipe);
 
-    /// The list of "main" screens the user can swipe between at
-    /// root level. Order = the swipe-up cycle direction. Pair is
-    /// excluded; it's a setup screen, not a main one.
+    /// The list of "main" screens the user can swipe between at root
+    /// level. Order = the swipe-left / knob-CW cycle direction.
+    /// Pair is excluded — it's a setup screen, not a main one.
     static constexpr domain::ScreenId kMainScreens[] = {
         domain::ScreenId::Dashboard,
         domain::ScreenId::TaskList,
+        domain::ScreenId::Settings,
     };
 };
 

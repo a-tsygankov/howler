@@ -38,17 +38,16 @@ public:
     static constexpr uint32_t kLongTouchMs   = 1200;
     static constexpr uint32_t kDoubleTapMs   = 300;
     static constexpr uint32_t kPollIntervalMs = 20;  // ~50 Hz
-    /// Minimum vertical travel (pixels, native 240×240 frame) before
-    /// a touch release classifies as SwipeUp/Down rather than Tap.
-    /// 36 px ≈ 15% of screen height — below typical accidental drift,
-    /// above what a deliberate vertical flick produces. Empirically
-    /// verified on the CrowPanel touch matrix.
-    static constexpr int      kSwipeMinDy    = 36;
-    /// Max horizontal-to-vertical ratio that still counts as vertical.
-    /// Above this the swipe is "too diagonal" and we ignore it so
-    /// the user's intent stays unambiguous; horizontal swipes are not
-    /// currently mapped to anything.
-    static constexpr int      kSwipeMaxDxOverDy = 1;
+    /// Minimum on-axis travel (pixels, native 240×240 frame) before a
+    /// touch release classifies as a swipe rather than a tap. 36 px
+    /// ≈ 15% of screen extent — below typical accidental drift, above
+    /// what a deliberate flick produces. Same threshold for vertical
+    /// and horizontal so the gesture envelope feels symmetric.
+    static constexpr int      kSwipeMinDelta = 36;
+    /// Off-axis tolerance ratio: an "off-axis ≤ on-axis" rule keeps
+    /// swipes from getting flagged as both vertical and horizontal
+    /// when the user's flick is diagonal.
+    static constexpr int      kSwipeMaxOffOverOn = 1;
 
     void begin();
 

@@ -93,7 +93,8 @@ void ScreenManager::tick(uint32_t millisNow) {
         toastUntilMs_ = 0;
     }
 
-    if (app_.router().current() != rendered_) {
+    if (app_.router().current() != rendered_ || rebuildPending_) {
+        rebuildPending_ = false;
         rebuildScreen();
     }
     lv_timer_handler();
@@ -132,6 +133,7 @@ void ScreenManager::showToast(const char* text, uint32_t durationMs) {
 void ScreenManager::pollAndDispatch(uint32_t /*millisNow*/) {
     int delta = 0;
     int vert = 0;
+    int horz = 0;
     bool tap = false;
     bool doubleTap = false;
     bool longPress = false;
@@ -139,18 +141,21 @@ void ScreenManager::pollAndDispatch(uint32_t /*millisNow*/) {
     while (true) {
         const auto e = input_.poll();
         if (e == IInputDevice::Event::None) break;
-        if      (e == IInputDevice::Event::RotateCW)  ++delta;
-        else if (e == IInputDevice::Event::RotateCCW) --delta;
-        else if (e == IInputDevice::Event::Press)     tap = true;
-        else if (e == IInputDevice::Event::DoubleTap) doubleTap = true;
-        else if (e == IInputDevice::Event::LongPress) longPress = true;
-        else if (e == IInputDevice::Event::SwipeUp)   ++vert;
-        else if (e == IInputDevice::Event::SwipeDown) --vert;
+        if      (e == IInputDevice::Event::RotateCW)   ++delta;
+        else if (e == IInputDevice::Event::RotateCCW)  --delta;
+        else if (e == IInputDevice::Event::Press)      tap = true;
+        else if (e == IInputDevice::Event::DoubleTap)  doubleTap = true;
+        else if (e == IInputDevice::Event::LongPress)  longPress = true;
+        else if (e == IInputDevice::Event::SwipeUp)    ++vert;
+        else if (e == IInputDevice::Event::SwipeDown)  --vert;
+        else if (e == IInputDevice::Event::SwipeLeft)  ++horz;
+        else if (e == IInputDevice::Event::SwipeRight) --horz;
     }
-    if (delta == 0 && vert == 0 && !tap && !doubleTap && !longPress) return;
+    if (delta == 0 && vert == 0 && horz == 0 &&
+        !tap && !doubleTap && !longPress) return;
     g_enc.pendingDelta += delta;
     if (tap || longPress) g_enc.pendingPress = true;
-    onEvent(delta, tap, doubleTap, longPress, vert);
+    onEvent(delta, tap, doubleTap, longPress, vert, horz);
     if (tap || longPress) g_enc.pendingPress = false;
 }
 
@@ -169,6 +174,13 @@ void ScreenManager::teardownScreen() {
 
 void ScreenManager::rebuildScreen() {
     teardownScreen();
+    // Sync the static palette flag to the active theme before any
+    // screen builder pulls colors. The builders call Palette::* per
+    // widget; once cached on a child object the colour sticks until
+    // the next rebuild, which is exactly what we want — toggling
+    // theme triggers a rebuild via the same path.
+    components::Palette::setDark(
+        app_.settings().theme == domain::Theme::Dark);
     rendered_ = app_.router().current();
     using domain::ScreenId;
     switch (rendered_) {
@@ -190,43 +202,44 @@ void ScreenManager::rebuildScreen() {
 }
 
 void ScreenManager::onEvent(int rotateDelta, bool tap, bool doubleTap,
-                            bool longPress, int vertSwipe) {
+                            bool longPress, int vertSwipe, int horzSwipe) {
     using domain::ScreenId;
     auto& app = app_;
     auto& router = app.router();
 
-    // ── Vertical swipe at any root → cycle main screens ────────
-    // SwipeUp moves forward in kMainScreens (Dashboard → TaskList),
-    // SwipeDown moves backward. Setting screens (Settings root etc.)
-    // are reachable by DoubleTap, not by vertical swipe — we don't
-    // want a misfired flick to drop the user into a config screen.
-    if (vertSwipe != 0 && router.atRoot()) {
-        const ScreenId cur = rendered_;
-        const auto N = sizeof(kMainScreens) / sizeof(kMainScreens[0]);
-        // Only swap if the current root is one of the main screens.
-        // (The Pair root, for instance, doesn't participate.)
-        size_t idx = N;  // sentinel "not found"
-        for (size_t i = 0; i < N; ++i) if (kMainScreens[i] == cur) idx = i;
+    // ── Pill switching: horizontal swipe ONLY ──────────────────
+    // The rotary stays focused on the active screen's content (knob
+    // == cursor / value editor / menu cursor depending on screen).
+    // Pills are not in the rotary's lane; they're touch-only via
+    // a deliberate horizontal flick. SwipeLeft = next pill (mobile
+    // carousel convention: finger sweeps the new screen in from
+    // the right edge), SwipeRight = previous.
+    if (horzSwipe != 0 && router.atRoot()) {
+        constexpr auto N = sizeof(kMainScreens) / sizeof(kMainScreens[0]);
+        size_t idx = N;
+        for (size_t i = 0; i < N; ++i) if (kMainScreens[i] == rendered_) idx = i;
         if (idx < N) {
-            const long step = (vertSwipe > 0) ? 1 : -1;
-            const long next = ((static_cast<long>(idx) + step) % static_cast<long>(N)
+            const long s = (horzSwipe > 0) ? 1 : -1;
+            const long next = ((static_cast<long>(idx) + s)
+                              % static_cast<long>(N)
                               + static_cast<long>(N)) % static_cast<long>(N);
             router.replaceRoot(kMainScreens[next]);
             return;
         }
     }
 
-    // ── Vertical swipe inside a round-menu screen → cursor nudge ──
-    // Acts as a touch-only equivalent of rotation so users can
-    // browse without spinning the knob. SwipeUp moves toward the
-    // next item (the one rendered below the centre), SwipeDown
-    // toward the previous (above the centre).
-    if (vertSwipe != 0 && menuActive_ && !router.atRoot()) {
-        // SwipeUp = next item = +1 cursor delta. The natural mapping
-        // (eyes look down, item below moves up to centre) feels
-        // right under thumb on a round display.
-        menu_.onRotate(vertSwipe);
-        return;
+    // ── Round-menu screens: rotation + vertical swipe nudge cursor;
+    //    tap fires the activate callback. Works at both root
+    //    (Settings) and non-root (Wi-Fi, UserPicker, etc.) — knob
+    //    always drives the on-screen content. The tap dispatch
+    //    here replaces the LVGL-focus-group path the lv_list
+    //    versions of these screens used to ride; the RoundMenu
+    //    centre container isn't in the encoder group, so we
+    //    forward the press event explicitly.
+    if (menuActive_) {
+        if (rotateDelta != 0) menu_.onRotate(rotateDelta);
+        if (vertSwipe   != 0) menu_.onRotate(vertSwipe);
+        if (tap)              menu_.fireActivate();
     }
 
     // ── Universal: DoubleTap = back / cancel ────────────────────
@@ -261,7 +274,11 @@ void ScreenManager::onEvent(int rotateDelta, bool tap, bool doubleTap,
 
     switch (rendered_) {
         case ScreenId::Dashboard: {
+            // Knob rotation AND vertical swipe both move the dashboard
+            // cursor — knob is the primary, swipe is touch parity.
+            // Pills switch only via horizontal swipe (above).
             if (rotateDelta != 0) app.dashboard().moveCursor(rotateDelta);
+            if (vertSwipe   != 0) app.dashboard().moveCursor(vertSwipe);
             const auto* sel = app.dashboard().selected();
             if (!sel) break;
             if (tap) {

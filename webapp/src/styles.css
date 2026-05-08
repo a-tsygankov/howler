@@ -8,6 +8,9 @@
   :root {
     color-scheme: light;
   }
+  :root.dark {
+    color-scheme: dark;
+  }
   html, body {
     margin: 0;
     padding: 0;
@@ -19,6 +22,29 @@
        able to scroll the document horizontally. */
     overflow-x: hidden;
   }
+
+  /* Dark-mode token overrides. We don't use Tailwind's per-class
+     `dark:` variants because that'd require re-touching every
+     component; instead we flip the underlying token colors when
+     `.dark` is on documentElement. CSS specificity from `.dark`
+     beats the base `bg-paper` rule. */
+  :root.dark body {
+    background-color: #1A1409;
+    color: #F6EFDC;
+  }
+  :root.dark .bg-paper        { background-color: #1A1409; }
+  :root.dark .bg-paper-2      { background-color: #2E2618; }
+  :root.dark .bg-paper-3      { background-color: #443927; }
+  :root.dark .text-ink        { color: #F6EFDC; }
+  :root.dark .text-ink-2      { color: #C4B89A; }
+  :root.dark .text-ink-3      { color: #8E826A; }
+  :root.dark .text-ink-mute   { color: #6E6557; }
+  :root.dark .border-line     { border-color: #554933; }
+  :root.dark .border-line-soft{ border-color: #443927; }
+  /* Keep `bg-ink` (used for filled buttons/active pills) visible in
+     dark — it's now a near-paper color. */
+  :root.dark .bg-ink          { background-color: #F6EFDC; color: #1A1409; }
+  :root.dark .text-paper      { color: #1A1409; }
 }
 
 @layer components {

@@ -100,6 +100,18 @@ bool App::saveAndConnectWifi(const howler::domain::WifiConfig& cfg) {
     return wifi_.connect(cfg);
 }
 
+void App::toggleTheme() {
+    setTheme(settings_.theme == howler::domain::Theme::Dark
+             ? howler::domain::Theme::Light
+             : howler::domain::Theme::Dark);
+}
+
+void App::setTheme(howler::domain::Theme t) {
+    if (settings_.theme == t) return;
+    settings_.theme = t;
+    persistSettings();
+}
+
 void App::commitPendingDone() {
     const auto& p = pendingDone_;
     if (p.taskId.empty()) return;
@@ -156,7 +168,8 @@ void App::restoreSettings() {
     if (!storage_.readBlob(kSettingsKey, bytes) || bytes.empty()) return;
     size_t off = 0;
     uint8_t version = 0;
-    if (!readU8(bytes, off, version) || version != 1) return;
+    if (!readU8(bytes, off, version)) return;
+    if (version < 1 || version > 2) return;
     uint8_t brightness = 0;
     uint16_t syncSec = 0;
     std::string tz, name;
@@ -168,15 +181,27 @@ void App::restoreSettings() {
     settings_.foregroundSyncSec = syncSec ? syncSec : 30;
     settings_.homeTz = tz;
     settings_.deviceName = name;
+    // Theme byte landed in v2 — older NVS rows skip it and stay on
+    // the Light default. The version() guard above accepts both so
+    // we don't trip a "settings unreadable" error post-upgrade.
+    if (version >= 2) {
+        uint8_t themeByte = 0;
+        if (readU8(bytes, off, themeByte)) {
+            settings_.theme = (themeByte == 1)
+                ? howler::domain::Theme::Dark
+                : howler::domain::Theme::Light;
+        }
+    }
 }
 
 void App::persistSettings() {
     std::string bytes;
-    putU8(bytes, 1);
+    putU8(bytes, 2);  // version 2: appended theme byte
     putU8(bytes, settings_.brightness);
     putU16(bytes, settings_.foregroundSyncSec);
     putStr(bytes, settings_.homeTz);
     putStr(bytes, settings_.deviceName);
+    putU8(bytes, settings_.theme == howler::domain::Theme::Dark ? 1 : 0);
     storage_.writeBlob(kSettingsKey, bytes);
 }
 

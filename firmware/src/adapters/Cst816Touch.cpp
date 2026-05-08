@@ -108,26 +108,35 @@ application::IInputDevice::Event Cst816Touch::poll() {
         }
     } else if (!touching && wasTouching_) {
         wasTouching_ = false;
-        // Classify: Swipe (vertical travel exceeds threshold), or
-        // tap-class (existing logic). Swipe wins over LongPress only
-        // if LongPress hasn't fired yet — the lift after a confirmed
-        // long-press is silent regardless of finger travel.
-        const int dy = lastTouchY_ - touchStartY_;
-        const int dx = lastTouchX_ - touchStartX_;
+        // Classify: vertical swipe → horizontal swipe → tap-class.
+        // Swipe loses to a confirmed LongPress (the user already got
+        // their event mid-hold), wins over Tap when on-axis travel
+        // exceeds the threshold AND off-axis stays smaller.
+        const int dy    = lastTouchY_ - touchStartY_;
+        const int dx    = lastTouchX_ - touchStartX_;
         const int absDy = dy < 0 ? -dy : dy;
         const int absDx = dx < 0 ? -dx : dx;
-        const bool isVerticalSwipe =
-            !longTouchFired_ &&
-            touchStartY_ >= 0 &&
-            absDy >= kSwipeMinDy &&
-            absDx <= absDy * kSwipeMaxDxOverDy;
+        const bool started =
+            !longTouchFired_ && touchStartY_ >= 0 && touchStartX_ >= 0;
+        const bool vertical =
+            started && absDy >= kSwipeMinDelta &&
+            absDx <= absDy * kSwipeMaxOffOverOn;
+        const bool horizontal =
+            started && absDx >= kSwipeMinDelta &&
+            absDy <= absDx * kSwipeMaxOffOverOn;
+
         if (longTouchFired_) {
             // already fired LongPress mid-hold; release is a no-op
-        } else if (isVerticalSwipe) {
-            // Touch coords on this panel: Y grows DOWNWARD, so a
-            // finger that moved toward the top of the screen has
-            // touchStartY_ > lastTouchY_  → dy < 0  → SwipeUp.
+        } else if (vertical) {
+            // Touch coords: Y grows DOWNWARD, so a finger that moved
+            // toward the top of the screen has dy < 0 → SwipeUp.
             enqueue(dy < 0 ? Event::SwipeUp : Event::SwipeDown);
+            pendingTap_ = false;
+        } else if (horizontal) {
+            // X grows LEFT-TO-RIGHT. A finger that moved right has
+            // dx > 0 → SwipeRight (back / previous in mobile carousel
+            // convention); leftward → SwipeLeft (forward / next).
+            enqueue(dx < 0 ? Event::SwipeLeft : Event::SwipeRight);
             pendingTap_ = false;
         } else if (pendingTap_ && (now - lastTapEndMs_) < kDoubleTapMs) {
             enqueue(Event::DoubleTap);
