@@ -20,6 +20,7 @@
 // All builders are pure — no state, no event callbacks. The owning
 // screen routes taps via ScreenManager's centralised dispatch.
 
+#include "MarqueeLabel.h"
 #include "RoundCard.h"
 #include "../../domain/DashboardItem.h"
 
@@ -345,24 +346,29 @@ inline lv_obj_t* buildStatusAvatar(lv_obj_t* parent,
     return wrap;
 }
 
-// ─── Detail card — 58 px horizontal banner ───────────────────────
+// ─── Detail card — compact 38 px banner (dev-24 redesign) ────────
 //
-// Built INTO the parent slot via LV_ALIGN_CENTER (the slot is sized
-// by DrumScroller; we just fill it). Layout, left → right:
-//   • 42 px status-arc avatar (urgency-coloured ring + icon disc)
-//   • title (display-style font, 1 line, ellipsis on overflow)
-//     stacked above a status row (6 px tone dot + mono caption like
-//     "LATE  4H")
-//   • 24 px black check button (LV_SYMBOL_OK in paper colour)
+// Built INTO the parent slot via LV_ALIGN_CENTER. The "selected"
+// state is communicated by the title rendering through MarqueeLabel
+// (the centre task's name scrolls when it overflows; mini neighbours
+// truncate with "..."). The card itself is now only ~14 px taller
+// than a mini row, removing the visual "this is a different kind of
+// thing" jolt that the old 58 px version had.
+//
+// Layout, left → right:
+//   • 28 px status-arc avatar (urgency-coloured ring + icon disc)
+//   • marquee title — single-line, scrolls horizontally if longer
+//     than the available viewport
+//   • status row below the title — 6 px tone dot + mono caption
+//
+// The check button is gone in dev-24; activate is dispatched via
+// the drum's centre-slot CLICKED handler / ScreenManager fireActivate
+// rather than a discrete button. Removing it freed ~30 px of
+// horizontal real estate the marquee now uses for the title.
 //
 // The card border is 1 px in the urgency tone for tier ≥ 1, soft
 // line otherwise, so even from across the room you can see whether
 // "this thing is urgent". Background = paper2.
-//
-// Title + status are aligned directly on the card via LV_ALIGN_LEFT_MID
-// with computed offsets — the previous "intermediate block container"
-// approach hit a layout-not-yet-computed race where title width came
-// out as 0 and the labels rendered as empty.
 inline lv_obj_t* buildDetailedTaskCard(
     lv_obj_t* parent,
     const domain::DashboardItem& item,
@@ -371,24 +377,20 @@ inline lv_obj_t* buildDetailedTaskCard(
     const int tier = designUrgencyTier(item);
     const lv_color_t tone = urgencyTone(tier);
 
-    // Card width tracks parent slot width with a 4 px breathing
-    // margin. Force a layout flush so the parent's width is computed
-    // before we read it (otherwise the very first build sees 0 and
-    // every child collapses to a hairline).
     lv_obj_update_layout(parent);
     const int parentW = lv_obj_get_width(parent);
     const int cardW   = (parentW > 4 ? parentW - 4 : 200);
-    constexpr int kCardH    = 58;
-    constexpr int kAvatarSz = 42;
-    constexpr int kCheckSz  = 24;
-    constexpr int kPadL     = 8;     // card inner pad each side
-    constexpr int kGap      = 8;     // avatar→title and title→check
+    constexpr int kCardH    = 38;    // dev-24: shrunk 58→38
+    constexpr int kAvatarSz = 28;    // dev-24: shrunk 42→28
+    constexpr int kPadL     = 6;
+    constexpr int kPadR     = 8;
+    constexpr int kGap      = 8;
 
     auto* card = lv_obj_create(parent);
     lv_obj_set_size(card, cardW, kCardH);
     lv_obj_align(card, LV_ALIGN_CENTER, 0, 0);
     lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_style_radius(card, 16, 0);
+    lv_obj_set_style_radius(card, 14, 0);
     lv_obj_set_style_bg_color(card, Palette::paper2(), 0);
     lv_obj_set_style_border_color(card,
         tier >= 1 ? tone : Palette::lineSoft(), 0);
@@ -401,44 +403,37 @@ inline lv_obj_t* buildDetailedTaskCard(
                                      iconLookup);
     lv_obj_align(avatar, LV_ALIGN_LEFT_MID, kPadL, 0);
 
-    // Check button — right edge.
-    auto* check = lv_obj_create(card);
-    lv_obj_set_size(check, kCheckSz, kCheckSz);
-    lv_obj_align(check, LV_ALIGN_RIGHT_MID, -kPadL, 0);
-    lv_obj_clear_flag(check, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_clear_flag(check, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_set_style_radius(check, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(check, Palette::ink(), 0);
-    lv_obj_set_style_border_width(check, 0, 0);
-    lv_obj_set_style_pad_all(check, 0, 0);
-    auto* checkGlyph = lv_label_create(check);
-    lv_label_set_text(checkGlyph, LV_SYMBOL_OK);
-    lv_obj_set_style_text_color(checkGlyph, Palette::paper(), 0);
-    lv_obj_set_style_text_font(checkGlyph, &lv_font_montserrat_14, 0);
-    lv_obj_center(checkGlyph);
-
-    // Title + status row positioned directly on the card. Title block
-    // x-origin = padL + avatar + gap; available width = card -
-    // (padL + avatar + gap + check + gap + padL).
+    // Title block: marquee for the title (single-line, scrolls when
+    // longer than the viewport), then a status row below it. The
+    // marquee's viewport is centred by default; we override its
+    // alignment after build() to anchor at the left edge of the
+    // title block.
     const int blockX = kPadL + kAvatarSz + kGap;
-    const int blockW = cardW - blockX - kCheckSz - kGap - kPadL;
+    const int blockW = cardW - blockX - kPadR;
     const int titleW = blockW > 40 ? blockW : 40;
+    const lv_font_t* titleFont = &lv_font_montserrat_14;
 
-    auto* title = lv_label_create(card);
-    lv_label_set_long_mode(title, LV_LABEL_LONG_DOT);
-    lv_obj_set_width(title, titleW);
-    lv_label_set_text(title, item.title.empty()
-                              ? "(untitled)" : item.title.c_str());
-    lv_obj_set_style_text_color(title, Palette::ink(), 0);
-    lv_obj_set_style_text_font(title, &lv_font_montserrat_18, 0);
-    // y = -10 puts the title's baseline ~10 px above the card centre,
-    // leaving room for the status row to sit at y ≈ +12.
-    lv_obj_align(title, LV_ALIGN_LEFT_MID, blockX, -10);
+    {
+        MarqueeLabel marquee;
+        marquee.setSegments({
+            {item.title.empty() ? std::string{"(untitled)"} : item.title,
+             Palette::ink()},
+        });
+        marquee.build(card, titleW, /*yOffset=*/0, /*xOffset=*/0,
+                      titleFont);
+        // Re-anchor the marquee's viewport at the left-of-title
+        // position; the marquee defaults to LV_ALIGN_CENTER which
+        // would place it in the middle of the card.
+        if (marquee.viewport()) {
+            lv_obj_align(marquee.viewport(),
+                         LV_ALIGN_LEFT_MID, blockX, -7);
+        }
+    }
 
     // Status row — 6 px tone dot at blockX, mono caption right of it.
     auto* dot = lv_obj_create(card);
-    lv_obj_set_size(dot, 6, 6);
-    lv_obj_align(dot, LV_ALIGN_LEFT_MID, blockX, 12);
+    lv_obj_set_size(dot, 5, 5);
+    lv_obj_align(dot, LV_ALIGN_LEFT_MID, blockX, 9);
     lv_obj_clear_flag(dot, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_clear_flag(dot, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_style_radius(dot, 3, 0);
@@ -446,19 +441,25 @@ inline lv_obj_t* buildDetailedTaskCard(
     lv_obj_set_style_border_width(dot, 0, 0);
     lv_obj_set_style_pad_all(dot, 0, 0);
 
+    // Caption: dedupe MISSED. tier 3's urgencyCaption is "MISSED";
+    // taskDueChip also returns "MISSED" when isMissed is true →
+    // naive concat printed "MISSED  MISSED" in the dev-23 build.
+    // Now we drop the duplicate when the two strings match.
     auto* caption = lv_label_create(card);
-    char buf[32];
-    const char* due = taskDueChip(item.dueAt, serverNowSec, item.isMissed);
-    if (due[0] != 0) {
-        snprintf(buf, sizeof(buf), "%s  %s",
-                 urgencyCaption(tier), due);
+    char buf[40];
+    const char* head = urgencyCaption(tier);
+    const char* due  = taskDueChip(item.dueAt, serverNowSec,
+                                    item.isMissed);
+    const bool sameAsDue = (due[0] != 0) && (strcmp(head, due) == 0);
+    if (due[0] != 0 && !sameAsDue) {
+        snprintf(buf, sizeof(buf), "%s  %s", head, due);
     } else {
-        snprintf(buf, sizeof(buf), "%s", urgencyCaption(tier));
+        snprintf(buf, sizeof(buf), "%s", head);
     }
     lv_label_set_text(caption, buf);
     lv_obj_set_style_text_color(caption, tone, 0);
-    lv_obj_set_style_text_font(caption, &lv_font_montserrat_14, 0);
-    lv_obj_align(caption, LV_ALIGN_LEFT_MID, blockX + 10, 12);
+    lv_obj_set_style_text_font(caption, &lv_font_montserrat_10, 0);
+    lv_obj_align(caption, LV_ALIGN_LEFT_MID, blockX + 9, 9);
 
     return card;
 }
