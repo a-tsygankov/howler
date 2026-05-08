@@ -49,7 +49,7 @@ void ScreenManager::buildTaskList() {
         lv_obj_set_style_text_color(l, Palette::ink2(), 0);
         lv_obj_center(l);
         auto* hint = lv_label_create(root_);
-        lv_label_set_text(hint, "double back");
+        lv_label_set_text(hint, "2x back");
         lv_obj_set_style_text_color(hint, Palette::ink3(), 0);
         lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -10);
         return;
@@ -133,7 +133,7 @@ void ScreenManager::buildTaskDetail() {
     // screen exists only to satisfy the ScreenId enum.
     root_ = buildRoundBackground();
     auto* l = lv_label_create(root_);
-    lv_label_set_text(l, "task detail\n(double back)");
+    lv_label_set_text(l, "task detail\n(2x back)");
     lv_obj_set_style_text_color(l, Palette::ink2(), 0);
     lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_center(l);

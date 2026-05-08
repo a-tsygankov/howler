@@ -133,7 +133,7 @@ void ScreenManager::buildSettingsBrightness() {
     lv_obj_center(val);
 
     auto* hint = lv_label_create(root_);
-    lv_label_set_text(hint, "rotate | double back");
+    lv_label_set_text(hint, "rotate | 2x back");
     lv_obj_set_style_text_color(hint, Palette::ink3(), 0);
     lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -12);
 
@@ -232,7 +232,7 @@ void ScreenManager::buildSettingsTheme() {
 
     // Hint at the bottom: short enough to fit the round display
     // viewport without clipping. The previous "rotate | tap pick |
-    // double back" string was wider than the disc radius and got
+    // 2x back" string was wider than the disc radius and got
     // chopped (visible as "I tap pick | doubl..." in the photo).
     auto* hint = lv_label_create(root_);
     lv_label_set_text(hint, isDark ? "now: dark" : "now: light");
@@ -240,7 +240,7 @@ void ScreenManager::buildSettingsTheme() {
     lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -28);
 
     auto* hint2 = lv_label_create(root_);
-    lv_label_set_text(hint2, "tap pick | double back");
+    lv_label_set_text(hint2, "tap pick | 2x back");
     lv_obj_set_style_text_color(hint2, Palette::ink3(), 0);
     lv_obj_align(hint2, LV_ALIGN_BOTTOM_MID, 0, -10);
 }
@@ -273,7 +273,7 @@ void ScreenManager::buildSettingsAbout() {
     lv_obj_center(l);
 
     auto* hint = lv_label_create(root_);
-    lv_label_set_text(hint, "double back");
+    lv_label_set_text(hint, "2x back");
     lv_obj_set_style_text_color(hint, Palette::ink3(), 0);
     lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -12);
 }
