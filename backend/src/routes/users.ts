@@ -12,10 +12,14 @@ const CreateUser = z.object({
 });
 
 const Hex32 = z.string().regex(/^[0-9a-f]{32}$/);
+const HexColor = z.string().regex(/^#[0-9a-fA-F]{6}$/);
 
 const UpdateUser = z.object({
   displayName: z.string().min(1).max(40).optional(),
   avatarId: Hex32.nullable().optional(),
+  // Accent / row-background colour. `null` clears it (UI falls
+  // back to the seed-derived default); omitted leaves it alone.
+  bgColor: HexColor.nullable().optional(),
 });
 
 interface UserRow {
@@ -24,6 +28,7 @@ interface UserRow {
   display_name: string;
   login: string | null;
   avatar_id: string | null;
+  bg_color: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -34,6 +39,7 @@ const toDto = (r: UserRow) => ({
   displayName: r.display_name,
   login: r.login,
   avatarId: r.avatar_id,
+  bgColor: r.bg_color,
   createdAt: r.created_at,
   updatedAt: r.updated_at,
 });
@@ -48,7 +54,8 @@ export const usersRouter = new Hono<{
     const u = c.get("user");
     const { results } = await c.env.DB
       .prepare(
-        `SELECT id, home_id, display_name, login, avatar_id, created_at, updated_at
+        `SELECT id, home_id, display_name, login, avatar_id, bg_color,
+           created_at, updated_at
          FROM users WHERE home_id = ? AND is_deleted = 0
          ORDER BY created_at ASC`,
       )
@@ -84,6 +91,7 @@ export const usersRouter = new Hono<{
         displayName,
         login: login ?? null,
         avatarId: null,
+        bgColor: null,
         createdAt: nowSec,
         updatedAt: nowSec,
       },
@@ -111,6 +119,10 @@ export const usersRouter = new Hono<{
     if (patch.avatarId !== undefined) {
       sets.push("avatar_id = ?");
       binds.push(patch.avatarId);
+    }
+    if (patch.bgColor !== undefined) {
+      sets.push("bg_color = ?");
+      binds.push(patch.bgColor);
     }
     if (sets.length === 0) return c.body(null, 204);
     sets.push("updated_at = ?");

@@ -462,6 +462,9 @@ const UserSchema = z.object({
   displayName: z.string(),
   login: z.string().nullable(),
   avatarId: z.string().nullable(),
+  /// Per-user accent / row-background colour (#RRGGBB). null falls
+  /// back to the seed-derived default in HowlerAvatar.
+  bgColor: z.string().nullable().optional().default(null),
   createdAt: z.number().int(),
   updatedAt: z.number().int(),
 });
@@ -478,9 +481,23 @@ export const createUser = async (input: {
   login?: string;
 }): Promise<User> => UserSchema.parse(await callJson("POST", "/users", input));
 
-export const renameUser = async (id: string, displayName: string): Promise<void> => {
-  await callJson("PATCH", `/users/${id}`, { displayName });
+/// PATCH any combination of user fields. The backend ignores unset
+/// keys, so callers pass only what changed (e.g. `{displayName}`
+/// for a pure rename, or `{bgColor: "#A0BCDE"}` to recolour).
+export interface UpdateUserInput {
+  displayName?: string;
+  avatarId?: string | null;
+  bgColor?: string | null;
+}
+export const updateUser = async (id: string, patch: UpdateUserInput): Promise<void> => {
+  await callJson("PATCH", `/users/${id}`, patch);
 };
+
+/// Back-compat shim — `renameUser` is what the webapp's UserRow
+/// historically called for a name-only change. Keep the name so the
+/// existing import sites compile while we migrate the editor over.
+export const renameUser = async (id: string, displayName: string): Promise<void> =>
+  updateUser(id, { displayName });
 
 export const deleteUser = async (
   id: string,

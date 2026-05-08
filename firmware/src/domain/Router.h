@@ -21,6 +21,7 @@ enum class ScreenId : uint8_t {
     Settings,
     SettingsBrightness,
     SettingsAbout,
+    SettingsTheme,
     Wifi,
     WifiConnect,
     LoginQr,

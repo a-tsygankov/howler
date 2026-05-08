@@ -1,4 +1,5 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import {
   fetchLabels,
@@ -7,10 +8,12 @@ import {
   fetchTaskResults,
   fetchUsers,
 } from "./lib/api.ts";
+import { Btn } from "./components/Buttons.tsx";
 import { HowlerAvatar } from "./components/HowlerAvatar.tsx";
 import { Sparkline } from "./components/Sparkline.tsx";
 import { Icon } from "./components/Icon.tsx";
 import {
+  completeTask,
   isParked,
   queuedForTask,
   type QueuedExecution,
@@ -66,6 +69,12 @@ export const TaskDetail = () => {
   const result = taskResultsQ.data?.find((r) => r.id === task.resultTypeId);
   const heroTint = label?.color ?? "#6E6557";
 
+  // Inline mark-done. The dashboard's CompleteTaskSheet is the
+  // richer flow (slider + user picker); from history we go for a
+  // one-tap confirm that pre-fills sensible defaults — same code
+  // path, just less interactive surface. Notes + value remain
+  // editable inline when relevant.
+
   const executions = execsQ.data ?? [];
   const userById = new Map((usersQ.data ?? []).map((u) => [u.id, u]));
   // Local queue: events the user has marked done but haven't
@@ -84,7 +93,7 @@ export const TaskDetail = () => {
       className="paper-grain mx-auto min-h-screen max-w-md lg:max-w-2xl"
     >
       <header
-        className="px-5 pb-5 pt-6"
+        className="relative px-5 pb-5 pt-6"
         style={{
           background: `linear-gradient(180deg, ${heroTint}1f 0%, transparent 100%)`,
         }}
@@ -115,6 +124,12 @@ export const TaskDetail = () => {
               {task.isPrivate && " · private"}
             </p>
           </div>
+          <CompleteFromHistory
+            taskId={task.id}
+            taskTitle={task.title}
+            resultUnit={result?.unitName ?? null}
+            resultLabel={result?.displayName ?? null}
+          />
         </div>
         {task.description && (
           <p className="mt-3 font-serif text-base text-ink-2">
@@ -182,6 +197,101 @@ export const TaskDetail = () => {
         })}
       </section>
     </main>
+  );
+};
+
+/// One-tap mark-done from the task history view. For tasks with a
+/// result type the user gets an inline value + notes form; for those
+/// without, a plain confirm. Reuses `completeTask` so the offline
+/// queue + retry path is identical to the dashboard's flow.
+const CompleteFromHistory = ({
+  taskId,
+  taskTitle,
+  resultUnit,
+  resultLabel,
+}: {
+  taskId: string;
+  taskTitle: string;
+  resultUnit: string | null;
+  resultLabel: string | null;
+}) => {
+  const qc = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const [value, setValue] = useState("");
+  const [notes, setNotes] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const submit = async () => {
+    setBusy(true);
+    const payload: Parameters<typeof completeTask>[0] = {
+      taskId,
+      taskTitle,
+      resultUnit,
+    };
+    const v = value.trim();
+    if (v.length > 0) {
+      const n = Number(v);
+      if (!Number.isNaN(n)) payload.resultValue = n;
+    }
+    const t = notes.trim();
+    if (t) payload.notes = t;
+    await completeTask(payload);
+    setBusy(false);
+    setOpen(false);
+    setValue("");
+    setNotes("");
+    void qc.invalidateQueries({ queryKey: ["executions", taskId] });
+    void qc.invalidateQueries({ queryKey: ["dashboard"] });
+  };
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        title={`Mark "${taskTitle}" done`}
+        aria-label={`Mark "${taskTitle}" done`}
+        className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-line bg-paper text-ink-2 hover:border-ink hover:text-ink"
+      >
+        <Icon name="check" size={18} />
+      </button>
+    );
+  }
+
+  return (
+    <div className="absolute right-5 top-16 w-[260px] rounded-lg border border-line bg-paper-2 p-3 shadow-md">
+      {resultLabel && (
+        <label className="block">
+          <div className="cap mb-1">
+            {resultLabel}
+            {resultUnit ? ` (${resultUnit})` : ""}
+          </div>
+          <input
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            placeholder="value"
+            inputMode="decimal"
+            className="w-full rounded-md border border-line bg-paper px-3 py-1.5 text-sm focus:border-ink focus:outline-none"
+          />
+        </label>
+      )}
+      <label className="mt-2 block">
+        <div className="cap mb-1">Notes (optional)</div>
+        <input
+          value={notes}
+          onChange={(e) => setNotes(e.target.value)}
+          className="w-full rounded-md border border-line bg-paper px-3 py-1.5 text-sm focus:border-ink focus:outline-none"
+        />
+      </label>
+      <div className="mt-3 flex justify-end gap-1">
+        <Btn variant="ghost" size="pillSm" onClick={() => setOpen(false)} disabled={busy}>
+          Cancel
+        </Btn>
+        <Btn variant="primary" size="pillSm" onClick={submit} disabled={busy}>
+          {busy ? "…" : "Mark done"}
+        </Btn>
+      </div>
+    </div>
   );
 };
 
