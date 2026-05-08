@@ -75,6 +75,28 @@ public:
     /// time labels ("in 14 m") from this rather than the local clock.
     int64_t serverNowSec() const { return watermark_.serverNowSec; }
 
+    /// Network state classifier for the offline-indicator UX. Three
+    /// degrees of degradation, ordered by severity:
+    ///
+    ///   Fresh       — network adapter reports online AND the last
+    ///                 successful sync was within `kStaleAfterSec`.
+    ///                 No indicator on the dashboard; LED ring shows
+    ///                 the urgency-tier ambient.
+    ///   Stale       — network is online but the last successful
+    ///                 sync is older than the threshold (server may
+    ///                 be unreachable, slow, or our token expired).
+    ///                 Dashboard shows a small refresh-warn badge;
+    ///                 LED ring stays on the urgency-tier ambient
+    ///                 because the data we have is still authoritative.
+    ///   Offline     — the network adapter itself reports !isOnline
+    ///                 (Wi-Fi association lost or never connected,
+    ///                 or pairing token missing). Dashboard shows an
+    ///                 explicit offline badge; LED ring switches to
+    ///                 a dim cool-tone ambient so the user notices
+    ///                 even from across the room.
+    enum class NetworkHealth { Fresh, Stale, Offline };
+    NetworkHealth networkHealth() const;
+
     /// Toggle the active theme + persist to NVS in one step. The
     /// caller (Settings carousel handler) follows up with a screen
     /// rebuild so the new palette takes effect.

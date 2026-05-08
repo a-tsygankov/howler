@@ -73,12 +73,22 @@ namespace {
 //   any soon (NonUrgent) → amber  (warn)
 //   only hidden / empty  → off
 //
+// Offline takes precedence: when the network adapter says we're
+// disconnected, the ring shows a dim cool-tone instead of the
+// urgency colour so the user has an unmissable cue. We keep the
+// urgency colour visible during "Stale" because the data we have
+// is still the authoritative state of the home — only "Offline"
+// is an actively misleading scenario.
+//
 // 0xRR_GG_BB packed for Adafruit_NeoPixel.
 constexpr uint32_t kLedRed   = 0x00C13D1E;
 constexpr uint32_t kLedAmber = 0x00C88310;
 constexpr uint32_t kLedGreen = 0x002C774B;
+constexpr uint32_t kLedCold  = 0x00203570;  // dim cool blue — offline
 
-uint32_t pickLedAmbient(const howler::domain::DashboardModel& d) {
+uint32_t pickLedAmbient(App::NetworkHealth nh,
+                        const howler::domain::DashboardModel& d) {
+    if (nh == App::NetworkHealth::Offline) return kLedCold;
     bool hasUrgent = false;
     bool hasSoon   = false;
     for (const auto& it : d.items()) {
@@ -95,15 +105,34 @@ uint32_t pickLedAmbient(const howler::domain::DashboardModel& d) {
 
 }  // namespace
 
+App::NetworkHealth App::networkHealth() const {
+    // Constants live here (not the header) to keep them tunable
+    // without touching every translation unit that includes App.h.
+    constexpr int64_t kStaleAfterSec = 120;
+    if (!net_.isOnline()) return NetworkHealth::Offline;
+    if (watermark_.lastFullSync == 0) {
+        // We're online but haven't completed a sync yet — treat as
+        // Stale rather than Fresh so the user sees a hint that data
+        // hasn't loaded. Settles to Fresh on the first successful
+        // round (typically within 1–2 s of association).
+        return NetworkHealth::Stale;
+    }
+    const int64_t now = clock_.nowEpochSeconds();
+    const int64_t age = now - watermark_.lastFullSync;
+    if (age > kStaleAfterSec) return NetworkHealth::Stale;
+    return NetworkHealth::Fresh;
+}
+
 void App::tick(uint32_t /*millisNow*/) {
     sync_.tick();
     markDoneSvc_.tick();
     pairCoord_.tick();
 
-    // Mirror the dashboard's worst tier on the LED ring. The adapter
-    // drops needless re-renders when the colour hasn't changed so
-    // calling on every tick is cheap.
-    led_.setAmbient(pickLedAmbient(dashboard_));
+    // Mirror the dashboard's worst tier on the LED ring (overridden
+    // to a cool tone when we're offline). The adapter drops needless
+    // re-renders when the colour hasn't changed so calling on every
+    // tick is cheap.
+    led_.setAmbient(pickLedAmbient(networkHealth(), dashboard_));
     led_.tick();
 
     // If pairing just confirmed, slide into the dashboard. The screen

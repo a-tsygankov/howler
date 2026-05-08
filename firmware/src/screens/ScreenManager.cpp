@@ -245,6 +245,18 @@ void ScreenManager::playDoneAnimation(uint32_t durationMs) {
 
     doneOverlay_ = circle;
     doneUntilMs_ = millis() + durationMs;
+
+    // When we're offline the green check is technically misleading
+    // — the mark-done is queued locally but hasn't reached the
+    // server. Surface that with a low-key toast next to the overlay
+    // so the user knows the action will sync on the next round.
+    // Showing it after the overlay is built means it lands on top
+    // (lv_layer_top renders in insertion order, last-on-top).
+    if (app_.networkHealth() ==
+        application::App::NetworkHealth::Offline) {
+        showToast("queued offline", durationMs > 200
+                                   ? durationMs - 200 : 800);
+    }
 }
 
 void ScreenManager::showToast(const char* text, uint32_t durationMs) {

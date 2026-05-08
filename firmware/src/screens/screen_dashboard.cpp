@@ -108,6 +108,23 @@ void ScreenManager::buildDashboard() {
     // "# - - -" line. 3 px dots stacked vertically at x ≈ -8 from
     // the right edge, active dot drawn 10 px tall.
     taskCursorDots_ = buildDrumRimIndicator(root_, n, dash.cursor());
+
+    // Network-state badge: only rendered when the device is in
+    // a degraded state (Stale or Offline). The buildNetworkBadge
+    // helper returns nullptr for the empty-text branch so we can
+    // skip it cheaply when everything's fresh.
+    switch (app_.networkHealth()) {
+        case application::App::NetworkHealth::Offline:
+            components::buildNetworkBadge(root_, "OFFLINE",
+                                          Palette::accent());
+            break;
+        case application::App::NetworkHealth::Stale:
+            components::buildNetworkBadge(root_, "STALE",
+                                          Palette::warn());
+            break;
+        case application::App::NetworkHealth::Fresh:
+            break;
+    }
 }
 
 }  // namespace howler::screens
