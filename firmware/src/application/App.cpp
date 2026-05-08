@@ -45,9 +45,10 @@ App::App(INetwork& net,
          IStorage& storage,
          IInputDevice& input,
          IWifi& wifi,
+         ILedRing& led,
          std::string deviceId)
     : net_(net), pairApi_(pairApi), clock_(clock), rng_(rng),
-      storage_(storage), input_(input), wifi_(wifi),
+      storage_(storage), input_(input), wifi_(wifi), led_(led),
       sync_(net_, clock_, occList_, dashboard_, allTasks_,
             users_, resultTypes_, watermark_),
       markDoneSvc_(net_, clock_, rng_, storage_, queue_),
@@ -65,10 +66,45 @@ void App::begin() {
     }
 }
 
+namespace {
+
+// Map dashboard contents to a status colour for the LED ring.
+//   any urgent or missed → red    (matches webapp accent)
+//   any soon (NonUrgent) → amber  (warn)
+//   only hidden / empty  → off
+//
+// 0xRR_GG_BB packed for Adafruit_NeoPixel.
+constexpr uint32_t kLedRed   = 0x00C13D1E;
+constexpr uint32_t kLedAmber = 0x00C88310;
+constexpr uint32_t kLedGreen = 0x002C774B;
+
+uint32_t pickLedAmbient(const howler::domain::DashboardModel& d) {
+    bool hasUrgent = false;
+    bool hasSoon   = false;
+    for (const auto& it : d.items()) {
+        if (it.urgency == howler::domain::Urgency::Urgent || it.isMissed) {
+            hasUrgent = true;
+            break;  // urgent dominates; no need to keep scanning
+        }
+        if (it.urgency == howler::domain::Urgency::NonUrgent) hasSoon = true;
+    }
+    if (hasUrgent) return kLedRed;
+    if (hasSoon)   return kLedAmber;
+    return 0;  // off
+}
+
+}  // namespace
+
 void App::tick(uint32_t /*millisNow*/) {
     sync_.tick();
     markDoneSvc_.tick();
     pairCoord_.tick();
+
+    // Mirror the dashboard's worst tier on the LED ring. The adapter
+    // drops needless re-renders when the colour hasn't changed so
+    // calling on every tick is cheap.
+    led_.setAmbient(pickLedAmbient(dashboard_));
+    led_.tick();
 
     // If pairing just confirmed, slide into the dashboard. The screen
     // layer will pick up the router change next frame.
@@ -126,6 +162,11 @@ void App::commitPendingDone() {
         !p.occurrenceId.empty() ? p.occurrenceId : p.taskId.hex();
     dashboard_.removeById(id);
     allTasks_.removeById(id);
+    // Confirmation flash on the LED ring. Reverts to whatever ambient
+    // colour the next tick computes — usually still red/amber if the
+    // home has more urgent items, or off once the user has cleared
+    // the queue.
+    led_.pulse(kLedGreen, 600);
     sync_.requestSync();
     clearPendingDone();
 }

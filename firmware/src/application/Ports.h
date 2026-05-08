@@ -148,6 +148,34 @@ public:
     virtual void tick(uint32_t millis) = 0;
 };
 
+/// Optional status LED ring (5×WS2812 on the CrowPanel bezel — the
+/// adapter encapsulates the pixel driver). The App calls `setAmbient`
+/// every sync round to mirror the dashboard's worst-tier colour, and
+/// `pulse` on `commitPendingDone` to flash green for a successful
+/// mark-done. Stub implementations (NoopLed for hosts without the
+/// hardware) silently no-op.
+class ILedRing {
+public:
+    virtual ~ILedRing() = default;
+    /// Set the steady ambient colour. 0 = off. Calling with the same
+    /// colour twice is a no-op so the App can poll-set without
+    /// thrashing the pixel bus.
+    virtual void setAmbient(uint32_t color) = 0;
+    /// Brief bright flash, reverts to ambient afterwards.
+    virtual void pulse(uint32_t color, uint16_t durationMs = 600) = 0;
+    /// Drive the breathing animation. Should be called every loop().
+    virtual void tick() = 0;
+};
+
+/// Trivial no-op LED ring for builds without WS2812 hardware (host
+/// tests, future minimal SKUs).
+class NoopLedRing : public ILedRing {
+public:
+    void setAmbient(uint32_t) override {}
+    void pulse(uint32_t, uint16_t = 600) override {}
+    void tick() override {}
+};
+
 /// Persistent key/value backed by NVS on hardware, std::map on host.
 /// Snapshots are byte-blob round-trips; the application layer is
 /// responsible for serialising the domain types onto these bytes.

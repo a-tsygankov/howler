@@ -39,7 +39,21 @@ EncoderState g_enc;
 void encoder_read_cb(lv_indev_t*, lv_indev_data_t* data) {
     data->enc_diff = static_cast<int16_t>(g_enc.pendingDelta);
     g_enc.pendingDelta = 0;
-    data->state = g_enc.pendingPress ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
+    // Consume-on-read so LVGL sees a PRESSED edge followed by a
+    // RELEASED on the next read — the press-release sequence is
+    // what triggers `LV_EVENT_CLICKED` on the focused widget. The
+    // previous "set true / synchronously set false in
+    // pollAndDispatch" pattern raced lv_timer_handler: by the time
+    // LVGL polled the indev the flag was already false, so no
+    // press edge ever appeared and screens that relied on LVGL's
+    // standard encoder click (e.g. SettingsTheme's two pills)
+    // never saw their tap.
+    if (g_enc.pendingPress) {
+        data->state = LV_INDEV_STATE_PRESSED;
+        g_enc.pendingPress = false;
+    } else {
+        data->state = LV_INDEV_STATE_RELEASED;
+    }
 }
 
 }  // namespace
@@ -222,9 +236,12 @@ void ScreenManager::pollAndDispatch(uint32_t /*millisNow*/) {
     if (delta == 0 && vert == 0 && horz == 0 &&
         !tap && !doubleTap && !longPress) return;
     g_enc.pendingDelta += delta;
+    // Set the press latch and let `encoder_read_cb` consume it on
+    // the next LVGL read — that produces the PRESSED → RELEASED
+    // edge LVGL needs for CLICKED. Clearing here would race
+    // lv_timer_handler and swallow the press silently.
     if (tap || longPress) g_enc.pendingPress = true;
     onEvent(delta, tap, doubleTap, longPress, vert, horz);
-    if (tap || longPress) g_enc.pendingPress = false;
 }
 
 void ScreenManager::teardownScreen() {

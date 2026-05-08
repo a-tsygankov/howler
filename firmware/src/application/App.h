@@ -35,6 +35,7 @@ public:
         IStorage& storage,
         IInputDevice& input,
         IWifi& wifi,
+        ILedRing& led,
         std::string deviceId);
 
     /// Boot-time setup. Restores queue + settings from storage,
@@ -141,6 +142,7 @@ private:
     IStorage& storage_;
     IInputDevice& input_;
     IWifi& wifi_;
+    ILedRing& led_;
     std::vector<howler::domain::WifiNetwork> wifiScan_;
 
     howler::domain::Router router_;

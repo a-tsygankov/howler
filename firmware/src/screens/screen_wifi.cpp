@@ -40,7 +40,7 @@ void ScreenManager::buildWifi() {
         lv_obj_set_style_text_color(l, Palette::ink2(), 0);
         lv_obj_center(l);
         auto* hint = lv_label_create(root_);
-        lv_label_set_text(hint, "double back");
+        lv_label_set_text(hint, "2x back");
         lv_obj_set_style_text_color(hint, Palette::ink3(), 0);
         lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -10);
         return;
@@ -76,7 +76,7 @@ void ScreenManager::buildWifi() {
     menuActive_ = true;
 
     auto* hint = lv_label_create(root_);
-    lv_label_set_text(hint, "rotate | tap connect | double back");
+    lv_label_set_text(hint, "rotate | tap connect | 2x back");
     lv_obj_set_style_text_color(hint, Palette::ink3(), 0);
     lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -10);
 }
@@ -99,7 +99,7 @@ void ScreenManager::buildWifiConnect() {
     lv_obj_center(l);
 
     auto* hint = lv_label_create(root_);
-    lv_label_set_text(hint, "double back");
+    lv_label_set_text(hint, "2x back");
     lv_obj_set_style_text_color(hint, Palette::ink3(), 0);
     lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -10);
 }
