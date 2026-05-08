@@ -166,6 +166,10 @@ private:
     /// the latest data.
     uint32_t                 lastDashboardGen_ = 0;
     uint32_t                 lastAllTasksGen_  = 0;
+    /// Same idea for the icon cache — when an async prefetch lands a
+    /// new bitmap, the active drum-screen rebuilds so any avatar
+    /// previously showing a fallback glyph now renders the icon.
+    uint32_t                 lastIconCacheGen_ = 0;
 
     /// LRU cache of icon bitmaps fetched from /api/icons/:name. Lives
     /// here (not on App) so the LVGL types it owns (lv_image_dsc_t)

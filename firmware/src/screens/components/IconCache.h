@@ -60,50 +60,83 @@ public:
               application::IClock& clock)
         : net_(net), clock_(clock) {}
 
-    /// Look up `name` in the cache; if missing or stale, attempts a
-    /// fetch via the network. Returns nullptr on miss + fetch failure
-    /// so callers can render a fallback (initials / 2-letter code).
-    /// The returned pointer is valid until the next fetch (eviction
-    /// safety: callers that store the pointer for animation should
-    /// re-resolve each frame, but this is cheap — cache lookup is a
-    /// linear scan over ≤ 32 entries).
+    /// Look up `name` in the cache. NEVER blocks on the network —
+    /// returns nullptr if not cached and silently enqueues the name
+    /// for `tickPrefetch` to fetch in the background. Callers
+    /// render a fallback glyph (badgeTextForIcon / initials) when
+    /// the result is null, then re-render after a future tick once
+    /// the icon lands in the cache (`generation()` bumps when an
+    /// async fetch completes).
     const lv_image_dsc_t* get(const std::string& name) {
         if (name.empty()) return nullptr;
-        const int64_t now = clock_.nowEpochSeconds();
         for (auto& e : entries_) {
-            if (e.name != name) continue;
-            // Hit. If stale and online, kick a refresh — but still
-            // return the (potentially stale) bytes so the user sees
-            // SOMETHING while the new fetch races. Refresh is
-            // synchronous in this path; future evolution could move
-            // it onto a background queue.
-            if (e.fetchedAt > 0 &&
-                static_cast<uint32_t>(now - e.fetchedAt) > kTtlSec) {
-                tryFetchInto(name, e);
-            }
-            return &e.descriptor;
+            if (e.name == name) return &e.descriptor;
         }
-        // Miss — fetch + insert. Eviction: when full, drop the
-        // oldest by fetchedAt (vector's front-ish; actual stale-LRU
-        // would need a touched-at column, but we never re-touch on
-        // hits in this codebase).
-        if (entries_.size() >= kMaxEntries) {
-            entries_.erase(entries_.begin());
+        // Miss — queue it. Dedup against pending list so a screen
+        // with many copies of the same icon (multiple tasks with
+        // avatarId="icon:paw") only triggers one fetch.
+        for (const auto& q : pending_) {
+            if (q == name) return nullptr;
         }
-        entries_.emplace_back();
-        Entry& e = entries_.back();
-        e.name = name;
-        if (!tryFetchInto(name, e)) {
-            entries_.pop_back();
-            return nullptr;
-        }
-        return &e.descriptor;
+        pending_.push_back(name);
+        return nullptr;
     }
+
+    /// Drain up to `maxPerTick` queued fetches. Called from the
+    /// main tick loop so the synchronous HTTP I/O happens off the
+    /// render path. Returns how many fetches actually completed
+    /// (server might 404 or be offline); callers that want to
+    /// re-render on cache change can watch `generation()` instead.
+    int tickPrefetch(int maxPerTick = 1) {
+        int fetched = 0;
+        while (maxPerTick-- > 0 && !pending_.empty()) {
+            const std::string name = std::move(pending_.front());
+            pending_.erase(pending_.begin());
+            // Race guard: another get() may have ended up with this
+            // name in entries_ via a manual seed path. Skip the dup.
+            bool already = false;
+            for (auto& e : entries_) {
+                if (e.name == name) { already = true; break; }
+            }
+            if (already) continue;
+            if (entries_.size() >= kMaxEntries) {
+                entries_.erase(entries_.begin());
+            }
+            entries_.emplace_back();
+            Entry& e = entries_.back();
+            e.name = name;
+            if (!tryFetchInto(name, e)) {
+                // Drop the empty slot; don't requeue (avoid thrash on
+                // permanent failures like 404). Caller's next get()
+                // will re-enqueue if it still wants the icon.
+                entries_.pop_back();
+                continue;
+            }
+            ++fetched;
+            ++generation_;
+        }
+        return fetched;
+    }
+
+    /// True iff at least one name is queued for background fetch.
+    /// ScreenManager uses this to schedule the next tickPrefetch
+    /// without polling.
+    bool hasPending() const { return !pending_.empty(); }
+
+    /// Monotonically advancing counter, bumped by every successful
+    /// background fetch. Screens watch this to trigger a rebuild
+    /// when icons that previously rendered as fallback glyphs are
+    /// now available as bitmaps.
+    uint32_t generation() const { return generation_; }
 
     /// Drop everything. Useful for tests + after a sign-out where
     /// the device token rotated and the cached icons are still
     /// "valid" but tied to the old auth boundary.
-    void clear() { entries_.clear(); }
+    void clear() {
+        entries_.clear();
+        pending_.clear();
+        ++generation_;
+    }
 
     size_t size() const { return entries_.size(); }
 
@@ -116,9 +149,11 @@ private:
         std::string      contentHash;
     };
 
-    application::INetwork& net_;
-    application::IClock&   clock_;
-    std::vector<Entry>     entries_;
+    application::INetwork&   net_;
+    application::IClock&     clock_;
+    std::vector<Entry>       entries_;
+    std::vector<std::string> pending_;
+    uint32_t                 generation_ = 0;
 
     /// Pull bytes from the network into `e`. The wire payload is
     /// 1-bit packed (72 bytes); we unpack to A8 (576 bytes) on the

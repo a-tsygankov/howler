@@ -136,6 +136,20 @@ void ScreenManager::tick(uint32_t millisNow) {
         rebuildPending_ = true;
     }
 
+    // Drain at most one pending icon fetch per tick so the network
+    // round-trip never lands on the render path (a synchronous
+    // fetch from inside a draw callback can block LVGL for 100s of
+    // ms — visible as a stutter when the dashboard first paints).
+    // If a fetch lands, the cache's generation bumps; the rebuild
+    // path below picks that up to repaint the avatars whose
+    // fallback glyph is now backed by a real bitmap.
+    iconCache_.tickPrefetch(/*maxPerTick=*/1);
+    if ((rendered_ == domain::ScreenId::Dashboard ||
+         rendered_ == domain::ScreenId::TaskList) &&
+        iconCache_.generation() != lastIconCacheGen_) {
+        rebuildPending_ = true;
+    }
+
     if (app_.router().current() != rendered_ || rebuildPending_) {
         rebuildPending_ = false;
         rebuildScreen();
@@ -307,6 +321,7 @@ void ScreenManager::rebuildScreen() {
     // update that happened during the rebuild itself.
     lastDashboardGen_ = app_.dashboard().generation();
     lastAllTasksGen_  = app_.allTasks().generation();
+    lastIconCacheGen_ = iconCache_.generation();
     using domain::ScreenId;
     switch (rendered_) {
         case ScreenId::Boot:               buildBoot();              break;
