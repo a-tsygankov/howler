@@ -53,9 +53,12 @@ void ScreenManager::buildSettings() {
     }
 
     // 'Switch view' dropped — main-screen switching is now a
-    // first-class swipe/rotate gesture, no menu detour needed.
+    // first-class swipe gesture, no menu detour needed.
+    const bool isDark = app_.settings().theme == domain::Theme::Dark;
     menuModel_.replace({
         mk("sync",      "Sync now",    "fetch latest"),
+        mk("theme",     "Theme",       isDark ? "dark · tap to flip"
+                                              : "light · tap to flip"),
         mk("wifi",      "Wi-Fi",       "scan + connect"),
         mk("login-qr",  "Login by QR", "phone link"),
         mk("brightness","Brightness",  "screen level"),
@@ -74,6 +77,13 @@ void ScreenManager::buildSettings() {
             // fast.
             app.sync().requestSync();
             this->showToast("syncing...", 1500);
+        }
+        else if (id == "theme") {
+            // Flip between light and dark; persists to NVS. Trigger
+            // a screen rebuild by replacing the same root — the
+            // rebuildScreen path picks up the new Palette flag.
+            app.toggleTheme();
+            app.router().replaceRoot(domain::ScreenId::Settings);
         }
         else if (id == "wifi")       app.router().push(domain::ScreenId::Wifi);
         else if (id == "login-qr")   app.router().push(domain::ScreenId::LoginQr);

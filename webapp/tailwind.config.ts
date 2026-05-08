@@ -7,6 +7,10 @@ import type { Config } from "tailwindcss";
 
 const config: Config = {
   content: ["./index.html", "./src/**/*.{ts,tsx}"],
+  // Dark theme is opt-in via a `dark` class on documentElement.
+  // The Settings → Theme toggle persists the choice in localStorage
+  // and applies it on every page load (see src/theme.ts).
+  darkMode: "class",
   theme: {
     extend: {
       colors: {

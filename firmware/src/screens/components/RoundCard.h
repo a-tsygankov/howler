@@ -16,22 +16,63 @@ constexpr int kScreenW = 240;
 constexpr int kScreenH = 240;
 constexpr int kRadius  = 120;
 
-/// Warm-domestic palette ported verbatim from the webapp (per
-/// `docs/design_handoff_howler/styles.css` via `tailwind.config.ts`).
-/// Inline here so screens don't depend on a runtime theme system.
+/// Warm-domestic + dark-mode palettes ported from the webapp (per
+/// `tailwind.config.ts`). Static accessors return colors based on
+/// `Palette::activeIsDark()`, which the App's Settings → Theme
+/// entry flips. Default: Light. Set via `Palette::setDark(bool)`.
 struct Palette {
-    static lv_color_t paper()      { return lv_color_make(0xF6, 0xEF, 0xDC); }
-    static lv_color_t paper2()     { return lv_color_make(0xEC, 0xE2, 0xC9); }
-    static lv_color_t paper3()     { return lv_color_make(0xDF, 0xD2, 0xB1); }
-    static lv_color_t ink()        { return lv_color_make(0x1A, 0x14, 0x09); }
-    static lv_color_t ink2()       { return lv_color_make(0x57, 0x4E, 0x3E); }
-    static lv_color_t ink3()       { return lv_color_make(0x8A, 0x80, 0x6E); }
-    static lv_color_t line()       { return lv_color_make(0xC2, 0xB6, 0x98); }
-    static lv_color_t lineSoft()   { return lv_color_make(0xD4, 0xC9, 0xA8); }
+    static bool activeIsDark() { return darkActive_; }
+    static void setDark(bool v) { darkActive_ = v; }
+
+    // Light theme — warm paper / ink.
+    // Dark theme — deep ink background, paper-tinted text. The
+    // accent stays the same warm red so urgency reads identically
+    // across themes.
+    static lv_color_t paper() {
+        return darkActive_ ? lv_color_make(0x1A, 0x14, 0x09)
+                           : lv_color_make(0xF6, 0xEF, 0xDC);
+    }
+    static lv_color_t paper2() {
+        return darkActive_ ? lv_color_make(0x2E, 0x26, 0x18)
+                           : lv_color_make(0xEC, 0xE2, 0xC9);
+    }
+    static lv_color_t paper3() {
+        return darkActive_ ? lv_color_make(0x44, 0x39, 0x27)
+                           : lv_color_make(0xDF, 0xD2, 0xB1);
+    }
+    static lv_color_t ink() {
+        return darkActive_ ? lv_color_make(0xF6, 0xEF, 0xDC)
+                           : lv_color_make(0x1A, 0x14, 0x09);
+    }
+    static lv_color_t ink2() {
+        return darkActive_ ? lv_color_make(0xC4, 0xB8, 0x9A)
+                           : lv_color_make(0x57, 0x4E, 0x3E);
+    }
+    static lv_color_t ink3() {
+        return darkActive_ ? lv_color_make(0x8E, 0x82, 0x6A)
+                           : lv_color_make(0x8A, 0x80, 0x6E);
+    }
+    static lv_color_t line() {
+        return darkActive_ ? lv_color_make(0x55, 0x49, 0x33)
+                           : lv_color_make(0xC2, 0xB6, 0x98);
+    }
+    static lv_color_t lineSoft() {
+        return darkActive_ ? lv_color_make(0x44, 0x39, 0x27)
+                           : lv_color_make(0xD4, 0xC9, 0xA8);
+    }
     static lv_color_t accent()     { return lv_color_make(0xC1, 0x3D, 0x1E); }
     static lv_color_t accentSoft() { return lv_color_make(0xE2, 0x96, 0x76); }
-    static lv_color_t success()    { return lv_color_make(0x2C, 0x77, 0x4B); }
-    static lv_color_t warn()       { return lv_color_make(0xC8, 0x83, 0x10); }
+    static lv_color_t success() {
+        return darkActive_ ? lv_color_make(0x57, 0xB0, 0x80)
+                           : lv_color_make(0x2C, 0x77, 0x4B);
+    }
+    static lv_color_t warn() {
+        return darkActive_ ? lv_color_make(0xE0, 0xA0, 0x40)
+                           : lv_color_make(0xC8, 0x83, 0x10);
+    }
+
+private:
+    inline static bool darkActive_ = false;
 };
 
 /// Build a full-circle paper-toned background filling the active

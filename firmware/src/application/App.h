@@ -66,6 +66,14 @@ public:
     /// 0 until the first sync round succeeds. Screens render relative
     /// time labels ("in 14 m") from this rather than the local clock.
     int64_t serverNowSec() const { return watermark_.serverNowSec; }
+
+    /// Toggle the active theme + persist to NVS in one step. The
+    /// caller (Settings carousel handler) follows up with a screen
+    /// rebuild so the new palette takes effect.
+    void toggleTheme();
+    /// Force-set the theme; persists to NVS. Same caveat as
+    /// toggleTheme — caller refreshes the screen.
+    void setTheme(howler::domain::Theme t);
     const std::string& deviceId() const { return deviceId_; }
     IStorage& storage() { return storage_; }
     IWifi& wifi() { return wifi_; }

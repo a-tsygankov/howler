@@ -2,6 +2,13 @@ import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  applyTheme,
+  readTheme,
+  watchSystemTheme,
+  writeTheme,
+  type Theme,
+} from "./theme.ts";
+import {
   apiLogout,
   apiMe,
   apiPairConfirm,
@@ -371,6 +378,10 @@ export const Dashboard = ({ session, onLogout, view }: Props) => {
               sessionUserId={session.userId}
               onChanged={() => qc.invalidateQueries({ queryKey: ["users"] })}
             />
+          </Section>
+
+          <Section title="Theme">
+            <ThemeBlock />
           </Section>
 
           <Section title="Sync activity">
@@ -2122,6 +2133,56 @@ const UserRow = ({
           </>
         )}
       </div>
+    </div>
+  );
+};
+
+/// Three-button theme switcher. Reads/writes the persisted choice
+/// via `theme.ts`; subscribes to system color-scheme changes so the
+/// "system" mode flips live when the user toggles their OS theme.
+const ThemeBlock = () => {
+  const [theme, setTheme] = useState<Theme>(() => readTheme());
+  useEffect(() => {
+    // Re-apply on every change so a user toggling System ↔ explicit
+    // takes effect on the active page (no reload required).
+    applyTheme(theme);
+  }, [theme]);
+  useEffect(() => {
+    if (theme !== "system") return;
+    return watchSystemTheme(() => applyTheme("system"));
+  }, [theme]);
+  const choose = (t: Theme) => {
+    setTheme(t);
+    writeTheme(t);
+  };
+  const opt = (
+    value: Theme,
+    label: string,
+  ) => (
+    <button
+      key={value}
+      type="button"
+      onClick={() => choose(value)}
+      className={
+        "flex-1 rounded-lg border px-3 py-2 text-sm transition-colors " +
+        (theme === value
+          ? "border-ink bg-ink text-paper"
+          : "border-line-soft bg-paper-2 text-ink-2 hover:border-line")
+      }
+    >
+      {label}
+    </button>
+  );
+  return (
+    <div className="flex flex-col gap-2 py-1">
+      <div className="flex gap-2">
+        {opt("light", "Light")}
+        {opt("dark", "Dark")}
+        {opt("system", "System")}
+      </div>
+      <p className="cap">
+        System follows the OS color-scheme preference.
+      </p>
     </div>
   );
 };

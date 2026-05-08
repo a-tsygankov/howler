@@ -173,6 +173,13 @@ void ScreenManager::teardownScreen() {
 
 void ScreenManager::rebuildScreen() {
     teardownScreen();
+    // Sync the static palette flag to the active theme before any
+    // screen builder pulls colors. The builders call Palette::* per
+    // widget; once cached on a child object the colour sticks until
+    // the next rebuild, which is exactly what we want — toggling
+    // theme triggers a rebuild via the same path.
+    components::Palette::setDark(
+        app_.settings().theme == domain::Theme::Dark);
     rendered_ = app_.router().current();
     using domain::ScreenId;
     switch (rendered_) {
@@ -199,45 +206,34 @@ void ScreenManager::onEvent(int rotateDelta, bool tap, bool doubleTap,
     auto& app = app_;
     auto& router = app.router();
 
-    // Helper: cycle the active root through `kMainScreens`. step=+1
-    // moves forward (Dashboard → TaskList → Settings → wraps), -1
-    // back. No-op if the current root isn't a main-screen entry
-    // (e.g., Pair while unauthenticated).
-    auto cycleMainScreen = [&](int step) {
+    // ── Pill switching: horizontal swipe ONLY ──────────────────
+    // The rotary stays focused on the active screen's content (knob
+    // == cursor / value editor / menu cursor depending on screen).
+    // Pills are not in the rotary's lane; they're touch-only via
+    // a deliberate horizontal flick. SwipeLeft = next pill (mobile
+    // carousel convention: finger sweeps the new screen in from
+    // the right edge), SwipeRight = previous.
+    if (horzSwipe != 0 && router.atRoot()) {
         constexpr auto N = sizeof(kMainScreens) / sizeof(kMainScreens[0]);
         size_t idx = N;
         for (size_t i = 0; i < N; ++i) if (kMainScreens[i] == rendered_) idx = i;
-        if (idx >= N) return false;
-        const long s = (step > 0) ? 1 : -1;
-        const long next = ((static_cast<long>(idx) + s) % static_cast<long>(N)
-                          + static_cast<long>(N)) % static_cast<long>(N);
-        router.replaceRoot(kMainScreens[next]);
-        return true;
-    };
-
-    // ── Root navigation: knob rotation OR horizontal swipe ─────
-    // Both cycle through the main pills (today / all / menu). Knob
-    // CW = next (forward in kMainScreens); SwipeLeft = next (mobile
-    // carousel convention where finger sweeps the new screen in
-    // from the right). Vertical swipe at root scrolls the current
-    // screen's content cursor (handled below).
-    if (router.atRoot()) {
-        if (rotateDelta != 0 && cycleMainScreen(rotateDelta)) return;
-        if (horzSwipe   != 0 && cycleMainScreen(horzSwipe))   return;
+        if (idx < N) {
+            const long s = (horzSwipe > 0) ? 1 : -1;
+            const long next = ((static_cast<long>(idx) + s)
+                              % static_cast<long>(N)
+                              + static_cast<long>(N)) % static_cast<long>(N);
+            router.replaceRoot(kMainScreens[next]);
+            return;
+        }
     }
 
-    // ── Off-root menus: rotation OR vertical swipe nudge cursor ──
-    if (menuActive_ && !router.atRoot()) {
+    // ── Round-menu screens: rotation AND vertical swipe nudge
+    //    cursor. Works at both root (Settings) and non-root (Wi-Fi,
+    //    UserPicker, etc.) since the menu is the active surface in
+    //    both cases — knob always drives the on-screen content.
+    if (menuActive_) {
         if (rotateDelta != 0) menu_.onRotate(rotateDelta);
         if (vertSwipe   != 0) menu_.onRotate(vertSwipe);
-    }
-    // ── Root menus (Settings): vertical swipe nudges menu cursor ──
-    // Settings is a root screen but also a menu; rotation already
-    // cycles main pills, so vertical swipe is the only way to move
-    // through Settings entries with a single hand on the knob.
-    if (router.atRoot() && menuActive_ && vertSwipe != 0) {
-        menu_.onRotate(vertSwipe);
-        return;
     }
 
     // ── Universal: DoubleTap = back / cancel ────────────────────
@@ -272,10 +268,11 @@ void ScreenManager::onEvent(int rotateDelta, bool tap, bool doubleTap,
 
     switch (rendered_) {
         case ScreenId::Dashboard: {
-            // Knob at root cycles main pills (handled above). Vertical
-            // swipe moves the dashboard cursor through tasks; tap
-            // activates the centre item.
-            if (vertSwipe != 0) app.dashboard().moveCursor(vertSwipe);
+            // Knob rotation AND vertical swipe both move the dashboard
+            // cursor — knob is the primary, swipe is touch parity.
+            // Pills switch only via horizontal swipe (above).
+            if (rotateDelta != 0) app.dashboard().moveCursor(rotateDelta);
+            if (vertSwipe   != 0) app.dashboard().moveCursor(vertSwipe);
             const auto* sel = app.dashboard().selected();
             if (!sel) break;
             if (tap) {
