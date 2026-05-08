@@ -93,7 +93,8 @@ void ScreenManager::tick(uint32_t millisNow) {
         toastUntilMs_ = 0;
     }
 
-    if (app_.router().current() != rendered_) {
+    if (app_.router().current() != rendered_ || rebuildPending_) {
+        rebuildPending_ = false;
         rebuildScreen();
     }
     lv_timer_handler();
@@ -227,13 +228,18 @@ void ScreenManager::onEvent(int rotateDelta, bool tap, bool doubleTap,
         }
     }
 
-    // ── Round-menu screens: rotation AND vertical swipe nudge
-    //    cursor. Works at both root (Settings) and non-root (Wi-Fi,
-    //    UserPicker, etc.) since the menu is the active surface in
-    //    both cases — knob always drives the on-screen content.
+    // ── Round-menu screens: rotation + vertical swipe nudge cursor;
+    //    tap fires the activate callback. Works at both root
+    //    (Settings) and non-root (Wi-Fi, UserPicker, etc.) — knob
+    //    always drives the on-screen content. The tap dispatch
+    //    here replaces the LVGL-focus-group path the lv_list
+    //    versions of these screens used to ride; the RoundMenu
+    //    centre container isn't in the encoder group, so we
+    //    forward the press event explicitly.
     if (menuActive_) {
         if (rotateDelta != 0) menu_.onRotate(rotateDelta);
         if (vertSwipe   != 0) menu_.onRotate(vertSwipe);
+        if (tap)              menu_.fireActivate();
     }
 
     // ── Universal: DoubleTap = back / cancel ────────────────────

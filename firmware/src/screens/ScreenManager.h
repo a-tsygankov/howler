@@ -54,6 +54,13 @@ public:
     /// Lives outside the screen tree so it survives screen rebuilds.
     void showToast(const char* text, uint32_t durationMs = 1500);
 
+    /// Force a screen rebuild on the next tick even when the active
+    /// router id hasn't changed. Used by handlers that change visual
+    /// state without navigating — e.g. the Theme toggle in Settings,
+    /// which flips the palette and needs the current screen to
+    /// re-render with the new colours.
+    void requestRebuild() { rebuildPending_ = true; }
+
     /// Helper for screens that show a tab strip — returns the index
     /// of the current main screen in `kMainScreens`, or kMainScreens
     /// length if the current screen isn't a main one.
@@ -91,6 +98,10 @@ private:
     /// Settings → "Sync now" to surface "syncing..." for ~1.5 s.
     lv_obj_t* toastLabel_ = nullptr;
     uint32_t  toastUntilMs_ = 0;
+
+    /// Set by handlers that mutate visual state without changing the
+    /// router. Read + cleared in tick().
+    bool rebuildPending_ = false;
 
     /// Round-menu state. Each screen that opts into the watch-style
     /// carousel layout (Settings, UserPicker, Wi-Fi) populates the

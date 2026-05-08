@@ -79,11 +79,12 @@ void ScreenManager::buildSettings() {
             this->showToast("syncing...", 1500);
         }
         else if (id == "theme") {
-            // Flip between light and dark; persists to NVS. Trigger
-            // a screen rebuild by replacing the same root — the
-            // rebuildScreen path picks up the new Palette flag.
+            // Flip between light and dark; persists to NVS. Force
+            // a rebuild on the next tick — replaceRoot(same id) is
+            // a no-op for the screen manager, so we use the explicit
+            // requestRebuild path so the new palette renders.
             app.toggleTheme();
-            app.router().replaceRoot(domain::ScreenId::Settings);
+            this->requestRebuild();
         }
         else if (id == "wifi")       app.router().push(domain::ScreenId::Wifi);
         else if (id == "login-qr")   app.router().push(domain::ScreenId::LoginQr);
