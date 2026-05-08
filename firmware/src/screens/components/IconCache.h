@@ -123,6 +123,26 @@ public:
     /// without polling.
     bool hasPending() const { return !pending_.empty(); }
 
+    /// Bulk-enqueue a list of icon names — used to pre-warm the
+    /// cache at boot so the first dashboard render shows real
+    /// icons instead of fallback letters. Already-cached and
+    /// already-queued names are skipped, so this is idempotent.
+    void prewarm(const std::vector<std::string>& names) {
+        for (const auto& name : names) {
+            if (name.empty()) continue;
+            bool seen = false;
+            for (const auto& e : entries_) {
+                if (e.name == name) { seen = true; break; }
+            }
+            if (seen) continue;
+            for (const auto& q : pending_) {
+                if (q == name) { seen = true; break; }
+            }
+            if (seen) continue;
+            pending_.push_back(name);
+        }
+    }
+
     /// Monotonically advancing counter, bumped by every successful
     /// background fetch. Screens watch this to trigger a rebuild
     /// when icons that previously rendered as fallback glyphs are

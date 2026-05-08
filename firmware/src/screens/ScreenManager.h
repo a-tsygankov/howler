@@ -170,6 +170,12 @@ private:
     /// new bitmap, the active drum-screen rebuilds so any avatar
     /// previously showing a fallback glyph now renders the icon.
     uint32_t                 lastIconCacheGen_ = 0;
+    /// One-shot flag — flips true the first time we observe the
+    /// network as online AND prewarm the icon cache with the full
+    /// LABEL_ICON_CHOICES set. Subsequent online/offline cycles
+    /// don't re-prewarm; the cache's TTL already covers refreshing
+    /// stale entries.
+    bool                     iconCachePrewarmed_ = false;
 
     /// LRU cache of icon bitmaps fetched from /api/icons/:name. Lives
     /// here (not on App) so the LVGL types it owns (lv_image_dsc_t)

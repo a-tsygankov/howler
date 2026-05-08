@@ -143,6 +143,25 @@ void ScreenManager::tick(uint32_t millisNow) {
     // If a fetch lands, the cache's generation bumps; the rebuild
     // path below picks that up to repaint the avatars whose
     // fallback glyph is now backed by a real bitmap.
+    //
+    // First time we have a usable network, prewarm the cache with
+    // the LABEL_ICON_CHOICES set the backend seeds. Avatars on the
+    // dashboard's first paint then render real icons within ~1–2 s
+    // of the device coming online, instead of waiting for each
+    // avatar to lazy-fetch as the user scrolls past it.
+    if (!iconCachePrewarmed_ && app_.network().isOnline()) {
+        // Mirror of LABEL_ICON_CHOICES in webapp/src/Dashboard.tsx
+        // and the seed list in backend/scripts/seed-icons.mjs.
+        // Keep all three in sync if the icon set changes.
+        const std::vector<std::string> kPrewarm = {
+            "paw", "dog", "cat", "broom", "home", "bowl",
+            "heart", "sparkle", "star", "plant", "flame", "bell",
+            "briefcase", "book", "run", "pill", "tooth", "clock",
+            "calendar", "check",
+        };
+        iconCache_.prewarm(kPrewarm);
+        iconCachePrewarmed_ = true;
+    }
     iconCache_.tickPrefetch(/*maxPerTick=*/1);
     if ((rendered_ == domain::ScreenId::Dashboard ||
          rendered_ == domain::ScreenId::TaskList) &&
