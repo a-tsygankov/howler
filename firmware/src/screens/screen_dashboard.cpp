@@ -78,19 +78,20 @@ void ScreenManager::buildDashboard() {
     constexpr int kDrumW    = 204;   // ~ disc safe width
     constexpr int kDrumH    = 220;
     constexpr int kDetailW  = 204;
-    constexpr int kDetailH  = 64;    // detail card visual is 58 px
-    constexpr int kMiniH    = 30;    // mini row visual is 26 px
-    taskDrum_.build(root_, kDrumW, kDrumH, /*tierSpacing=*/56);
+    constexpr int kDetailH  = 44;    // detail card visual is 38 px
+                                     // (dev-24: shrunk from 58)
+    constexpr int kMiniH    = 28;    // mini row visual is 24 px
+    // Closer mini sits 6 px below the detail card's bottom edge:
+    //   detailH/2 + miniH/2 + 6 = 22 + 14 + 6 = 42
+    constexpr int kMiniGap  = 42;
+    taskDrum_.build(root_, kDrumW, kDrumH, /*tierSpacing=*/44);
     using L = components::DrumScroller::TierLayout;
     taskDrum_.setTierLayoutByDistance(0,
         L{0, kDetailW, kDetailH, LV_OPA_COVER});
     taskDrum_.setTierLayoutByDistance(1,
-        L{48, kDetailW - 16, kMiniH, LV_OPA_COVER});
+        L{kMiniGap, kDetailW - 16, kMiniH, LV_OPA_COVER});
     taskDrum_.setTierLayoutByDistance(2,
-        L{48 + (kMiniH - 7), kDetailW - 36, kMiniH, LV_OPA_90});
-    // Cap visibility at distance 2 — the round display can't fit a
-    // third row without clipping into the rim, and the user spec
-    // explicitly limits this drum to 5 elements.
+        L{kMiniGap + (kMiniH - 7), kDetailW - 36, kMiniH, LV_OPA_90});
     taskDrum_.setMaxVisibleDistance(2);
 
     taskDrum_.setItemCount(n);

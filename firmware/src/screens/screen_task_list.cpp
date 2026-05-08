@@ -54,19 +54,20 @@ void ScreenManager::buildTaskList() {
 
     // Same TierLayouts as Dashboard so the two screens read as
     // variations of one design.
-    constexpr int kDrumW   = 204;
-    constexpr int kDrumH   = 220;
-    constexpr int kDetailW = 204;
-    constexpr int kDetailH = 64;
-    constexpr int kMiniH   = 30;
-    taskDrum_.build(root_, kDrumW, kDrumH, /*tierSpacing=*/56);
+    constexpr int kDrumW    = 204;
+    constexpr int kDrumH    = 220;
+    constexpr int kDetailW  = 204;
+    constexpr int kDetailH  = 44;
+    constexpr int kMiniH    = 28;
+    constexpr int kMiniGap  = 42;
+    taskDrum_.build(root_, kDrumW, kDrumH, /*tierSpacing=*/44);
     using L = components::DrumScroller::TierLayout;
     taskDrum_.setTierLayoutByDistance(0,
         L{0, kDetailW, kDetailH, LV_OPA_COVER});
     taskDrum_.setTierLayoutByDistance(1,
-        L{48, kDetailW - 16, kMiniH, LV_OPA_COVER});
+        L{kMiniGap, kDetailW - 16, kMiniH, LV_OPA_COVER});
     taskDrum_.setTierLayoutByDistance(2,
-        L{48 + (kMiniH - 7), kDetailW - 36, kMiniH, LV_OPA_90});
+        L{kMiniGap + (kMiniH - 7), kDetailW - 36, kMiniH, LV_OPA_90});
     taskDrum_.setMaxVisibleDistance(2);
     taskDrum_.setItemCount(n);
     taskDrum_.setCursor(all.cursor());
