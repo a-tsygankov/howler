@@ -73,10 +73,11 @@ inline const char* taskDueLabel(int64_t dueAt, int64_t serverNowSec, bool missed
 }
 
 /// Pull the LVGL icon name out of a DashboardItem.avatarId. Avatar IDs
-/// of the form "icon:name" carry the icon-set choice; for explicit
-/// uploaded avatars (regular UUIDs) we fall back to a generic glyph.
-/// Returns nullptr when no usable icon name can be derived — caller
-/// renders without an icon.
+/// of the form "icon:name" carry the icon-set choice (mirroring the
+/// webapp's `LABEL_ICON_CHOICES`); for explicit uploaded avatars
+/// (regular UUIDs) we fall back to a generic glyph. Returns nullptr
+/// when no usable icon name can be derived — caller renders without
+/// an icon.
 inline const char* iconKeyFromAvatar(const std::string& avatarId) {
     constexpr const char* kPrefix = "icon:";
     if (avatarId.size() <= 5) return nullptr;
@@ -85,6 +86,53 @@ inline const char* iconKeyFromAvatar(const std::string& avatarId) {
     const auto rest = avatarId.substr(5);
     snprintf(name, sizeof(name), "%s", rest.c_str());
     return name;
+}
+
+/// Render the badge content for a given icon name. LVGL's built-in
+/// font carries a small FontAwesome subset (LV_SYMBOL_*); names that
+/// match a built-in symbol render as the actual glyph, the rest fall
+/// back to a deterministic two-letter code so each Lucide name on
+/// the webapp side maps to a recognisable badge on the device. This
+/// is the placeholder until a custom Lucide-PNG-to-LVGL-font asset
+/// lands; the two-letter code is stable enough that users can pick
+/// up the convention quickly (PA = paw, BR = broom, BK = book, etc.).
+inline const char* badgeTextForIcon(const char* iconKey) {
+    if (!iconKey) return "?";
+    const std::string n = iconKey;
+    // Direct LVGL symbol matches.
+    if (n == "home")     return LV_SYMBOL_HOME;
+    if (n == "bell")     return LV_SYMBOL_BELL;
+    if (n == "check")    return LV_SYMBOL_OK;
+    if (n == "calendar") return LV_SYMBOL_DIRECTORY;  // closest in subset
+    // Two-letter codes for everything else. Order: most-distinctive
+    // first letter, then a follow-up that disambiguates from siblings
+    // sharing the leading letter (broom vs. book, paw vs. plant/pill,
+    // etc.). Keep the table in sync with webapp LABEL_ICON_CHOICES.
+    if (n == "paw")       return "PA";
+    if (n == "dog")       return "DG";
+    if (n == "cat")       return "CT";
+    if (n == "broom")     return "BR";
+    if (n == "bowl")      return "BL";
+    if (n == "heart")     return "HT";
+    if (n == "sparkle")   return "SP";
+    if (n == "star")      return "ST";
+    if (n == "plant")     return "PL";
+    if (n == "flame")     return "FL";
+    if (n == "briefcase") return "BC";
+    if (n == "book")      return "BK";
+    if (n == "run")       return "RN";
+    if (n == "pill")      return "PI";
+    if (n == "tooth")     return "TT";
+    if (n == "clock")     return "CK";
+    // Unknown name (perhaps a freshly-added webapp icon we haven't
+    // mapped yet). Fall back to the first 1-2 letters of whatever
+    // came in, capitalized.
+    static char fb[3];
+    fb[0] = static_cast<char>(toupper(static_cast<unsigned char>(n[0])));
+    fb[1] = n.size() > 1
+        ? static_cast<char>(toupper(static_cast<unsigned char>(n[1]))) : 0;
+    fb[2] = 0;
+    return fb;
 }
 
 /// Detailed task card — the centre of Dashboard / TaskList. ~156 px
@@ -103,28 +151,25 @@ inline lv_obj_t* buildDetailedTaskCard(
     lv_obj_set_style_border_color(card, accent, 0);
     lv_obj_set_style_border_width(card, urgent ? 3 : 1, 0);
 
-    // Icon — prefer the avatar's icon hint; otherwise omit. Icons
-    // come from the project's Icon domain (mirrors webapp Lucide
-    // names). When no icon set is wired, render the title only.
+    // Icon badge — visible cue that maps to whatever the user picked
+    // in the webapp's icon picker (paw / broom / home / …). Rendered
+    // either as the matching LVGL FontAwesome symbol when one exists
+    // or as a 2-letter code otherwise; see `badgeTextForIcon` for
+    // the lookup table. The badge sits above the title so a long
+    // marquee-scrolled title doesn't slide under it.
     const char* iconKey = iconKeyFromAvatar(item.avatarId);
 
     if (iconKey) {
-        // Render as a leading bullet text — actual icon-font rendering
-        // would require an Icon LVGL helper not yet wired into this
-        // tree. For now show the first letter of the icon name as a
-        // tiny initial inside a coloured circle so users still see
-        // a visual cue per task.
         auto* badge = lv_obj_create(card);
-        lv_obj_set_size(badge, 28, 28);
-        lv_obj_align(badge, LV_ALIGN_TOP_MID, 0, 4);
+        lv_obj_set_size(badge, 30, 30);
+        lv_obj_align(badge, LV_ALIGN_TOP_MID, 0, 0);
         lv_obj_clear_flag(badge, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_set_style_radius(badge, 14, 0);
+        lv_obj_set_style_radius(badge, 15, 0);
         lv_obj_set_style_bg_color(badge, accent, 0);
         lv_obj_set_style_border_width(badge, 0, 0);
         lv_obj_set_style_pad_all(badge, 0, 0);
         auto* gl = lv_label_create(badge);
-        char init[2] = {(char)toupper(iconKey[0]), 0};
-        lv_label_set_text(gl, init);
+        lv_label_set_text(gl, badgeTextForIcon(iconKey));
         lv_obj_set_style_text_color(gl, Palette::paper(), 0);
         lv_obj_set_style_text_font(gl, &lv_font_montserrat_18, 0);
         lv_obj_center(gl);
