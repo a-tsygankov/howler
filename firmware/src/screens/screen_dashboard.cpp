@@ -76,17 +76,45 @@ void ScreenManager::buildDashboard() {
         return;
     }
 
-    // Drum carousel for the task list. Tier spacing 80 px puts the
-    // mini neighbours just outside the 156-px centre card so they
-    // don't visually clip into the detailed card's chrome. The drum
-    // captures the dashboard's items + cursor and animates as the
-    // user spins through them.
+    // Drum carousel for the task list. Per the design handoff the
+    // selected detail card sits centred, with up to 3 mini rows
+    // above and below progressively narrower / dimmer / overlapped.
+    // We push that geometry into DrumScroller via per-distance
+    // TierLayouts; the drum's slide animation + inertial swipe
+    // path comes for free from the shared component.
     const size_t n = dash.size();
     const auto& items = dash.items();
     const int64_t serverNow = lastServerNowSec_;
 
-    taskDrum_.build(root_, /*viewWidth=*/220, /*viewHeight=*/220,
-                    /*tierSpacing=*/80);
+    // Disc inner safe area is roughly 200 × 200 (~20 px from each
+    // rim). The drum container sits inside that; per-tier widths
+    // shrink from the centre's full width down by 8 / 18 / 28 px on
+    // each side at distances 1 / 2 / 3.
+    constexpr int kDrumW    = 204;   // ~ disc safe width
+    constexpr int kDrumH    = 220;   // taller than wide so far tiers fit
+    constexpr int kDetailW  = 204;
+    constexpr int kDetailH  = 64;    // detail card visual is 58 px;
+                                     // slot a bit taller for breathing
+    constexpr int kMiniH    = 30;    // mini row visual is 26 px
+    taskDrum_.build(root_, kDrumW, kDrumH, /*tierSpacing=*/56);
+    using L = components::DrumScroller::TierLayout;
+    // Distance 0 — the detail card.
+    taskDrum_.setTierLayoutByDistance(0,
+        L{0, kDetailW, kDetailH, LV_OPA_COVER});
+    // Distance 1 — closest neighbour: 8 px inset each side, no
+    // overlap, full opacity. y = 48 puts the mini's top 6 px below
+    // the detail card's bottom edge.
+    taskDrum_.setTierLayoutByDistance(1,
+        L{48, kDetailW - 16, kMiniH, LV_OPA_COVER});
+    // Distance 2 — 18 px inset, 7 px overlap with distance 1
+    // (handled visually by the overlap math: y_step = miniH - 7).
+    taskDrum_.setTierLayoutByDistance(2,
+        L{48 + (kMiniH - 7), kDetailW - 36, kMiniH, LV_OPA_90});
+    // Distance 3 — 28 px inset, 13 px overlap with distance 2.
+    taskDrum_.setTierLayoutByDistance(3,
+        L{48 + (kMiniH - 7) + (kMiniH - 13),
+          kDetailW - 56, kMiniH, LV_OPA_70});
+
     taskDrum_.setItemCount(n);
     taskDrum_.setCursor(dash.cursor());
     // Render closure pulls each tier's item from the dashboard's

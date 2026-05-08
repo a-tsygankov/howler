@@ -66,10 +66,26 @@ void ScreenManager::buildTaskList() {
     const auto& items = all.items();
     const int64_t serverNow = lastServerNowSec_;
 
-    // Build the drum carousel first so subsequent overlay widgets
-    // (tier counts header, cursor dots) sit on top in z-order.
-    taskDrum_.build(root_, /*viewWidth=*/220, /*viewHeight=*/220,
-                    /*tierSpacing=*/80);
+    // Drum carousel — same per-distance layout as Dashboard so the
+    // two screens read as variations of one design rather than
+    // independent layouts. See screen_dashboard.cpp for the rationale
+    // behind each y-offset / inset / opacity pick.
+    constexpr int kDrumW   = 204;
+    constexpr int kDrumH   = 220;
+    constexpr int kDetailW = 204;
+    constexpr int kDetailH = 64;
+    constexpr int kMiniH   = 30;
+    taskDrum_.build(root_, kDrumW, kDrumH, /*tierSpacing=*/56);
+    using L = components::DrumScroller::TierLayout;
+    taskDrum_.setTierLayoutByDistance(0,
+        L{0, kDetailW, kDetailH, LV_OPA_COVER});
+    taskDrum_.setTierLayoutByDistance(1,
+        L{48, kDetailW - 16, kMiniH, LV_OPA_COVER});
+    taskDrum_.setTierLayoutByDistance(2,
+        L{48 + (kMiniH - 7), kDetailW - 36, kMiniH, LV_OPA_90});
+    taskDrum_.setTierLayoutByDistance(3,
+        L{48 + (kMiniH - 7) + (kMiniH - 13),
+          kDetailW - 56, kMiniH, LV_OPA_70});
     taskDrum_.setItemCount(n);
     taskDrum_.setCursor(all.cursor());
     taskDrum_.setRender([this, &items, serverNow](

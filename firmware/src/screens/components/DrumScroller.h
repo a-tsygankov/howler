@@ -1,18 +1,31 @@
 #pragma once
 
 // DrumScroller — a vertical "rotating drum" carousel of items. The
-// selected item sits in the centre at full size; up to 2 items above
-// and 2 below render at progressively smaller scale, simulating a
+// selected item sits in the centre at full size; up to 3 items above
+// and 3 below render at progressively smaller scale, simulating a
 // drum that's been rotated so its faces are angling away from the
 // viewer. Off-screen items don't render.
 //
+// Per-distance layout: each distance from the centre (0..3) has its
+// own y-offset, slot width, slot height, and opacity, so the drum
+// can do either a uniform-spacing menu (Settings, Wi-Fi, UserPicker)
+// or a "peek-stack" task carousel (Dashboard, TaskList, per the
+// design handoff) where neighbour rows progressively narrow + dim
+// + overlap their nearer neighbour. The default layout is uniform —
+// callers configure stack-style by calling setTierLayoutByDistance.
+//
 // The widget is fully parametrised: the caller supplies a render
 // callback that fills a slot's lv_obj_t with whatever content suits
-// the screen — text labels for menus (Settings, Wi-Fi, UserPicker)
-// or task cards for dashboards. The component's job is owning the
-// 5 slot containers, positioning them on the disc, animating
+// the screen — text labels for menus or task cards (detail vs mini,
+// keyed off the `tier` argument). The component's job is owning the
+// 7 slot containers, positioning them on the disc, animating
 // transitions between cursor positions, and propagating activate /
 // scroll events back up.
+//
+// Z-order: closer-to-centre tiers paint on TOP of farther ones, so
+// the peek-stack reads correctly (the closer mini sits flush; the
+// farther mini's top/bottom is hidden by the closer one). Built into
+// the layout-apply pass via lv_obj_move_foreground().
 //
 // Inertial scrolling: scrollBy(direction, magnitude) moves the
 // cursor by direction*magnitude items and plays a single ease-out
@@ -39,31 +52,47 @@ namespace howler::screens::components {
 class DrumScroller {
 public:
     /// Render callback signature. `slot` is a fresh lv_obj_t the caller
-    /// fills with their tier-specific content. `tier` is in [-2, +2]
+    /// fills with their tier-specific content. `tier` is in [-3, +3]
     /// where 0 is the centre / selected item; ±1 are the immediate
-    /// neighbours; ±2 are the far edges (typically tiny / faded).
-    /// `index` is the wrapped item index the slot represents.
+    /// neighbours; ±2 / ±3 are the far edges (typically smaller /
+    /// faded / partially overlapped). `index` is the wrapped item
+    /// index the slot represents.
     using RenderFn = std::function<void(lv_obj_t* slot,
                                         size_t index,
                                         int tier)>;
 
     using ActivateFn = std::function<void(size_t index)>;
 
+    /// Per-distance slot configuration. `yOffset` is the absolute
+    /// pixel distance from the container centre — DrumScroller mirrors
+    /// it for negative tiers so a single layout entry covers both
+    /// "above" and "below" at that distance. `width` × `height` is
+    /// the slot bounding box (LV_ALIGN_CENTER inside the container);
+    /// opacity dims the entire slot subtree. Defaults compute from
+    /// the build()-time `tierSpacing` so callers that don't customise
+    /// see the legacy uniform layout.
+    struct TierLayout {
+        int      yOffset = 0;
+        int      width   = 0;
+        int      height  = 0;
+        lv_opa_t opacity = LV_OPA_COVER;
+    };
+
     /// Build under `parent`, sizing the drum to fill the viewport.
     /// `viewWidth` × `viewHeight` is the bounding box; `tierSpacing`
-    /// is how many pixels separate consecutive tiers (centre →
-    /// neighbour → far). The default 56 px makes the centre card
-    /// (≈ tier 0) and the mini neighbour pills (≈ tier ±1) sit cleanly
-    /// in the round display without overlapping the tab strip or the
-    /// footer hint.
+    /// is how many pixels separate consecutive tiers in the *default*
+    /// layout. Callers wanting non-uniform spacing call
+    /// setTierLayoutByDistance after build().
     void build(lv_obj_t* parent, int viewWidth, int viewHeight,
                int tierSpacing = 56) {
         parent_       = parent;
+        viewWidth_    = viewWidth;
+        viewHeight_   = viewHeight;
         tierSpacing_  = tierSpacing;
         // The "container" is a transparent rectangle we translate
         // during scroll animations. Slots live inside; their static
-        // y is `tier * tierSpacing` so a container y of 0 means the
-        // selected item sits dead centre on the disc.
+        // y is `tier * tierSpacing` (default) so a container y of 0
+        // means the selected item sits dead centre on the disc.
         container_ = lv_obj_create(parent);
         lv_obj_set_size(container_, viewWidth, viewHeight);
         lv_obj_align(container_, LV_ALIGN_CENTER, 0, 0);
@@ -72,16 +101,27 @@ public:
         lv_obj_set_style_border_width(container_, 0, 0);
         lv_obj_set_style_pad_all(container_, 0, 0);
 
+        // Default to uniform tierSpacing so menu screens don't have
+        // to opt in. Callers wanting the design's stack-style layout
+        // call setTierLayoutByDistance after build().
+        for (int d = 0; d <= kMaxDistance; ++d) {
+            tierLayouts_[d] = TierLayout{
+                /*yOffset=*/d * tierSpacing,
+                /*width=*/viewWidth,
+                /*height=*/tierSpacing,
+                /*opacity=*/LV_OPA_COVER,
+            };
+        }
+
         for (int i = 0; i < kVisibleTiers; ++i) {
             slots_[i] = lv_obj_create(container_);
-            const int tier = i - kCentreSlot;
-            lv_obj_set_size(slots_[i], viewWidth, tierSpacing_);
-            lv_obj_align(slots_[i], LV_ALIGN_CENTER, 0, tier * tierSpacing_);
             lv_obj_clear_flag(slots_[i], LV_OBJ_FLAG_SCROLLABLE);
             lv_obj_set_style_bg_opa(slots_[i], LV_OPA_0, 0);
             lv_obj_set_style_border_width(slots_[i], 0, 0);
             lv_obj_set_style_pad_all(slots_[i], 0, 0);
         }
+        applyLayout();
+
         // Centre slot owns the tap target. We forward tap → onActivate
         // when the screen layer calls fireActivate(); LVGL also fires
         // its own CLICKED event via the encoder press if the slot is
@@ -98,6 +138,18 @@ public:
                     if (self) self->fireActivate();
                 }, LV_EVENT_CLICKED, this);
         }
+    }
+
+    /// Override the layout for one distance from the centre. The
+    /// centre slot is distance 0; the immediate neighbours above and
+    /// below are distance 1; etc. Distances > kMaxDistance are
+    /// silently ignored (we only render 7 tiers). The change takes
+    /// effect immediately; call rebuild() afterwards if items have
+    /// already been set so the new sizes propagate to the content.
+    void setTierLayoutByDistance(int distance, const TierLayout& layout) {
+        if (distance < 0 || distance > kMaxDistance) return;
+        tierLayouts_[distance] = layout;
+        applyLayout();
     }
 
     void setRender(RenderFn fn)  { render_ = std::move(fn); rebuild(); }
@@ -141,7 +193,15 @@ public:
         // and the far-edge items appearing from the rim.
         rebuild();
 
-        const int slideFrom = steps * tierSpacing_;
+        // Slide distance: use the distance-1 yOffset as the per-step
+        // travel — that's the gap a single cursor advance moves any
+        // visible slot. Far-distance tiers don't sit at integer
+        // multiples (the design's overlap math collapses them inward),
+        // so basing the animation on distance-1 keeps the slide speed
+        // visually proportional to the cursor change for each tier.
+        const int perStep   = tierLayouts_[1].yOffset > 0
+            ? tierLayouts_[1].yOffset : tierSpacing_;
+        const int slideFrom = steps * perStep;
         const int absSteps  = steps < 0 ? -steps : steps;
         const int duration  = kBaseAnimMs + absSteps * kPerStepAnimMs;
         animateContainerY(slideFrom, 0, duration);
@@ -160,16 +220,20 @@ public:
             // Aliasing-aware tier suppression. With n items, the
             // modulo-wrap means tier ±k aliases tier ∓(n-k) — e.g.
             // n=4, tier-2 wraps to the same index as tier+2; n=3,
-            // tier-2 aliases tier+1. Rendering the same item at two
-            // tiers looks broken (the user sees one row "echoing"
-            // the other), so we hide far slots until the list is
-            // long enough that no two visible tiers collide. The
-            // boundary: tier ±2 is safe iff n ≥ 5; tier ±1 is safe
-            // iff n ≥ 3 (n=2 shows the only other item on both
-            // sides — accept that, the drum still rotates cleanly).
+            // tier-2 aliases tier+1; n=6, tier-3 aliases tier+3.
+            // Rendering the same item at two tiers looks broken (the
+            // user sees one row "echoing" the other), so we hide far
+            // slots until the list is long enough that no two visible
+            // tiers collide. Boundaries:
+            //   tier ±1 safe iff n ≥ 3 (n=2 aliases ±1 to each other,
+            //                           accept it — the drum still
+            //                           rotates cleanly with two)
+            //   tier ±2 safe iff n ≥ 5
+            //   tier ±3 safe iff n ≥ 7
             if (itemCount_ == 0) continue;
             if (itemCount_ == 1 && tier != 0) continue;
             if (itemCount_ < 5  && (tier == -2 || tier == 2)) continue;
+            if (itemCount_ < 7  && (tier == -3 || tier == 3)) continue;
             const long n   = static_cast<long>(itemCount_);
             const long idx = ((static_cast<long>(cursor_) + tier) % n + n) % n;
             render_(slots_[i], static_cast<size_t>(idx), tier);
@@ -218,11 +282,14 @@ public:
     }
 
 private:
-    /// Number of slots we keep alive. 5 = centre + 2 above + 2 below.
-    /// Increasing this would need matching `tierSpacing_` math + a
-    /// taller container — not currently worth it for the 240×240 disc.
-    static constexpr int kVisibleTiers = 5;
-    static constexpr int kCentreSlot   = 2;  // index in `slots_[]`
+    /// Number of slots we keep alive. 7 = centre + 3 above + 3 below,
+    /// matching the design handoff's STACK constants (insets / dim /
+    /// scale arrays each have 4 entries indexed by abs distance 0..3).
+    /// We could grow it, but the 240×240 disc has no room for a
+    /// fourth ring inside the safe area.
+    static constexpr int kVisibleTiers = 7;
+    static constexpr int kCentreSlot   = 3;  // index in `slots_[]`
+    static constexpr int kMaxDistance  = 3;
 
     // Animation tuning. Base = ~one frame's settle time on a 50 Hz
     // poll loop; per-step is small so even a magnitude-5 flick stays
@@ -249,12 +316,52 @@ private:
         lv_anim_start(&a);
     }
 
+    /// Push the per-distance layout into each slot. Run on build()
+    /// and again on every setTierLayoutByDistance() so a screen can
+    /// mutate its layout after construction. Also enforces z-order:
+    /// closer-to-centre tiers paint on top of farther ones, which is
+    /// what makes the peek-stack overlap read correctly (the closer
+    /// mini's edge hides part of the farther mini).
+    void applyLayout() {
+        if (!container_) return;
+        for (int i = 0; i < kVisibleTiers; ++i) {
+            if (!slots_[i]) continue;
+            const int tier = i - kCentreSlot;
+            const int dist = tier < 0 ? -tier : tier;
+            const auto& L = tierLayouts_[dist > kMaxDistance
+                                         ? kMaxDistance : dist];
+            const int signedY = (tier < 0) ? -L.yOffset : L.yOffset;
+            const int w = L.width  > 0 ? L.width  : viewWidth_;
+            const int h = L.height > 0 ? L.height : tierSpacing_;
+            lv_obj_set_size(slots_[i], w, h);
+            lv_obj_align(slots_[i], LV_ALIGN_CENTER, 0, signedY);
+            lv_obj_set_style_opa(slots_[i], L.opacity, 0);
+        }
+        // Z-order: walk distances from the rim inward, calling
+        // move_foreground each step so the centre ends up on top.
+        // Cheap (one LVGL list reorder per tier) and runs only when
+        // layout changes, not per-frame.
+        for (int dist = kMaxDistance; dist >= 0; --dist) {
+            const int above = kCentreSlot - dist;
+            const int below = kCentreSlot + dist;
+            if (above != below && above >= 0 && slots_[above]) {
+                lv_obj_move_foreground(slots_[above]);
+            }
+            if (below < kVisibleTiers && slots_[below]) {
+                lv_obj_move_foreground(slots_[below]);
+            }
+        }
+    }
+
     lv_obj_t*  parent_      = nullptr;
     lv_obj_t*  container_   = nullptr;
     lv_obj_t*  slots_[kVisibleTiers] = {};
+    int        viewWidth_   = 0;
+    int        viewHeight_  = 0;
     int        tierSpacing_ = 56;
     size_t     itemCount_   = 0;
     size_t     cursor_      = 0;
+    TierLayout tierLayouts_[kMaxDistance + 1] = {};
     RenderFn   render_;
     ActivateFn onActivate_;
 };
