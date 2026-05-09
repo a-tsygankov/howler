@@ -212,6 +212,16 @@ private:
     /// new bitmap, the active drum-screen rebuilds so any avatar
     /// previously showing a fallback glyph now renders the icon.
     uint32_t                 lastIconCacheGen_ = 0;
+    /// PairCoordinator phase snapshot at the time the current Pair
+    /// screen was built. tick() compares the live phase each frame
+    /// and triggers a rebuild on transition so the user sees
+    /// "waiting for confirm..." land within one frame of the
+    /// Started → Pending poll, instead of the screen freezing on
+    /// the entry-time text until App auto-navigates to Dashboard
+    /// after Confirmation. Initialised to Idle so the first build
+    /// never mismatches the cached value.
+    howler::domain::PairPhase lastPairPhase_ =
+        howler::domain::PairPhase::Idle;
     /// One-shot flag — flips true the first time we observe the
     /// network as online AND prewarm the icon cache with the full
     /// LABEL_ICON_CHOICES set. Subsequent online/offline cycles

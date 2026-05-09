@@ -145,6 +145,16 @@ void ScreenManager::tick(uint32_t millisNow) {
         app_.allTasks().generation() != lastAllTasksGen_) {
         rebuildPending_ = true;
     }
+    // Pair screen surfaces six PairPhase states (scan QR, waiting,
+    // expired, etc.) — PairCoordinator polls /api/pair/check every
+    // 3 s, so when the user submits the code on their phone the
+    // Started → Pending transition lands ~3 s later. Without a
+    // rebuild trigger the screen kept showing "scan QR or enter
+    // code" even though the server already had the submission.
+    if (rendered_ == domain::ScreenId::Pair &&
+        app_.pair().state().phase != lastPairPhase_) {
+        rebuildPending_ = true;
+    }
 
     // Drain at most one pending icon fetch per tick so the network
     // round-trip never lands on the render path (a synchronous
@@ -447,6 +457,7 @@ void ScreenManager::rebuildScreen() {
     lastDashboardGen_ = app_.dashboard().generation();
     lastAllTasksGen_  = app_.allTasks().generation();
     lastIconCacheGen_ = iconCache_.generation();
+    lastPairPhase_    = app_.pair().state().phase;
     using domain::ScreenId;
     switch (rendered_) {
         case ScreenId::Boot:               buildBoot();              break;
