@@ -135,6 +135,17 @@ void ScreenManager::buildSettingsBrightness() {
     lv_obj_set_style_text_font(val, &lv_font_montserrat_22, 0);
     lv_obj_center(val);
 
+    // Stash the centre-value label on the arc's user_data slot so
+    // the change handler can repaint it as the user rotates. Same
+    // pattern the SettingsTheme pills use to thread a per-pill
+    // intent into the click handler — keeps state out of
+    // ScreenManager's members and dies naturally when the arc
+    // (and its child label) get deleted with root_ in teardown.
+    // Previously the number froze at the entry-time value while
+    // the arc visibly filled — a misleading mismatch that made
+    // it look like the rotation wasn't registering.
+    lv_obj_set_user_data(arc, val);
+
     auto* hint = lv_label_create(root_);
     lv_label_set_text(hint, "rotate | 2x back");
     lv_obj_set_style_text_color(hint, Palette::ink3(), 0);
@@ -143,8 +154,14 @@ void ScreenManager::buildSettingsBrightness() {
     lv_obj_add_event_cb(arc, [](lv_event_t* e) {
         if (lv_event_get_code(e) != LV_EVENT_VALUE_CHANGED) return;
         auto* mgr = static_cast<ScreenManager*>(lv_event_get_user_data(e));
-        const int v = lv_arc_get_value(lv_event_get_target_obj(e));
+        auto* arc = lv_event_get_target_obj(e);
+        const int v = lv_arc_get_value(arc);
         mgr->app().settings().brightness = static_cast<uint8_t>(v);
+        if (auto* lbl = static_cast<lv_obj_t*>(lv_obj_get_user_data(arc))) {
+            char buf[16];
+            snprintf(buf, sizeof(buf), "%u", (unsigned)v);
+            lv_label_set_text(lbl, buf);
+        }
     }, LV_EVENT_VALUE_CHANGED, this);
 }
 
