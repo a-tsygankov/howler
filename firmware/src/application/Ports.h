@@ -232,6 +232,17 @@ public:
     /// concern — the application calls this with cleartext creds.
     virtual bool connect(const howler::domain::WifiConfig& cfg) = 0;
     virtual void disconnect() = 0;
+
+    /// RSSI in dBm of the current association (closer to 0 = stronger,
+    /// typical home values -50…-75). Returns 0 when not associated or
+    /// when the adapter can't report — diagnostics surface treats 0
+    /// as "unknown" and renders "—".
+    virtual int8_t currentRssi() const { return 0; }
+    /// Dotted-quad IPv4 address from DHCP, or empty when not
+    /// associated / no lease yet. Default impl returns empty so the
+    /// host-side test stubs and noop adapters don't have to implement
+    /// anything Wi-Fi-specific to compile.
+    virtual std::string currentIp() const { return {}; }
 };
 
 }  // namespace howler::application

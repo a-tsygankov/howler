@@ -285,8 +285,26 @@ const char* networkHealthLabel(application::App::NetworkHealth h) {
     return "?";
 }
 
-const char* themeLabel(domain::Theme t) {
-    return t == domain::Theme::Dark ? "dark" : "light";
+// Render the SSID + RSSI on a single line. Truncates the SSID to
+// `kSsidCap` chars with a trailing '…' so the row stays inside the
+// 188-px card no matter what the user named their AP. RSSI is shown
+// in dBm; 0 means "not associated or unknown" and falls through to
+// a bare SSID (or "—" when both are missing).
+void formatWifiLine(char* buf, size_t cap, application::App& app) {
+    const bool connected = app.wifi().isConnected();
+    if (!connected) { snprintf(buf, cap, "—"); return; }
+
+    constexpr size_t kSsidCap = 12;
+    std::string ssid = app.wifi().currentSsid();
+    if (ssid.size() > kSsidCap) {
+        ssid.resize(kSsidCap - 1);
+        ssid.push_back('~');  // ASCII fallback — montserrat_10 ships
+                              // a narrow ellipsis but the visual hint
+                              // is the same and avoids a glyph miss.
+    }
+    const int rssi = app.wifi().currentRssi();
+    if (rssi == 0) { snprintf(buf, cap, "%s", ssid.c_str()); return; }
+    snprintf(buf, cap, "%s %ddBm", ssid.c_str(), rssi);
 }
 
 // Format the multi-line diagnostic body into `buf`. Used by both
@@ -297,10 +315,12 @@ const char* themeLabel(domain::Theme t) {
 void formatAboutBody(char* buf, size_t cap, application::App& app) {
     char ageBuf[24];
     char upBuf[24];
+    char wifiBuf[40];
     formatSyncAge(ageBuf, sizeof(ageBuf),
                    app.lastFullSyncSec(),
                    app.clock().nowEpochSeconds());
     formatUptime(upBuf, sizeof(upBuf), millis());
+    formatWifiLine(wifiBuf, sizeof(wifiBuf), app);
 
     const uint32_t heapBytes = heap_caps_get_free_size(MALLOC_CAP_DEFAULT);
     const uint32_t heapKB    = heapBytes / 1024;
@@ -309,27 +329,36 @@ void formatAboutBody(char* buf, size_t cap, application::App& app) {
     const std::string didTail = did.size() >= 8
         ? did.substr(did.size() - 8) : did;
 
-    const std::string ssid = app.wifi().isConnected()
-                               ? app.wifi().currentSsid()
-                               : std::string{};
-    const char* ssidStr = ssid.empty() ? "—" : ssid.c_str();
+    // IP is shown as a separate row when associated so the user can
+    // verify "yes, DHCP completed" — most "wifi connected but sync
+    // broken" investigations land here. Empty when not connected.
+    const std::string ip = app.wifi().currentIp();
+    const char* ipStr = ip.empty() ? "—" : ip.c_str();
 
+    // 8 rows fit the 158-px card with the 10pt body font + 2 px
+    // line-space (~118 px content area). Order groups related
+    // diagnostics: connectivity (net / wifi / ip / sync), then host
+    // health (ram / up / queue), then identity. The `theme` row from
+    // dev-27 was retired here — the active theme is already visible
+    // at a glance from the screen's own background, so the slot is
+    // better spent on `ip`, which is the data point the user
+    // actually needs when debugging "wifi connected but sync broken".
     snprintf(buf, cap,
              "net    %s\n"
              "wifi   %s\n"
+             "ip     %s\n"
              "sync   %s\n"
              "ram    %u KB\n"
              "up     %s\n"
              "queue  %u pending\n"
-             "theme  %s\n"
              "dev    %s",
              networkHealthLabel(app.networkHealth()),
-             ssidStr,
+             wifiBuf,
+             ipStr,
              ageBuf,
              static_cast<unsigned>(heapKB),
              upBuf,
              static_cast<unsigned>(app.queue().size()),
-             themeLabel(app.settings().theme),
              didTail.c_str());
 }
 
