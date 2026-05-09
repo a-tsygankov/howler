@@ -89,6 +89,16 @@ public:
                                 std::string& /*outHash*/) {
         return NetResult::transient(0);
     }
+
+    /// Fetch the icon manifest — list of all names the backend has
+    /// seeded. Used by the IconCache to prewarm without hardcoding
+    /// the full LABEL_ICON_CHOICES list firmware-side; if the
+    /// manifest endpoint fails the caller falls back to a static
+    /// list it knows about. Default impl returns transient so host
+    /// stubs that don't override see "no manifest available".
+    virtual NetResult fetchIconManifest(std::vector<std::string>& /*outNames*/) {
+        return NetResult::transient(0);
+    }
 };
 
 /// Pair flow client. Separate from INetwork because PairApi can be

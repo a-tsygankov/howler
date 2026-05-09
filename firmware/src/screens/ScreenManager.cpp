@@ -145,21 +145,32 @@ void ScreenManager::tick(uint32_t millisNow) {
     // fallback glyph is now backed by a real bitmap.
     //
     // First time we have a usable network, prewarm the cache with
-    // the LABEL_ICON_CHOICES set the backend seeds. Avatars on the
-    // dashboard's first paint then render real icons within ~1–2 s
-    // of the device coming online, instead of waiting for each
-    // avatar to lazy-fetch as the user scrolls past it.
+    // every icon name the backend has seeded. We ask for the manifest
+    // (`GET /api/icons`) so the device doesn't need its own copy of
+    // LABEL_ICON_CHOICES — adding a new icon to the seed migration
+    // automatically reaches the device on next boot. The hardcoded
+    // fallback below covers the (rare) case where the manifest call
+    // fails on the first online tick; lazy fetches still work on
+    // demand even if neither path populates the cache.
     if (!iconCachePrewarmed_ && app_.network().isOnline()) {
-        // Mirror of LABEL_ICON_CHOICES in webapp/src/Dashboard.tsx
-        // and the seed list in backend/scripts/seed-icons.mjs.
-        // Keep all three in sync if the icon set changes.
-        const std::vector<std::string> kPrewarm = {
-            "paw", "dog", "cat", "broom", "home", "bowl",
-            "heart", "sparkle", "star", "plant", "flame", "bell",
-            "briefcase", "book", "run", "pill", "tooth", "clock",
-            "calendar", "check",
-        };
-        iconCache_.prewarm(kPrewarm);
+        std::vector<std::string> names;
+        const auto r = app_.network().fetchIconManifest(names);
+        if (r.isOk() && !names.empty()) {
+            iconCache_.prewarm(names);
+        } else {
+            // Fallback: the LABEL_ICON_CHOICES set as of dev-22, last
+            // verified against home2 production on 2026-05-08. Stays
+            // sufficient if the manifest endpoint goes down — the
+            // device just won't pick up newly-added icons until the
+            // manifest is reachable again.
+            const std::vector<std::string> kFallback = {
+                "paw", "dog", "cat", "broom", "home", "bowl",
+                "heart", "sparkle", "star", "plant", "flame", "bell",
+                "briefcase", "book", "run", "pill", "tooth", "clock",
+                "calendar", "check",
+            };
+            iconCache_.prewarm(kFallback);
+        }
         iconCachePrewarmed_ = true;
     }
     iconCache_.tickPrefetch(/*maxPerTick=*/1);

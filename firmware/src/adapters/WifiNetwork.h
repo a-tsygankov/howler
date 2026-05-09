@@ -42,6 +42,7 @@ public:
     NetResult fetchIcon(const std::string& name,
                         std::string& outBitmap,
                         std::string& outHash) override;
+    NetResult fetchIconManifest(std::vector<std::string>& outNames) override;
 
 private:
     const char* backendUrl_;
