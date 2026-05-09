@@ -156,6 +156,22 @@ void ScreenManager::tick(uint32_t millisNow) {
         rebuildPending_ = true;
     }
 
+    // Slice B: rebuild Dashboard / TaskList every ~30 s so locally-
+    // computed urgency labels track the clock. Without this the
+    // screen would show "in 14m" indefinitely between sync rounds
+    // even though the actual time-remaining keeps shrinking.
+    // 30 s strikes a balance — finer than that wastes LVGL rebuild
+    // cycles, coarser leaves the chip noticeably stale.
+    constexpr int64_t kUrgencyTickMs = 30'000;
+    const int64_t nowMsForUrgency =
+        static_cast<int64_t>(millisNow);
+    if ((rendered_ == domain::ScreenId::Dashboard ||
+         rendered_ == domain::ScreenId::TaskList) &&
+        nowMsForUrgency - lastUrgencyTickMs_ >= kUrgencyTickMs) {
+        rebuildPending_       = true;
+        lastUrgencyTickMs_    = nowMsForUrgency;
+    }
+
     // Drain at most one pending icon fetch per tick so the network
     // round-trip never lands on the render path (a synchronous
     // fetch from inside a draw callback can block LVGL for 100s of

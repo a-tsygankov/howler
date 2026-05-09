@@ -9,6 +9,15 @@
 
 Last updated 2026-05-09 alongside dev-28.
 
+> **Status — slices A + B both landed in dev-28.** The "what's
+> next" sections below describe the design path; the actual
+> implementation is in `backend/migrations/0012_update_counter.sql`
+> (counter + triggers), `backend/src/routes/homes.ts` (peek
+> endpoint), `firmware/src/domain/Urgency.h` (local urgency port),
+> `firmware/src/application/SyncService.cpp` (peek-first round
+> selection). The 5-min refresh stopgap from slice A is now 1 h —
+> counter peek is authoritative.
+
 ---
 
 ## 1. TL;DR
@@ -273,7 +282,7 @@ later is the same total work in two slices.
 
 **Ship in three slices, gated on each other:**
 
-### Slice A — peek only (≈ 1 day)
+### Slice A — peek only ✅
 
 - `0011_update_counter.sql`: add `homes.update_counter`, create
   the eleven triggers, backfill to 1.
@@ -291,15 +300,30 @@ This alone cuts idle-round cost by ~80 % without any of the
 proposal's complex parts. Completes the optimisation that
 matters most: stop hammering the worker when nothing's changed.
 
-### Slice B — local urgency (≈ 1 week, after A)
+### Slice B — local urgency ✅
 
-- Port `services/urgency.ts` ⇒ `firmware/src/domain/Urgency.h` +
-  matching unit tests in `test_domain/`.
-- Dashboard endpoint stops emitting `urgency / nextDeadline /
-  secondsUntilNext / isMissed` to device clients (still emits
-  them for the webapp via a query flag).
-- Drop the periodic 5-min refresh from Slice A — counter is now
-  authoritative.
+Landed in the same dev-28 PR:
+
+- `services/urgency.ts` is now mirrored line-by-line in
+  [`firmware/src/domain/Urgency.h`](../firmware/src/domain/Urgency.h)
+  with 22 unit-test cases ported into
+  [`firmware/test/test_domain/test_urgency.cpp`](../firmware/test/test_domain/test_urgency.cpp).
+- The dashboard endpoint emits BOTH the server-computed urgency
+  snapshot (so the webapp keeps working untouched) AND the raw
+  inputs (`scheduleModifiedAt`, `oneshotDeadline`,
+  `lastExecutionAt`, `rule`) so the device can recompute. Webapp
+  ignores the new fields; older devices keep using the snapshot
+  as a fallback when `hasRule == false`.
+- `DashboardModel::refreshUrgency(nowSec)` is called by the
+  Dashboard + TaskList screen builders before the drum captures
+  items by reference. ScreenManager additionally rebuilds those
+  screens every ~30 s while they're rendered so labels track the
+  clock without a sync round.
+- The 5-min refresh stopgap from slice A was raised to **1 h** —
+  not removed entirely. Counter peek is now authoritative on the
+  hot path; the hourly safety net only catches the unlikely
+  scenario where a future home-scoped table mutates without firing
+  a counter trigger.
 
 This is what unlocks "30 s peek, full fetch only on real
 changes" and brings the system in line with the Phase 5 MQTT

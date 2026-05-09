@@ -217,15 +217,35 @@ export const dashboardRouter = new Hono<{
 
     return c.json({
       now: nowSec,
-      tasks: items.map((it) => ({
-        task: it.task,
-        rule: it.rule,
-        urgency: it.urgency.urgency,
-        prevDeadline: it.urgency.prevDeadline,
-        nextDeadline: it.urgency.nextDeadline,
-        periodSec: it.urgency.periodSec,
-        isMissed: it.urgency.isMissed,
-        secondsUntilNext: it.urgency.secondsUntilNext,
-      })),
+      // Each row carries BOTH the server-computed urgency snapshot
+      // (used by the webapp untouched) AND the raw inputs needed to
+      // recompute urgency client-side: `scheduleModifiedAt`,
+      // `oneshotDeadline` (= task.deadlineHint for ONESHOT, null
+      // otherwise), and `lastExecutionAt`. The device firmware uses
+      // the inputs to drive `domain::computeUrgency()` per frame so
+      // "due in 14 m" labels stay accurate between sync rounds —
+      // see slice B in docs/sync-analysis.md. Webapp clients can
+      // ignore the new fields; they're additive.
+      tasks: items.map((it) => {
+        const sched = scheduleByTask.get(it.task.id);
+        const oneshotDeadline =
+          it.rule?.kind === "ONESHOT"
+            ? (tasks.find((t) => t.id === it.task.id)?.deadline_hint ?? null)
+            : null;
+        return {
+          task: it.task,
+          rule: it.rule,
+          urgency: it.urgency.urgency,
+          prevDeadline: it.urgency.prevDeadline,
+          nextDeadline: it.urgency.nextDeadline,
+          periodSec: it.urgency.periodSec,
+          isMissed: it.urgency.isMissed,
+          secondsUntilNext: it.urgency.secondsUntilNext,
+          // Local-urgency inputs (slice B).
+          scheduleModifiedAt: sched?.modifiedAt ?? null,
+          oneshotDeadline,
+          lastExecutionAt: lastExecutionByTask.get(it.task.id) ?? null,
+        };
+      }),
     });
   });

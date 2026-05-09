@@ -62,6 +62,30 @@ void test_arc_idle_when_not_held();
 void test_arc_charges_then_fires();
 void test_arc_releases_before_threshold_resets();
 
+// test_urgency.cpp — port of backend/test/urgency.test.ts
+void test_urgency_daily_urgent_in_last_quarter_of_gap();
+void test_urgency_daily_non_urgent_in_second_to_last_quarter();
+void test_urgency_daily_hidden_when_more_than_half_remains();
+void test_urgency_daily_urgent_when_previous_slot_missed();
+void test_urgency_daily_not_missed_when_modifiedAt_after_prev();
+void test_urgency_daily_not_missed_when_executed_after_prev();
+void test_urgency_daily_cycle_done_shifts_window_forward();
+void test_urgency_periodic_hidden_early_in_cycle();
+void test_urgency_periodic_non_urgent_in_second_to_last_quarter();
+void test_urgency_periodic_urgent_in_last_quarter();
+void test_urgency_periodic_urgent_and_missed_after_deadline();
+void test_urgency_periodic_execution_reverses_missed();
+void test_urgency_oneshot_hidden_when_far_away();
+void test_urgency_oneshot_non_urgent_in_second_to_last_quarter();
+void test_urgency_oneshot_urgent_in_last_quarter();
+void test_urgency_oneshot_urgent_and_missed_past_deadline();
+void test_urgency_oneshot_hidden_once_executed();
+void test_urgency_oneshot_hidden_when_deadline_null();
+void test_prev_deadline_daily_returns_latest_passed_today();
+void test_prev_deadline_daily_returns_yesterday_when_no_today_yet();
+void test_prev_deadline_periodic_returns_null_when_first_in_future();
+void test_prev_deadline_periodic_returns_last_anchored();
+
 extern "C" void setUp(void) {}
 extern "C" void tearDown(void) {}
 
@@ -114,6 +138,29 @@ int main(int, char**) {
     RUN_TEST(test_arc_idle_when_not_held);
     RUN_TEST(test_arc_charges_then_fires);
     RUN_TEST(test_arc_releases_before_threshold_resets);
+
+    RUN_TEST(test_urgency_daily_urgent_in_last_quarter_of_gap);
+    RUN_TEST(test_urgency_daily_non_urgent_in_second_to_last_quarter);
+    RUN_TEST(test_urgency_daily_hidden_when_more_than_half_remains);
+    RUN_TEST(test_urgency_daily_urgent_when_previous_slot_missed);
+    RUN_TEST(test_urgency_daily_not_missed_when_modifiedAt_after_prev);
+    RUN_TEST(test_urgency_daily_not_missed_when_executed_after_prev);
+    RUN_TEST(test_urgency_daily_cycle_done_shifts_window_forward);
+    RUN_TEST(test_urgency_periodic_hidden_early_in_cycle);
+    RUN_TEST(test_urgency_periodic_non_urgent_in_second_to_last_quarter);
+    RUN_TEST(test_urgency_periodic_urgent_in_last_quarter);
+    RUN_TEST(test_urgency_periodic_urgent_and_missed_after_deadline);
+    RUN_TEST(test_urgency_periodic_execution_reverses_missed);
+    RUN_TEST(test_urgency_oneshot_hidden_when_far_away);
+    RUN_TEST(test_urgency_oneshot_non_urgent_in_second_to_last_quarter);
+    RUN_TEST(test_urgency_oneshot_urgent_in_last_quarter);
+    RUN_TEST(test_urgency_oneshot_urgent_and_missed_past_deadline);
+    RUN_TEST(test_urgency_oneshot_hidden_once_executed);
+    RUN_TEST(test_urgency_oneshot_hidden_when_deadline_null);
+    RUN_TEST(test_prev_deadline_daily_returns_latest_passed_today);
+    RUN_TEST(test_prev_deadline_daily_returns_yesterday_when_no_today_yet);
+    RUN_TEST(test_prev_deadline_periodic_returns_null_when_first_in_future);
+    RUN_TEST(test_prev_deadline_periodic_returns_last_anchored);
 
     return UNITY_END();
 }

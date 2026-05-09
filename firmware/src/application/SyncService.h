@@ -55,13 +55,14 @@ public:
 
     void setIntervalMs(uint32_t ms) { intervalMs_ = ms; }
     /// Force a full refresh after this much wall-clock time even
-    /// when the peek counter is unchanged. Stopgap from
-    /// docs/sync-analysis.md slice A: server-computed urgency
-    /// (`urgency`, `nextDeadline`, `secondsUntilNext`, `isMissed`)
-    /// drifts purely with `now` even when no DB write occurred, so
-    /// the device must occasionally re-fetch the dashboard to keep
-    /// "due in 14 m" labels accurate. Slice B will compute urgency
-    /// locally and let this be raised arbitrarily high.
+    /// when the peek counter is unchanged. With slice B (local
+    /// urgency) landed, the counter is authoritative for *all*
+    /// device-visible state changes — there's no longer a
+    /// drift-without-write scenario the periodic refresh has to
+    /// cover. The default is now 1 h as defense-in-depth: in the
+    /// unlikely event that a future home-scoped table mutates
+    /// without firing a counter trigger, the device still picks up
+    /// the change within an hour instead of indefinitely.
     void setFullRefreshIntervalMs(uint32_t ms) { fullRefreshMs_ = ms; }
     bool lastSyncOk() const { return lastSyncOk_; }
     /// Cached counter from the most recent successful peek (or full
@@ -90,8 +91,10 @@ private:
     /// inside the full-refresh window = skip the four fetches.
     int64_t lastCounter_ = -1;
     uint32_t intervalMs_ = 30000;
-    /// Default 5 min — see setFullRefreshIntervalMs.
-    uint32_t fullRefreshMs_ = 5u * 60u * 1000u;
+    /// Default 1 h — see setFullRefreshIntervalMs. Slice B raised
+    /// the cadence from the slice-A 5-min urgency-drift stopgap;
+    /// counter peek is now authoritative on the hot path.
+    uint32_t fullRefreshMs_ = 60u * 60u * 1000u;
     /// Set by requestSync(); cleared at the top of runRoundIfNeeded
     /// after we've decided to do a full round. Lets external callers
     /// punch through the peek skip without poking private state.

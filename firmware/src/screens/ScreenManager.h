@@ -233,6 +233,14 @@ private:
     /// new bitmap, the active drum-screen rebuilds so any avatar
     /// previously showing a fallback glyph now renders the icon.
     uint32_t                 lastIconCacheGen_ = 0;
+    /// Wall-clock millis of the last Dashboard / TaskList urgency
+    /// refresh tick (slice B). The peek-then-fetch sync skips full
+    /// rounds when the home counter is unchanged, but server-
+    /// computed urgency labels would still drift as `now` advances
+    /// — the device computes urgency locally each frame, but only
+    /// rebuilds the screen tree when this timer expires (~30 s)
+    /// so we don't churn through LVGL rebuilds every frame.
+    int64_t                  lastUrgencyTickMs_ = INT64_MIN / 2;
     /// PairCoordinator phase snapshot at the time the current Pair
     /// screen was built. tick() compares the live phase each frame
     /// and triggers a rebuild on transition so the user sees
