@@ -23,7 +23,72 @@ void SyncService::tick() {
     const int64_t now = clock_.nowEpochMillis();
     if (now - lastPollMs_ < intervalMs_) return;
     lastPollMs_ = now;
+    runRoundIfNeeded();
+}
+
+bool SyncService::runRoundIfNeeded() {
+    const int64_t now = clock_.nowEpochMillis();
+    const bool overdueFullRefresh =
+        (now - lastFullRoundMs_) >= static_cast<int64_t>(fullRefreshMs_);
+
+    // External requestSync() (e.g. Settings → Sync now, or post-
+    // mark-done) bypasses peek entirely — the user wants a fresh
+    // round and we shouldn't second-guess that. Same for the very
+    // first tick (lastCounter_ < 0) where we have nothing to
+    // compare against, and for the periodic refresh that keeps
+    // server-computed urgency labels (nextDeadline / isMissed)
+    // accurate even when no DB row changed.
+    if (forceNextRound_ || lastCounter_ < 0 || overdueFullRefresh) {
+        forceNextRound_ = false;
+        runRound();
+        if (lastSyncOk_) {
+            lastFullRoundMs_ = now;
+            // Anchor lastCounter_ so the next tick's peek has a
+            // baseline. A failure here is fine — lastCounter_ stays
+            // negative or whatever it was, the next tick will peek
+            // again. We trade one extra round-trip for the
+            // post-round freshness of the counter; without it the
+            // next peek would always mismatch (cached < server)
+            // and trigger a redundant full round.
+            int64_t c = 0;
+            if (net_.peekHomeCounter(c).isOk()) lastCounter_ = c;
+        }
+        return true;
+    }
+
+    // Peek path. One TLS handshake + ~200 B response — ~10x cheaper
+    // on D1 reads + bandwidth than the full four-fetch round when
+    // the home is idle. See docs/sync-analysis.md.
+    int64_t serverCounter = 0;
+    const auto peek = net_.peekHomeCounter(serverCounter);
+    if (!peek.isOk()) {
+        // Peek failed (transient: timeout / DNS / 5xx, or
+        // permanent: 404 / malformed). Fall through to a full round
+        // — we'd rather pay the bandwidth than miss real data.
+        runRound();
+        if (lastSyncOk_) lastFullRoundMs_ = now;
+        return true;
+    }
+    if (serverCounter == lastCounter_) {
+        // Skip — nothing has changed in the home since the last
+        // round. Keep the peek-cached value, mark sync as ok so
+        // networkHealth() stays Fresh, leave watermark.lastFullSync
+        // untouched (it's the timestamp of the last *successful
+        // full round* and the freshness of cached data hasn't
+        // moved), and bail.
+        lastSyncOk_ = true;
+        return false;
+    }
+
+    // Counter advanced — at least one home-scoped row changed
+    // since we last fetched. Run the full four-fetch round and
+    // remember the new counter as the post-round baseline.
     runRound();
+    if (lastSyncOk_) {
+        lastCounter_     = serverCounter;
+        lastFullRoundMs_ = now;
+    }
+    return true;
 }
 
 void SyncService::runRound() {

@@ -12,20 +12,57 @@ import init0006 from "../migrations/0006_label_icons.sql?raw";
 import init0007 from "../migrations/0007_task_avatar_backfill.sql?raw";
 import init0008 from "../migrations/0008_rule_modified_at.sql?raw";
 import init0009 from "../migrations/0009_user_bg_color.sql?raw";
+import init0012 from "../migrations/0012_update_counter.sql?raw";
+
+// Parse SQL into top-level statements. The naive split-on-';' breaks
+// on trigger bodies (`CREATE TRIGGER … BEGIN … ; … END;`) — every
+// statement inside a BEGIN/END block has its own ';' that the splitter
+// would treat as the trigger's terminator. This walker tokenises on
+// BEGIN/END/; and only ends a statement on a top-level ';'. Everything
+// else is identical to the previous splitter — comment lines stripped,
+// whitespace collapsed.
+const splitStatements = (sql: string): string[] => {
+  const stripped = sql
+    .split("\n")
+    .filter((line) => !line.trim().startsWith("--"))
+    .join("\n");
+  const out: string[] = [];
+  let cur = "";
+  let depth = 0;
+  const tokens = stripped.split(/(\bBEGIN\b|\bEND\b|;)/gi);
+  for (const tok of tokens) {
+    if (!tok) continue;
+    const upper = tok.toUpperCase();
+    if (upper === "BEGIN") {
+      depth++;
+      cur += tok;
+    } else if (upper === "END") {
+      if (depth > 0) depth--;
+      cur += tok;
+    } else if (tok === ";") {
+      cur += tok;
+      if (depth === 0) {
+        const trimmed = cur.trim();
+        if (trimmed) out.push(trimmed);
+        cur = "";
+      }
+    } else {
+      cur += tok;
+    }
+  }
+  const tail = cur.trim();
+  if (tail) out.push(tail);
+  return out;
+};
 
 const applyMigrations = async () => {
-  for (const sql of [init0000, init0001, init0002, init0003, init0004, init0005, init0006, init0007, init0008, init0009]) {
-    // Strip line comments first — they may contain `;` which would
-    // otherwise break the naive split below.
-    const stripped = sql
-      .split("\n")
-      .filter((line) => !line.trim().startsWith("--"))
-      .join("\n");
-    const statements = stripped
-      .split(";")
-      .map((s) => s.trim())
-      .filter((s) => s.length > 0);
-    for (const s of statements) {
+  // 0010 + 0011 are icon-storage migrations — they don't affect any
+  // home-scoped table the tests touch, and 0011 inserts ~20 KB of
+  // bitmap data we don't need in the in-memory DB. Leaving them out
+  // keeps test boot fast; if a future test exercises the icon
+  // pipeline they should be added here.
+  for (const sql of [init0000, init0001, init0002, init0003, init0004, init0005, init0006, init0007, init0008, init0009, init0012]) {
+    for (const s of splitStatements(sql)) {
       await env.DB.exec(s.replace(/\s+/g, " "));
     }
   }
@@ -438,5 +475,117 @@ describe("tasks + occurrences", () => {
     expect(row?.result_value).toBe(80);
     expect(row?.result_unit).toBe("gr");
     expect(row?.notes).toBe("morning meal");
+  });
+});
+
+describe("home update counter (peek-then-merge sync)", () => {
+  // The rate-limit middleware keys quick-setup by cf-connecting-ip
+  // and the bucket is shared across the whole vitest worker, so by
+  // the time these tests run the earlier suites have eaten through
+  // the 10/60 budget. Stamping a unique IP per call gives each test
+  // its own bucket — same trick a real fleet would have naturally
+  // since each device's outbound IP is distinct.
+  let nextIp = 1;
+  const auth = async () => {
+    const ip = `10.0.0.${nextIp++}`;
+    const res = await SELF.fetch("https://t/api/auth/quick-setup", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "cf-connecting-ip": ip,
+      },
+      body: "{}",
+    });
+    const body = await json(res);
+    return {
+      token: body["token"] as string,
+      homeId: body["homeId"] as string,
+    };
+  };
+
+  const peek = async (token: string) =>
+    json(
+      await SELF.fetch("https://t/api/homes/peek", {
+        headers: { authorization: `Bearer ${token}` },
+      }),
+    );
+
+  it("peek returns the current counter; increments on every home-scoped write", async () => {
+    const a = await auth();
+
+    // Backfill ran in the migration → first peek lands on a positive
+    // counter. quick-setup also runs an INSERT homes + per-home
+    // seed inserts (4 labels + 5 task_results + 1 user), so the
+    // initial value is well above 1; we just assert it's positive
+    // and stable across two reads.
+    const initial = (await peek(a.token))["counter"] as number;
+    expect(initial).toBeGreaterThan(0);
+    expect((await peek(a.token))["counter"]).toBe(initial);
+
+    // Each mutation bumps the counter by at least 1. Strict equality
+    // on a delta of 1 is fragile against schema growth (e.g. tasks
+    // INSERT also INSERTs a schedule row in the same batch); we
+    // require monotonic-strict-increase instead.
+    const create = await SELF.fetch("https://t/api/tasks", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${a.token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ title: "p1", kind: "ONESHOT" }),
+    });
+    expect(create.status).toBe(201);
+    const afterCreate = (await peek(a.token))["counter"] as number;
+    expect(afterCreate).toBeGreaterThan(initial);
+
+    const t = (await json(create)) as { id: string };
+    const patch = await SELF.fetch(`https://t/api/tasks/${t.id}`, {
+      method: "PATCH",
+      headers: {
+        authorization: `Bearer ${a.token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ title: "p1-renamed" }),
+    });
+    expect(patch.status).toBe(200);
+    const afterPatch = (await peek(a.token))["counter"] as number;
+    expect(afterPatch).toBeGreaterThan(afterCreate);
+
+    const del = await SELF.fetch(`https://t/api/tasks/${t.id}`, {
+      method: "DELETE",
+      headers: { authorization: `Bearer ${a.token}` },
+    });
+    // tasks DELETE soft-deletes and returns 204 (no body).
+    expect(del.status).toBe(204);
+    const afterDelete = (await peek(a.token))["counter"] as number;
+    expect(afterDelete).toBeGreaterThan(afterPatch);
+  });
+
+  it("counters are isolated per home", async () => {
+    const a = await auth();
+    const b = await auth();
+
+    const beforeA = (await peek(a.token))["counter"] as number;
+    const beforeB = (await peek(b.token))["counter"] as number;
+
+    // Mutating in home A must not advance home B's counter.
+    await SELF.fetch("https://t/api/tasks", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${a.token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ title: "a-only", kind: "ONESHOT" }),
+    });
+
+    const afterA = (await peek(a.token))["counter"] as number;
+    const afterB = (await peek(b.token))["counter"] as number;
+    expect(afterA).toBeGreaterThan(beforeA);
+    expect(afterB).toBe(beforeB);
+  });
+
+  it("peek requires auth", async () => {
+    const res = await SELF.fetch("https://t/api/homes/peek");
+    expect(res.status).toBe(401);
   });
 });

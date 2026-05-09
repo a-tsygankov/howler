@@ -24,6 +24,14 @@ export const homes = sqliteTable(
     createdAt: integer("created_at").notNull(),
     updatedAt: integer("updated_at").notNull(),
     isDeleted: integer("is_deleted").notNull().default(0),
+    // Monotonically-incremented per home on every mutation of any
+    // home-scoped entity. See migration 0012 + docs/sync-analysis.md
+    // for the trigger set. Devices peek this via GET /api/homes/peek
+    // and skip the four-fetch sync round when their cached value
+    // matches the server's. Backfilled to 1 in the migration so a
+    // never-paired device with cached=0 always falls through on
+    // first peek.
+    updateCounter: integer("update_counter").notNull().default(0),
   },
   (t) => ({
     byLogin: index("homes_login_idx").on(t.login),
