@@ -46,6 +46,14 @@ public:
         // the screen content while the arc is empty.
         lv_obj_set_style_arc_color(arc_, Palette::lineSoft(), LV_PART_MAIN);
         lv_obj_set_style_arc_width(arc_, 6, LV_PART_MAIN);
+        // dev-27: track opacity 0 at build time. The dark-theme "light
+        // ring around the disc" the user observed turned out to be
+        // this 6-px lineSoft track painting through HIDDEN — LVGL 9
+        // suppresses LV_OBJ_DRAW_PART_RECTANGLE when the obj is
+        // HIDDEN but arc PART_MAIN's stroke is drawn from a
+        // separate path. Cheapest fix is to keep the track invisible
+        // until update() flips it on during a Charging phase.
+        lv_obj_set_style_arc_opa(arc_, LV_OPA_TRANSP, LV_PART_MAIN);
 
         // Filled portion in accent.
         lv_obj_set_style_arc_color(arc_, accent_, LV_PART_INDICATOR);
@@ -58,10 +66,19 @@ public:
         if (!arc_) return;
         using Phase = domain::LongPressArc::Phase;
         if (model.phase() == Phase::Idle) {
+            // Belt-and-braces: HIDDEN flag AND track opa=0. Either
+            // alone reliably suppresses rendering on its own LVGL
+            // path; both together mean a future LVGL upgrade can't
+            // resurrect the rim ring as a regression.
             lv_obj_add_flag(arc_, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_style_arc_opa(arc_, LV_OPA_TRANSP, LV_PART_MAIN);
             return;
         }
         lv_obj_clear_flag(arc_, LV_OBJ_FLAG_HIDDEN);
+        // Track at LV_OPA_30 during charging — visible enough to
+        // anchor the filling indicator but quiet enough not to
+        // distract from the rest of the screen.
+        lv_obj_set_style_arc_opa(arc_, LV_OPA_30, LV_PART_MAIN);
         const int v = static_cast<int>(model.progress() * 100.0f + 0.5f);
         lv_arc_set_value(arc_, v);
     }

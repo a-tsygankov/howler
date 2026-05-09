@@ -89,6 +89,16 @@ void ScreenManager::begin(TFT_eSPI& tft) {
     group_ = lv_group_create();
     lv_indev_set_group(indev, group_);
 
+    // dev-27: lv_scr_act() defaults to white in the LVGL theme. Our
+    // disc bg is rounded to a circle; the corners of the 240×240
+    // screen object that fall outside the circle expose the
+    // underlying screen bg. On dark theme that white-corner ring
+    // showed as a faint light edge around the disc. Force the
+    // screen bg to pure black so any AA / corner pixels transition
+    // into the unlit bezel area cleanly regardless of theme.
+    lv_obj_set_style_bg_color(lv_scr_act(), lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(lv_scr_act(), LV_OPA_COVER, 0);
+
     rebuildScreen();
 }
 
@@ -344,6 +354,7 @@ void ScreenManager::teardownScreen() {
     // get overwritten on the next build() so nothing leaks.
     taskDrumActive_ = false;
     taskCursorDots_ = nullptr;
+    taskIndexLabel_ = nullptr;
 }
 
 void ScreenManager::rebuildScreen() {
@@ -591,6 +602,16 @@ void ScreenManager::onEvent(int rotateDelta, bool tap, bool doubleTap,
                 updateDrumRimIndicator(taskCursorDots_,
                                       app_.allTasks().size(),
                                       app_.allTasks().cursor());
+                // dev-27: keep the bottom "X / N" index in lockstep
+                // with the drum's animated cursor. lv_label_set_text
+                // is cheap; LVGL only repaints the dirty rectangle.
+                if (taskIndexLabel_) {
+                    char buf[16];
+                    snprintf(buf, sizeof(buf), "%u / %u",
+                        static_cast<unsigned>(app_.allTasks().cursor() + 1),
+                        static_cast<unsigned>(app_.allTasks().size()));
+                    lv_label_set_text(taskIndexLabel_, buf);
+                }
             };
             if (rotateDelta != 0) {
                 applyScroll(rotateDelta > 0 ? 1 : -1,

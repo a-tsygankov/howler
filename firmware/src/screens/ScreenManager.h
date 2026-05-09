@@ -155,6 +155,10 @@ private:
     /// chrome (tab strip, tier counts, footer hint) doesn't rebuild
     /// while the drum animates.
     lv_obj_t*                taskCursorDots_ = nullptr;
+    /// "X / N" textual index label at the bottom of TaskList. Same
+    /// in-place update pattern as the rim indicator — repaints on
+    /// every drum scroll without rebuilding the screen tree.
+    lv_obj_t*                taskIndexLabel_ = nullptr;
 
     /// Cached generation snapshot of the dashboard / all-tasks model
     /// at the time the current screen was built. tick() compares the
