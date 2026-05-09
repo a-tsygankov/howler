@@ -736,6 +736,255 @@ describe("device-token authorization (firmware-side mark-done)", () => {
   });
 });
 
+describe("task completion propagates to all clients", () => {
+  // End-to-end pin: when the dial completes a task (via either the
+  // occurrence-ack or the direct-complete path), the resulting
+  // status change must (a) land in DB, (b) bump the home's
+  // update_counter so the dial's next peek picks up the change,
+  // (c) drop out of /api/occurrences/pending, (d) reflect on
+  // /api/dashboard's lastExecutionAt + recompute urgency, and
+  // (e) be visible to the webapp (user-token clients) without
+  // any extra coordination.
+
+  let nextIp = 300;
+  const auth = async () => {
+    const ip = `10.0.3.${nextIp++}`;
+    const res = await SELF.fetch("https://t/api/auth/quick-setup", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "cf-connecting-ip": ip,
+      },
+      body: "{}",
+    });
+    const body = await json(res);
+    return {
+      token: body["token"] as string,
+      homeId: body["homeId"] as string,
+      userId: body["userId"] as string,
+    };
+  };
+
+  const mintDeviceToken = async (homeId: string): Promise<string> => {
+    const { issueDeviceToken } = await import("../src/auth.ts");
+    const secret = (env as unknown as { AUTH_SECRET: string }).AUTH_SECRET;
+    return issueDeviceToken(
+      homeId,
+      "0".repeat(20) + "abcdef012345",
+      secret,
+    );
+  };
+
+  const peekCounter = async (token: string): Promise<number> => {
+    const res = await SELF.fetch("https://t/api/homes/peek", {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(res.status).toBe(200);
+    const body = (await json(res)) as { counter: number };
+    return body.counter;
+  };
+
+  it("occurrence ack via device token: status flips, /pending drops, peek advances, dashboard sees lastExecutionAt, webapp sees the same", async () => {
+    const { token: userToken, homeId } = await auth();
+    const userHeaders = {
+      authorization: `Bearer ${userToken}`,
+      "content-type": "application/json",
+    } as const;
+    const deviceToken = await mintDeviceToken(homeId);
+
+    // Create a task + insert a PENDING occurrence (skipping the
+    // cron path so the test is deterministic).
+    const create = await SELF.fetch("https://t/api/tasks", {
+      method: "POST",
+      headers: userHeaders,
+      body: JSON.stringify({ title: "drink water", kind: "ONESHOT" }),
+    });
+    expect(create.status).toBe(201);
+    const task = (await json(create)) as { id: string };
+
+    const occId = "1".repeat(32);
+    const nowMs = Date.now();
+    await env.DB
+      .prepare(
+        `INSERT INTO occurrences (id, task_id, due_at, status,
+           created_at, updated_at, is_deleted)
+         VALUES (?, ?, ?, 'PENDING', ?, ?, 0)`,
+      )
+      .bind(occId, task.id, Math.floor(nowMs / 1000), nowMs, nowMs)
+      .run();
+
+    // ── Snapshot state before the ack ────────────────────────
+    const counterBefore = await peekCounter(deviceToken);
+
+    // Device's view of the pending list MUST include the occurrence
+    // (sanity — if it doesn't, the rest of the test is meaningless).
+    const pendingBefore = await SELF.fetch(
+      "https://t/api/occurrences/pending",
+      { headers: { authorization: `Bearer ${deviceToken}` } },
+    );
+    expect(pendingBefore.status).toBe(200);
+    const pendingBeforeBody = (await json(pendingBefore)) as {
+      occurrences: Array<{ id: string }>;
+    };
+    expect(
+      pendingBeforeBody.occurrences.some((o) => o.id === occId),
+      "occurrence must show up in /pending before the ack",
+    ).toBe(true);
+
+    // ── Device acks the occurrence ───────────────────────────
+    const ack = await SELF.fetch(
+      `https://t/api/occurrences/${occId}/ack`,
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${deviceToken}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ notes: "test-ack" }),
+      },
+    );
+    expect(ack.status).toBe(200);
+    expect((await json(ack))["status"]).toBe("ACKED");
+
+    // ── (a) DB state ─────────────────────────────────────────
+    const occRow = await env.DB
+      .prepare("SELECT status, acked_at, acked_by_device_id FROM occurrences WHERE id = ?")
+      .bind(occId)
+      .first<{
+        status: string;
+        acked_at: number | null;
+        acked_by_device_id: string | null;
+      }>();
+    expect(occRow?.status).toBe("ACKED");
+    expect(occRow?.acked_at).not.toBeNull();
+    expect(occRow?.acked_by_device_id).not.toBeNull();
+
+    const execRows = await env.DB
+      .prepare("SELECT id, ts, device_id FROM task_executions WHERE task_id = ?")
+      .bind(task.id)
+      .all<{ id: string; ts: number; device_id: string | null }>();
+    expect(execRows.results).toHaveLength(1);
+    expect(execRows.results[0]?.device_id).not.toBeNull();
+    const execTs = execRows.results[0]!.ts;
+
+    // ── (b) Peek counter advanced (slice-A triggers fired) ───
+    const counterAfter = await peekCounter(deviceToken);
+    expect(
+      counterAfter,
+      "ack must bump update_counter so the dial's next peek picks up the change",
+    ).toBeGreaterThan(counterBefore);
+
+    // ── (c) /pending no longer returns the occurrence ────────
+    // Pinned for BOTH the device's view AND the webapp's
+    // (user-token) view — a regression in either direction
+    // means a client gets a stale "still pending" badge for an
+    // already-completed occurrence.
+    for (const [label, tok] of [
+      ["device", deviceToken],
+      ["user", userToken],
+    ] as const) {
+      const after = await SELF.fetch(
+        "https://t/api/occurrences/pending",
+        { headers: { authorization: `Bearer ${tok}` } },
+      );
+      expect(after.status).toBe(200);
+      const afterBody = (await json(after)) as {
+        occurrences: Array<{ id: string }>;
+      };
+      expect(
+        afterBody.occurrences.some((o) => o.id === occId),
+        `${label}-token /pending must NOT contain the acked occurrence`,
+      ).toBe(false);
+    }
+
+    // ── (d) Dashboard reflects the new lastExecutionAt ───────
+    // Slice B adds lastExecutionAt to /api/dashboard; the
+    // device drives local urgency from it. After a fresh ack
+    // it must equal the new task_executions.ts.
+    for (const [label, tok] of [
+      ["device", deviceToken],
+      ["user", userToken],
+    ] as const) {
+      const dash = await SELF.fetch(
+        "https://t/api/dashboard?include=hidden",
+        { headers: { authorization: `Bearer ${tok}` } },
+      );
+      expect(dash.status).toBe(200);
+      const dashBody = (await json(dash)) as {
+        tasks: Array<{
+          task: { id: string };
+          lastExecutionAt: number | null;
+        }>;
+      };
+      const row = dashBody.tasks.find((t) => t.task.id === task.id);
+      expect(
+        row,
+        `${label}-token dashboard must still surface the task after ack (it's still active)`,
+      ).toBeDefined();
+      expect(
+        row?.lastExecutionAt,
+        `${label}-token dashboard must echo the new task_executions.ts`,
+      ).toBe(execTs);
+    }
+  });
+
+  it("direct task completion via device token: task_executions row, peek advances, /tasks/:id/executions reflects on user-token GET", async () => {
+    const { token: userToken, homeId } = await auth();
+    const userHeaders = {
+      authorization: `Bearer ${userToken}`,
+      "content-type": "application/json",
+    } as const;
+    const deviceToken = await mintDeviceToken(homeId);
+
+    // Create a task without manually inserting an occurrence —
+    // device hits /tasks/:id/complete directly.
+    const create = await SELF.fetch("https://t/api/tasks", {
+      method: "POST",
+      headers: userHeaders,
+      body: JSON.stringify({ title: "stretch", kind: "ONESHOT" }),
+    });
+    expect(create.status).toBe(201);
+    const task = (await json(create)) as { id: string };
+
+    const counterBefore = await peekCounter(deviceToken);
+
+    const executionId = "e".repeat(32);
+    const complete = await SELF.fetch(
+      `https://t/api/tasks/${task.id}/complete`,
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${deviceToken}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ id: executionId }),
+      },
+    );
+    expect(complete.status).toBe(200);
+
+    // Counter advanced (task_executions INSERT fires the slice-A
+    // trigger, same as occurrence ack).
+    const counterAfter = await peekCounter(deviceToken);
+    expect(counterAfter).toBeGreaterThan(counterBefore);
+
+    // Webapp sees the execution via the per-task history endpoint
+    // — same view the SPA's TaskDetail screen renders.
+    const history = await SELF.fetch(
+      `https://t/api/tasks/${task.id}/executions`,
+      { headers: { authorization: `Bearer ${userToken}` } },
+    );
+    expect(history.status).toBe(200);
+    const historyBody = (await json(history)) as {
+      executions: Array<{ id: string; deviceId: string | null }>;
+    };
+    expect(historyBody.executions).toHaveLength(1);
+    expect(historyBody.executions[0]?.id).toBe(executionId);
+    // Device-id stamped on the execution row so the webapp can
+    // surface "completed by the dial" attribution.
+    expect(historyBody.executions[0]?.deviceId).not.toBeNull();
+  });
+});
+
 describe("home update counter (peek-then-merge sync)", () => {
   // The rate-limit middleware keys quick-setup by cf-connecting-ip
   // and the bucket is shared across the whole vitest worker, so by
