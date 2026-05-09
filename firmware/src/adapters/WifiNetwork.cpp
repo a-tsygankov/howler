@@ -253,4 +253,20 @@ howler::application::NetResult WifiNetwork::fetchIconManifest(
     return r;
 }
 
+howler::application::NetResult WifiNetwork::peekHomeCounter(int64_t& outCounter) {
+    String body;
+    auto r = doGet("/api/homes/peek", body);
+    if (!r.isOk()) return r;
+    JsonDocument doc;
+    if (deserializeJson(doc, body))
+        return howler::application::NetResult::transient();
+    // Server returns `{ counter: <int> }`; treat a missing field as
+    // a permanent error so SyncService falls through to a full
+    // refresh rather than treating "no peek answer" as "unchanged".
+    if (!doc["counter"].is<long long>())
+        return howler::application::NetResult::permanent(0, "missing counter");
+    outCounter = doc["counter"].as<long long>();
+    return r;
+}
+
 }  // namespace howler::adapters

@@ -67,11 +67,13 @@ void ScreenManager::buildWifi() {
         // Open networks connect immediately. Secured networks
         // currently still fall through (no rotary keyboard yet) —
         // App::saveAndConnectWifi accepts an empty secret and the
-        // STA layer fails gracefully, returning the user to Wi-Fi.
+        // STA layer fails gracefully, surfacing a "connection
+        // failed" state on WifiConnect. requestWifiConnect handles
+        // the screen push + the deferred-blocking-call dance so
+        // the user sees "connecting..." instead of a frozen list.
         howler::domain::WifiConfig cfg;
         cfg.ssid = it.id;
-        this->app().saveAndConnectWifi(cfg);
-        this->app().router().push(domain::ScreenId::WifiConnect);
+        this->requestWifiConnect(cfg);
     });
     menuActive_ = true;
 
@@ -86,13 +88,31 @@ void ScreenManager::buildWifiConnect() {
 
     auto* card = components::buildCenterCard(root_, 180, Palette::paper2());
     auto* l = lv_label_create(card);
-    if (app_.wifi().isConnected()) {
+    // Three states drive the same single-label centre card:
+    //   1. The pending-connect drain is still queued (we just
+    //      pushed this screen, the connect block hasn't run yet).
+    //   2. saveAndConnectWifi returned ok → wifi.isConnected().
+    //   3. saveAndConnectWifi returned !ok → wifiConnectFailed_.
+    // The order matters: we check the failure flag BEFORE the
+    // connected check because a stale isConnected() could race a
+    // freshly-failed re-attempt; the failure flag is the truth
+    // of the most recent user-initiated attempt.
+    if (pendingWifiConnectActive_) {
+        lv_label_set_text(l, "connecting...");
+        lv_obj_set_style_text_color(l, Palette::ink2(), 0);
+    } else if (wifiConnectFailed_) {
+        lv_label_set_text(l, "connection failed");
+        lv_obj_set_style_text_color(l, Palette::accent(), 0);
+    } else if (app_.wifi().isConnected()) {
         char buf[80];
         snprintf(buf, sizeof(buf), "connected\n%s", app_.wifi().currentSsid().c_str());
         lv_label_set_text(l, buf);
         lv_obj_set_style_text_color(l, Palette::success(), 0);
     } else {
-        lv_label_set_text(l, "connecting...");
+        // Reached if the user navigates here directly without a
+        // pending request and we're not currently associated.
+        // Most likely Wi-Fi dropped after a successful connect.
+        lv_label_set_text(l, "not connected");
         lv_obj_set_style_text_color(l, Palette::ink2(), 0);
     }
     lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, 0);

@@ -60,8 +60,14 @@ void ScreenManager::buildSettings() {
     const bool isDark = app_.settings().theme == domain::Theme::Dark;
     menuModel_.replace({
         mk("sync",      "Sync now",    "fetch latest"),
-        mk("theme",     "Theme",       isDark ? "dark | tap to flip"
-                                              : "light | tap to flip"),
+        // The "tap to flip" subtitle from the dev-22 carousel was a
+        // lie — tapping pushes the SettingsTheme picker, doesn't
+        // toggle in place. Show the current theme instead so the
+        // text describes state (matching the "screen level" / "phone
+        // link" / "device info" peers) rather than mis-describing
+        // the tap action.
+        mk("theme",     "Theme",       isDark ? "now: dark"
+                                              : "now: light"),
         mk("wifi",      "Wi-Fi",       "scan + connect"),
         mk("login-qr",  "Login by QR", "phone link"),
         mk("brightness","Brightness",  "screen level"),
@@ -75,11 +81,14 @@ void ScreenManager::buildSettings() {
         auto& app = this->app();
         const auto& id = it.id;
         if (id == "sync") {
-            // Force a sync round on the next tick. The toast gives
-            // visible feedback even when the network round-trip is
-            // fast.
-            app.sync().requestSync();
-            this->showToast("syncing...", 1500);
+            // requestUserSync wraps the underlying requestSync()
+            // call with the toast lifecycle — captures a baseline
+            // watermark + a 6 s deadline so the in-flight
+            // "syncing..." gets replaced by "synced" / "sync
+            // failed" / "sync offline" once the round actually
+            // resolves. Without that wrapper the toast just
+            // expired after 1.5 s with no signal of outcome.
+            this->requestUserSync();
         }
         else if (id == "theme") {
             // Push the dedicated Theme switcher screen so the user
@@ -135,6 +144,17 @@ void ScreenManager::buildSettingsBrightness() {
     lv_obj_set_style_text_font(val, &lv_font_montserrat_22, 0);
     lv_obj_center(val);
 
+    // Stash the centre-value label on the arc's user_data slot so
+    // the change handler can repaint it as the user rotates. Same
+    // pattern the SettingsTheme pills use to thread a per-pill
+    // intent into the click handler — keeps state out of
+    // ScreenManager's members and dies naturally when the arc
+    // (and its child label) get deleted with root_ in teardown.
+    // Previously the number froze at the entry-time value while
+    // the arc visibly filled — a misleading mismatch that made
+    // it look like the rotation wasn't registering.
+    lv_obj_set_user_data(arc, val);
+
     auto* hint = lv_label_create(root_);
     lv_label_set_text(hint, "rotate | 2x back");
     lv_obj_set_style_text_color(hint, Palette::ink3(), 0);
@@ -143,8 +163,14 @@ void ScreenManager::buildSettingsBrightness() {
     lv_obj_add_event_cb(arc, [](lv_event_t* e) {
         if (lv_event_get_code(e) != LV_EVENT_VALUE_CHANGED) return;
         auto* mgr = static_cast<ScreenManager*>(lv_event_get_user_data(e));
-        const int v = lv_arc_get_value(lv_event_get_target_obj(e));
+        auto* arc = lv_event_get_target_obj(e);
+        const int v = lv_arc_get_value(arc);
         mgr->app().settings().brightness = static_cast<uint8_t>(v);
+        if (auto* lbl = static_cast<lv_obj_t*>(lv_obj_get_user_data(arc))) {
+            char buf[16];
+            snprintf(buf, sizeof(buf), "%u", (unsigned)v);
+            lv_label_set_text(lbl, buf);
+        }
     }, LV_EVENT_VALUE_CHANGED, this);
 }
 
@@ -265,15 +291,25 @@ void formatUptime(char* buf, size_t cap, uint32_t millisNow) {
 }
 
 // "30s ago" / "5m ago" / "2h ago" / "—" if never synced.
-void formatSyncAge(char* buf, size_t cap, int64_t lastSec, int64_t nowSec) {
+//
+// `failedSinceLastOk` flags the case where we've successfully
+// synced before (so an age is meaningful) but the *most recent*
+// attempt failed — append " · err" so the user gets the diagnostic
+// before the data crosses the 120 s staleness threshold and the
+// `net` row flips to STALE on its own. We don't surface err while
+// offline; the `net` row already says "offline" in that case and
+// duplicating it adds noise.
+void formatSyncAge(char* buf, size_t cap, int64_t lastSec, int64_t nowSec,
+                   bool failedSinceLastOk) {
     if (lastSec <= 0 || nowSec <= 0 || nowSec < lastSec) {
         snprintf(buf, cap, "—");
         return;
     }
     const int64_t age = nowSec - lastSec;
-    if (age < 60)         snprintf(buf, cap, "%llds ago", (long long)age);
-    else if (age < 3600)  snprintf(buf, cap, "%lldm ago", (long long)(age / 60));
-    else                  snprintf(buf, cap, "%lldh ago", (long long)(age / 3600));
+    const char* tail = failedSinceLastOk ? " err" : "";
+    if (age < 60)         snprintf(buf, cap, "%llds ago%s", (long long)age, tail);
+    else if (age < 3600)  snprintf(buf, cap, "%lldm ago%s", (long long)(age / 60), tail);
+    else                  snprintf(buf, cap, "%lldh ago%s", (long long)(age / 3600), tail);
 }
 
 const char* networkHealthLabel(application::App::NetworkHealth h) {
@@ -285,8 +321,91 @@ const char* networkHealthLabel(application::App::NetworkHealth h) {
     return "?";
 }
 
-const char* themeLabel(domain::Theme t) {
-    return t == domain::Theme::Dark ? "dark" : "light";
+// Render the SSID + RSSI on a single line. Truncates the SSID to
+// `kSsidCap` chars with a trailing '…' so the row stays inside the
+// 188-px card no matter what the user named their AP. RSSI is shown
+// in dBm; 0 means "not associated or unknown" and falls through to
+// a bare SSID (or "—" when both are missing).
+void formatWifiLine(char* buf, size_t cap, application::App& app) {
+    const bool connected = app.wifi().isConnected();
+    if (!connected) { snprintf(buf, cap, "—"); return; }
+
+    constexpr size_t kSsidCap = 12;
+    std::string ssid = app.wifi().currentSsid();
+    if (ssid.size() > kSsidCap) {
+        ssid.resize(kSsidCap - 1);
+        ssid.push_back('~');  // ASCII fallback — montserrat_10 ships
+                              // a narrow ellipsis but the visual hint
+                              // is the same and avoids a glyph miss.
+    }
+    const int rssi = app.wifi().currentRssi();
+    if (rssi == 0) { snprintf(buf, cap, "%s", ssid.c_str()); return; }
+    snprintf(buf, cap, "%s %ddBm", ssid.c_str(), rssi);
+}
+
+// Format the multi-line diagnostic body into `buf`. Used by both
+// `buildSettingsAbout` (initial render) and the per-second refresh
+// in `ScreenManager::tick`, so a future field addition only touches
+// one place. Pulled out of the build path so the live update doesn't
+// duplicate the layout string.
+void formatAboutBody(char* buf, size_t cap, application::App& app) {
+    char ageBuf[24];
+    char upBuf[24];
+    char wifiBuf[40];
+    // "err" only fires when we're online AND we've previously synced
+    // — that's the case where the net row hasn't yet flipped to
+    // STALE but the most recent attempt actually failed. While
+    // offline, networkHealth() already reports Offline on the net
+    // row, so the err marker would be redundant.
+    const bool syncFailedSinceOk =
+        app.network().isOnline() &&
+        app.lastFullSyncSec() > 0 &&
+        !app.sync().lastSyncOk();
+    formatSyncAge(ageBuf, sizeof(ageBuf),
+                   app.lastFullSyncSec(),
+                   app.clock().nowEpochSeconds(),
+                   syncFailedSinceOk);
+    formatUptime(upBuf, sizeof(upBuf), millis());
+    formatWifiLine(wifiBuf, sizeof(wifiBuf), app);
+
+    const uint32_t heapBytes = heap_caps_get_free_size(MALLOC_CAP_DEFAULT);
+    const uint32_t heapKB    = heapBytes / 1024;
+
+    const auto& did = app.deviceId();
+    const std::string didTail = did.size() >= 8
+        ? did.substr(did.size() - 8) : did;
+
+    // IP is shown as a separate row when associated so the user can
+    // verify "yes, DHCP completed" — most "wifi connected but sync
+    // broken" investigations land here. Empty when not connected.
+    const std::string ip = app.wifi().currentIp();
+    const char* ipStr = ip.empty() ? "—" : ip.c_str();
+
+    // 8 rows fit the 158-px card with the 10pt body font + 2 px
+    // line-space (~118 px content area). Order groups related
+    // diagnostics: connectivity (net / wifi / ip / sync), then host
+    // health (ram / up / queue), then identity. The `theme` row from
+    // dev-27 was retired here — the active theme is already visible
+    // at a glance from the screen's own background, so the slot is
+    // better spent on `ip`, which is the data point the user
+    // actually needs when debugging "wifi connected but sync broken".
+    snprintf(buf, cap,
+             "net    %s\n"
+             "wifi   %s\n"
+             "ip     %s\n"
+             "sync   %s\n"
+             "ram    %u KB\n"
+             "up     %s\n"
+             "queue  %u pending\n"
+             "dev    %s",
+             networkHealthLabel(app.networkHealth()),
+             wifiBuf,
+             ipStr,
+             ageBuf,
+             static_cast<unsigned>(heapKB),
+             upBuf,
+             static_cast<unsigned>(app.queue().size()),
+             didTail.c_str());
 }
 
 }  // namespace
@@ -345,52 +464,11 @@ void ScreenManager::buildSettingsAbout() {
     // Body — one big multi-line label with all the diagnostics. We
     // build it as a single label (not 6 separate labels) so the
     // line-spacing stays uniform and a small font swap touches one
-    // place.
+    // place. Same `formatAboutBody` runs from `tick()` once a
+    // second so live values (sync age, uptime, ram, queue) keep
+    // ticking up while the user reads the screen.
     char body[256];
-    char ageBuf[24];
-    char upBuf[24];
-    formatSyncAge(ageBuf, sizeof(ageBuf),
-                   app_.lastFullSyncSec(),
-                   app_.clock().nowEpochSeconds());
-    formatUptime(upBuf, sizeof(upBuf), millis());
-
-    // Free heap in KB. Use heap_caps for the most accurate "what's
-    // really left" — `ESP.getFreeHeap()` returns the same number on
-    // ESP32-S3 builds but heap_caps_get_free_size avoids any
-    // Arduino-vs-IDF mismatch.
-    const uint32_t heapBytes = heap_caps_get_free_size(MALLOC_CAP_DEFAULT);
-    const uint32_t heapKB    = heapBytes / 1024;
-
-    // Show only the last 8 hex chars of the device id — leading
-    // 24 are zero-padding, hard to read aloud.
-    const auto& did = app_.deviceId();
-    const std::string didTail = did.size() >= 8
-        ? did.substr(did.size() - 8) : did;
-
-    // Wi-Fi SSID — empty when not associated; we replace with "—"
-    // so the row stays the same shape regardless of state.
-    const std::string ssid = app_.wifi().isConnected()
-                               ? app_.wifi().currentSsid()
-                               : std::string{};
-    const char* ssidStr = ssid.empty() ? "—" : ssid.c_str();
-
-    snprintf(body, sizeof(body),
-             "net    %s\n"
-             "wifi   %s\n"
-             "sync   %s\n"
-             "ram    %u KB\n"
-             "up     %s\n"
-             "queue  %u pending\n"
-             "theme  %s\n"
-             "dev    %s",
-             networkHealthLabel(app_.networkHealth()),
-             ssidStr,
-             ageBuf,
-             static_cast<unsigned>(heapKB),
-             upBuf,
-             static_cast<unsigned>(app_.queue().size()),
-             themeLabel(app_.settings().theme),
-             didTail.c_str());
+    formatAboutBody(body, sizeof(body), app_);
 
     auto* l = lv_label_create(card);
     lv_label_set_text(l, body);
@@ -399,11 +477,25 @@ void ScreenManager::buildSettingsAbout() {
     lv_obj_set_style_text_line_space(l, 2, 0);
     lv_obj_align(l, LV_ALIGN_TOP_LEFT, 4, 22);
 
+    // Hand the label pointer to ScreenManager so the live-update
+    // tick can repaint it in place. The first refresh is scheduled
+    // ~1 s from now — earlier than that and the user would see the
+    // text flash on entry from a value that's already correct.
+    aboutBodyLabel_       = l;
+    aboutNextRefreshMs_   = millis() + 1000;
+
     auto* hint = lv_label_create(root_);
     lv_label_set_text(hint, "2x back");
     lv_obj_set_style_text_color(hint, Palette::ink3(), 0);
     lv_obj_set_style_text_font(hint, &lv_font_montserrat_10, 0);
     lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -8);
+}
+
+void ScreenManager::refreshSettingsAbout() {
+    if (!aboutBodyLabel_) return;
+    char body[256];
+    formatAboutBody(body, sizeof(body), app_);
+    lv_label_set_text(aboutBodyLabel_, body);
 }
 
 }  // namespace howler::screens

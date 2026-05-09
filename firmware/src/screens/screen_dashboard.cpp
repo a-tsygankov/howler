@@ -64,6 +64,13 @@ void ScreenManager::buildDashboard() {
         lv_label_set_text(hint, "no tasks today");
         lv_obj_set_style_text_color(hint, Palette::ink2(), 0);
         lv_obj_align(hint, LV_ALIGN_CENTER, 0, 18);
+
+        // The badge runs even on the empty path so a never-synced
+        // or offline device shows STALE / OFFLINE instead of an
+        // unqualified "all clear" — without it, the user can't
+        // tell whether the empty state means "you're done" or
+        // "we couldn't load anything".
+        paintNetworkBadge();
         return;
     }
 
@@ -128,22 +135,11 @@ void ScreenManager::buildDashboard() {
         lv_obj_align(dotRow, LV_ALIGN_BOTTOM_MID, 0, -32);
     }
 
-    // Network-state badge: only rendered when the device is in
-    // a degraded state (Stale or Offline). The buildNetworkBadge
-    // helper returns nullptr for the empty-text branch so we can
-    // skip it cheaply when everything's fresh.
-    switch (app_.networkHealth()) {
-        case application::App::NetworkHealth::Offline:
-            components::buildNetworkBadge(root_, "OFFLINE",
-                                          Palette::accent());
-            break;
-        case application::App::NetworkHealth::Stale:
-            components::buildNetworkBadge(root_, "STALE",
-                                          Palette::warn());
-            break;
-        case application::App::NetworkHealth::Fresh:
-            break;
-    }
+    // Network-state badge: only rendered when the device is in a
+    // degraded state (Stale or Offline). Same helper drives the
+    // empty path above so the cue is consistent across both
+    // states of the screen.
+    paintNetworkBadge();
 }
 
 }  // namespace howler::screens

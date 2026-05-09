@@ -99,6 +99,19 @@ public:
     virtual NetResult fetchIconManifest(std::vector<std::string>& /*outNames*/) {
         return NetResult::transient(0);
     }
+
+    /// GET /api/homes/peek — returns the home's monotonically-
+    /// incremented update_counter. SyncService caches the value and
+    /// only fires the four big fetches when the counter advances,
+    /// per docs/sync-analysis.md (slice A). One TLS handshake +
+    /// ~200 B response replaces the four-fetch idle round.
+    /// Default impl returns transient so host stubs that don't
+    /// override fall back to the always-full-sync behaviour from
+    /// before this port existed (cheap to keep working — the stub
+    /// just sees "peek failed, fetch everything").
+    virtual NetResult peekHomeCounter(int64_t& /*outCounter*/) {
+        return NetResult::transient(0);
+    }
 };
 
 /// Pair flow client. Separate from INetwork because PairApi can be
@@ -232,6 +245,17 @@ public:
     /// concern — the application calls this with cleartext creds.
     virtual bool connect(const howler::domain::WifiConfig& cfg) = 0;
     virtual void disconnect() = 0;
+
+    /// RSSI in dBm of the current association (closer to 0 = stronger,
+    /// typical home values -50…-75). Returns 0 when not associated or
+    /// when the adapter can't report — diagnostics surface treats 0
+    /// as "unknown" and renders "—".
+    virtual int8_t currentRssi() const { return 0; }
+    /// Dotted-quad IPv4 address from DHCP, or empty when not
+    /// associated / no lease yet. Default impl returns empty so the
+    /// host-side test stubs and noop adapters don't have to implement
+    /// anything Wi-Fi-specific to compile.
+    virtual std::string currentIp() const { return {}; }
 };
 
 }  // namespace howler::application

@@ -117,6 +117,21 @@ public:
 
     NetResult postHeartbeat(const std::string&) override { return NetResult::ok(); }
 
+    NetResult peekHomeCounter(int64_t& outCounter) override {
+        ++peekCalls_;
+        if (!peekResults_.empty()) {
+            const auto r = peekResults_.front();
+            peekResults_.erase(peekResults_.begin());
+            if (r.isOk()) outCounter = nextCounter_;
+            return r;
+        }
+        // Default: succeed with the configured counter so tests that
+        // don't care about peek failures get the cheap-path coverage
+        // by default.
+        outCounter = nextCounter_;
+        return NetResult::ok();
+    }
+
     // Test fixtures.
     bool online_ = true;
     std::vector<domain::DashboardItem> nextDashboard_;
@@ -129,6 +144,12 @@ public:
     std::vector<NetResult> pendingResults_;
     std::vector<NetResult> markDoneResults_;
     std::vector<domain::MarkDoneDraft> sentDrafts_;
+    // Peek state: tests stage `peekResults_` (one entry per expected
+    // call, drained FIFO) and update `nextCounter_` to drive
+    // SyncService into the skip vs. full-sync paths.
+    int64_t              nextCounter_ = 0;
+    std::vector<NetResult> peekResults_;
+    int                  peekCalls_ = 0;
 };
 
 class StubPairApi : public application::IPairApi {

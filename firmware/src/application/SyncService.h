@@ -42,13 +42,34 @@ public:
     /// `intervalMs_` cool-down hasn't elapsed.
     void tick();
 
-    /// Force a sync on the next tick, regardless of cool-down. Used
-    /// after the user mark-dones a task so the dashboard picks up
-    /// the change as soon as the network is available.
-    void requestSync() { lastPollMs_ = INT64_MIN / 2; }
+    /// Force a full sync on the next tick, regardless of cool-down
+    /// AND regardless of the peek-counter equality skip. Used after
+    /// the user mark-dones a task so the dashboard picks up the
+    /// change as soon as the network is available, and after the
+    /// SyncService is constructed so the very first tick fetches
+    /// data instead of trusting an uninitialised peek result.
+    void requestSync() {
+        lastPollMs_ = INT64_MIN / 2;
+        forceNextRound_ = true;
+    }
 
     void setIntervalMs(uint32_t ms) { intervalMs_ = ms; }
+    /// Force a full refresh after this much wall-clock time even
+    /// when the peek counter is unchanged. Stopgap from
+    /// docs/sync-analysis.md slice A: server-computed urgency
+    /// (`urgency`, `nextDeadline`, `secondsUntilNext`, `isMissed`)
+    /// drifts purely with `now` even when no DB write occurred, so
+    /// the device must occasionally re-fetch the dashboard to keep
+    /// "due in 14 m" labels accurate. Slice B will compute urgency
+    /// locally and let this be raised arbitrarily high.
+    void setFullRefreshIntervalMs(uint32_t ms) { fullRefreshMs_ = ms; }
     bool lastSyncOk() const { return lastSyncOk_; }
+    /// Cached counter from the most recent successful peek (or full
+    /// round). Exposed for the About diagnostic readout — the
+    /// device can show "counter X" alongside sync age so the user
+    /// can spot peek-loop behaviour at a glance. 0 means "not yet
+    /// peeked or full-synced this boot".
+    int64_t lastCounter() const { return lastCounter_; }
 
 private:
     INetwork& net_;
@@ -61,10 +82,28 @@ private:
     howler::domain::SyncWatermark& watermark_;
 
     int64_t lastPollMs_ = INT64_MIN / 2;
+    /// Wall-clock millis of the last full (four-fetch) round, used
+    /// by the periodic refresh stopgap. INT64_MIN/2 means "never".
+    int64_t lastFullRoundMs_ = INT64_MIN / 2;
+    /// Cached home update_counter; -1 = never peeked. SyncService
+    /// compares incoming peek counters against this; equal +
+    /// inside the full-refresh window = skip the four fetches.
+    int64_t lastCounter_ = -1;
     uint32_t intervalMs_ = 30000;
+    /// Default 5 min — see setFullRefreshIntervalMs.
+    uint32_t fullRefreshMs_ = 5u * 60u * 1000u;
+    /// Set by requestSync(); cleared at the top of runRoundIfNeeded
+    /// after we've decided to do a full round. Lets external callers
+    /// punch through the peek skip without poking private state.
+    bool forceNextRound_ = false;
     bool lastSyncOk_ = false;
 
     void runRound();
+    /// Decide path for one tick: peek first; on counter equality
+    /// inside the refresh window, return without fetching. Otherwise
+    /// run a full round. Pulled out of `tick()` so it's testable in
+    /// isolation.
+    bool runRoundIfNeeded();
 };
 
 }  // namespace howler::application

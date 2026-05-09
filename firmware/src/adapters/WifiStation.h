@@ -21,6 +21,16 @@ public:
         return std::string(WiFi.SSID().c_str());
     }
 
+    int8_t currentRssi() const override {
+        if (WiFi.status() != WL_CONNECTED) return 0;
+        return static_cast<int8_t>(WiFi.RSSI());
+    }
+
+    std::string currentIp() const override {
+        if (WiFi.status() != WL_CONNECTED) return {};
+        return std::string(WiFi.localIP().toString().c_str());
+    }
+
     bool scan(std::vector<howler::domain::WifiNetwork>& out) override {
         const int n = WiFi.scanNetworks(false, true);
         if (n < 0) return false;

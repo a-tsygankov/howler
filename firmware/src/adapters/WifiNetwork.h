@@ -43,6 +43,7 @@ public:
                         std::string& outBitmap,
                         std::string& outHash) override;
     NetResult fetchIconManifest(std::vector<std::string>& outNames) override;
+    NetResult peekHomeCounter(int64_t& outCounter) override;
 
 private:
     const char* backendUrl_;

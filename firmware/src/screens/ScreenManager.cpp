@@ -145,6 +145,16 @@ void ScreenManager::tick(uint32_t millisNow) {
         app_.allTasks().generation() != lastAllTasksGen_) {
         rebuildPending_ = true;
     }
+    // Pair screen surfaces six PairPhase states (scan QR, waiting,
+    // expired, etc.) — PairCoordinator polls /api/pair/check every
+    // 3 s, so when the user submits the code on their phone the
+    // Started → Pending transition lands ~3 s later. Without a
+    // rebuild trigger the screen kept showing "scan QR or enter
+    // code" even though the server already had the submission.
+    if (rendered_ == domain::ScreenId::Pair &&
+        app_.pair().state().phase != lastPairPhase_) {
+        rebuildPending_ = true;
+    }
 
     // Drain at most one pending icon fetch per tick so the network
     // round-trip never lands on the render path (a synchronous
@@ -190,11 +200,59 @@ void ScreenManager::tick(uint32_t millisNow) {
         rebuildPending_ = true;
     }
 
+    // Live About refresh — repaint the diagnostic body once a second
+    // while SettingsAbout is rendered so sync age / uptime / ram /
+    // queue depth tick forward without a full screen rebuild. The
+    // label pointer is set by `buildSettingsAbout` and cleared in
+    // `teardownScreen`, so the guard covers screen transitions.
+    if (rendered_ == domain::ScreenId::SettingsAbout &&
+        aboutBodyLabel_ && millisNow >= aboutNextRefreshMs_) {
+        refreshSettingsAbout();
+        aboutNextRefreshMs_ = millisNow + 1000;
+    }
+
+    // User-initiated Sync-now follow-through. Either the watermark
+    // advanced (success) or the deadline elapsed (failure /
+    // offline). The result toast replaces the in-flight
+    // "syncing..." via showToast's delete-and-recreate path.
+    if (userSyncRequestActive_) {
+        if (app_.lastFullSyncSec() > userSyncBaselineSec_) {
+            showToast("synced", 1200);
+            userSyncRequestActive_ = false;
+        } else if (millisNow >= userSyncDeadlineMs_) {
+            // Distinguish "we tried and failed" from "we never
+            // tried because no network" — the user wants to know
+            // which side the problem is on.
+            const bool online = app_.network().isOnline();
+            showToast(online ? "sync failed" : "sync offline",
+                      online ? 1500u        : 1200u);
+            userSyncRequestActive_ = false;
+        }
+    }
+
     if (app_.router().current() != rendered_ || rebuildPending_) {
         rebuildPending_ = false;
         rebuildScreen();
     }
     lv_timer_handler();
+
+    // Deferred Wi-Fi connect — runs AFTER the WifiConnect
+    // "connecting..." frame has been pushed to the LCD by
+    // lv_timer_handler. The connect call itself blocks for up to
+    // 12 s; before this deferral the user saw the Wi-Fi list
+    // freeze with no feedback because the activate handler did
+    // the connect inline before any new frame was painted. By
+    // the time we reach this block, the screen already shows
+    // "connecting..." — the block then drives saveAndConnectWifi,
+    // captures the outcome, and asks for a follow-up rebuild so
+    // the next frame shows "connected" or "connection failed".
+    if (pendingWifiConnectActive_) {
+        const bool ok = app_.saveAndConnectWifi(pendingWifiConfig_);
+        wifiConnectFailed_        = !ok;
+        pendingWifiConnectActive_ = false;
+        pendingWifiConfig_        = {};
+        rebuildPending_           = true;
+    }
 }
 
 bool ScreenManager::isOnTaskListRoot() const {
@@ -336,6 +394,53 @@ void ScreenManager::pollAndDispatch(uint32_t /*millisNow*/) {
     onEvent(delta, tap, doubleTap, longPress, vert, horz);
 }
 
+void ScreenManager::requestWifiConnect(const howler::domain::WifiConfig& cfg) {
+    pendingWifiConfig_        = cfg;
+    pendingWifiConnectActive_ = true;
+    // New attempt — clear any prior failure so the re-entry to
+    // WifiConnect doesn't paint the "failed" branch before we've
+    // had a chance to actually try again.
+    wifiConnectFailed_ = false;
+    app_.router().push(domain::ScreenId::WifiConnect);
+}
+
+void ScreenManager::requestUserSync() {
+    // Capture the watermark BEFORE asking SyncService to run a
+    // round so we can detect advancement against this exact value.
+    // Setting requestSync() before reading the watermark would race
+    // an in-flight tick that's already running a round — we'd see
+    // the new value and report success without the user-initiated
+    // round having actually executed.
+    userSyncBaselineSec_   = app_.lastFullSyncSec();
+    // 6 s budget — typical successful round is 0.5–2 s; the long
+    // tail (DNS reset, slow Wi-Fi reassociation) is rare enough
+    // that timing out and showing "sync failed" is the right
+    // user-visible signal even when a stuck round eventually
+    // succeeds. The next 30 s tick will then update the badge if
+    // it lands later.
+    userSyncDeadlineMs_    = millis() + 6000;
+    userSyncRequestActive_ = true;
+    app_.sync().requestSync();
+    showToast("syncing...", 1500);
+}
+
+void ScreenManager::paintNetworkBadge() {
+    if (!root_) return;
+    using components::buildNetworkBadge;
+    using components::Palette;
+    switch (app_.networkHealth()) {
+        case application::App::NetworkHealth::Offline:
+            buildNetworkBadge(root_, "OFFLINE", Palette::accent());
+            break;
+        case application::App::NetworkHealth::Stale:
+            buildNetworkBadge(root_, "STALE",   Palette::warn());
+            break;
+        case application::App::NetworkHealth::Fresh:
+            // No badge — Fresh is the silent default.
+            break;
+    }
+}
+
 void ScreenManager::teardownScreen() {
     if (group_) lv_group_remove_all_objs(group_);
     if (root_) {
@@ -355,6 +460,11 @@ void ScreenManager::teardownScreen() {
     taskDrumActive_ = false;
     taskCursorDots_ = nullptr;
     taskIndexLabel_ = nullptr;
+    // About-screen live-refresh state — the label is a child of
+    // root_ which we just deleted; clear the pointer so the next
+    // tick() doesn't try to set_text on a stale lv_obj.
+    aboutBodyLabel_     = nullptr;
+    aboutNextRefreshMs_ = 0;
 }
 
 void ScreenManager::rebuildScreen() {
@@ -375,6 +485,7 @@ void ScreenManager::rebuildScreen() {
     lastDashboardGen_ = app_.dashboard().generation();
     lastAllTasksGen_  = app_.allTasks().generation();
     lastIconCacheGen_ = iconCache_.generation();
+    lastPairPhase_    = app_.pair().state().phase;
     using domain::ScreenId;
     switch (rendered_) {
         case ScreenId::Boot:               buildBoot();              break;

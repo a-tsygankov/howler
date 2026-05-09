@@ -58,6 +58,24 @@ public:
     /// Lives outside the screen tree so it survives screen rebuilds.
     void showToast(const char* text, uint32_t durationMs = 1500);
 
+    /// Wraps a user-initiated sync (Settings → Sync now). Captures
+    /// the watermark + a deadline up front, calls
+    /// `app.sync().requestSync()`, and shows the "syncing..." toast.
+    /// `tick()` then polls for completion and replaces the toast
+    /// with "synced" / "sync failed" / "sync offline" once the
+    /// round either lands or times out — without this the toast
+    /// just expired after 1.5 s regardless of the actual outcome,
+    /// so the user got no signal whether Sync now had any effect.
+    void requestUserSync();
+
+    /// Stage a Wi-Fi connect attempt. Pushes WifiConnect immediately
+    /// (so the "connecting..." screen paints), then defers the
+    /// blocking `saveAndConnectWifi` to the end of the current tick,
+    /// after `lv_timer_handler` has flushed the new screen to the
+    /// LCD. Without this deferral the user saw the Wi-Fi list freeze
+    /// for the 12 s connect-attempt budget with zero feedback.
+    void requestWifiConnect(const howler::domain::WifiConfig& cfg);
+
     /// Force a screen rebuild on the next tick even when the active
     /// router id hasn't changed. Used by handlers that change visual
     /// state without navigating — e.g. the Theme toggle in Settings,
@@ -119,6 +137,33 @@ private:
     lv_obj_t* toastLabel_ = nullptr;
     uint32_t  toastUntilMs_ = 0;
 
+    /// Pending user-initiated sync state. `userSyncBaselineSec_` is
+    /// the watermark value at request time — `tick()` watches for
+    /// `app.lastFullSyncSec()` to advance past it as the success
+    /// signal. `userSyncDeadlineMs_` is the wall-clock cap; on
+    /// expiry without success we show a failure / offline toast and
+    /// clear the pending flag. -1 / 0 means "no request in flight".
+    /// `userSyncRequestActive_` distinguishes "no request" (false)
+    /// from "request whose baseline happened to be 0" so a
+    /// never-synced device's first Sync now still resolves
+    /// correctly.
+    int64_t  userSyncBaselineSec_ = 0;
+    uint32_t userSyncDeadlineMs_  = 0;
+    bool     userSyncRequestActive_ = false;
+
+    /// Pending Wi-Fi connect, drained at the end of `tick()` once
+    /// the WifiConnect "connecting..." screen has been built and
+    /// flushed. `pendingWifiConnectActive_` distinguishes "no
+    /// request" from "request with empty ssid", since
+    /// `WifiConfig::ssid.empty()` is a valid no-op value the
+    /// adapter rejects. `wifiConnectFailed_` carries the result of
+    /// the most recent attempt so a re-entry to WifiConnect after
+    /// failure shows a "connection failed" state instead of an
+    /// indefinite "connecting...".
+    howler::domain::WifiConfig pendingWifiConfig_;
+    bool                       pendingWifiConnectActive_ = false;
+    bool                       wifiConnectFailed_ = false;
+
     /// Done-animation overlay: green check on the top layer that
     /// fades in + scales up briefly when `playDoneAnimation()` fires.
     /// Auto-cleaned in tick() once `doneUntilMs_` passes.
@@ -160,6 +205,20 @@ private:
     /// every drum scroll without rebuilding the screen tree.
     lv_obj_t*                taskIndexLabel_ = nullptr;
 
+    /// Settings → About diagnostic body label. Set by
+    /// `buildSettingsAbout`, refreshed in place from `tick()` every
+    /// second so values like "sync 30s ago", "up 2h 14m", "ram",
+    /// and "queue N pending" stay current while the user is on the
+    /// screen. Cleared in teardownScreen so the dangling pointer
+    /// can never outlive the lv_obj it refers to.
+    lv_obj_t*                aboutBodyLabel_ = nullptr;
+    /// Wall-clock target for the next About refresh. The build path
+    /// initialises this to "now + 1 s"; tick() compares millisNow
+    /// against it before repainting and bumps it forward by 1000 ms
+    /// each time. Independent of the screen rebuild path so a sync
+    /// round mid-About doesn't race the live update.
+    uint32_t                 aboutNextRefreshMs_ = 0;
+
     /// Cached generation snapshot of the dashboard / all-tasks model
     /// at the time the current screen was built. tick() compares the
     /// live generation each frame and triggers a screen rebuild when
@@ -174,6 +233,16 @@ private:
     /// new bitmap, the active drum-screen rebuilds so any avatar
     /// previously showing a fallback glyph now renders the icon.
     uint32_t                 lastIconCacheGen_ = 0;
+    /// PairCoordinator phase snapshot at the time the current Pair
+    /// screen was built. tick() compares the live phase each frame
+    /// and triggers a rebuild on transition so the user sees
+    /// "waiting for confirm..." land within one frame of the
+    /// Started → Pending poll, instead of the screen freezing on
+    /// the entry-time text until App auto-navigates to Dashboard
+    /// after Confirmation. Initialised to Idle so the first build
+    /// never mismatches the cached value.
+    howler::domain::PairPhase lastPairPhase_ =
+        howler::domain::PairPhase::Idle;
     /// One-shot flag — flips true the first time we observe the
     /// network as online AND prewarm the icon cache with the full
     /// LABEL_ICON_CHOICES set. Subsequent online/offline cycles
@@ -197,6 +266,13 @@ private:
     void teardownScreen();
     void pollAndDispatch(uint32_t millisNow);
 
+    /// Paint the OFFLINE / STALE network badge on the active root_,
+    /// or do nothing for Fresh. Used by both the Dashboard and the
+    /// All-Tasks list — and by both their populated AND empty
+    /// branches, so a never-synced or offline device shows the
+    /// degradation cue even when there are no rows to draw.
+    void paintNetworkBadge();
+
     // Per-screen builders defined in their respective .cpp files.
     void buildBoot();
     void buildPair();
@@ -208,6 +284,13 @@ private:
     void buildSettings();
     void buildSettingsBrightness();
     void buildSettingsAbout();
+    /// Repaints the About diagnostic body in place. Called from
+    /// `tick()` once a second while SettingsAbout is rendered so
+    /// values that change with time (sync age, uptime, ram, queue
+    /// depth, network health) stay live without a full screen
+    /// rebuild — `lv_label_set_text` only redraws the dirty
+    /// rectangle, no LVGL tree teardown required.
+    void refreshSettingsAbout();
     void buildSettingsTheme();
     void buildWifi();
     void buildWifiConnect();

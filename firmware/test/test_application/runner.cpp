@@ -4,6 +4,10 @@
 void test_sync_no_op_when_offline();
 void test_sync_replaces_dashboard_users_result_types();
 void test_sync_respects_interval();
+void test_sync_skips_fetches_when_peek_counter_unchanged();
+void test_sync_full_round_when_peek_counter_advances();
+void test_sync_full_refresh_after_5min_even_when_counter_unchanged();
+void test_sync_falls_through_to_full_round_when_peek_fails();
 
 // test_mark_done_service.cpp
 void test_mark_done_enqueue_persists_and_drains_when_online();
@@ -36,6 +40,10 @@ int main(int, char**) {
     RUN_TEST(test_sync_no_op_when_offline);
     RUN_TEST(test_sync_replaces_dashboard_users_result_types);
     RUN_TEST(test_sync_respects_interval);
+    RUN_TEST(test_sync_skips_fetches_when_peek_counter_unchanged);
+    RUN_TEST(test_sync_full_round_when_peek_counter_advances);
+    RUN_TEST(test_sync_full_refresh_after_5min_even_when_counter_unchanged);
+    RUN_TEST(test_sync_falls_through_to_full_round_when_peek_fails);
 
     RUN_TEST(test_mark_done_enqueue_persists_and_drains_when_online);
     RUN_TEST(test_mark_done_offline_no_send_persists_only);
