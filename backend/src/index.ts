@@ -14,6 +14,7 @@ import { avatarsRouter } from "./routes/avatars.ts";
 import { homesRouter } from "./routes/homes.ts";
 import { pushRouter } from "./routes/push.ts";
 import { dashboardRouter } from "./routes/dashboard.ts";
+import { firmwareRouter } from "./routes/firmware.ts";
 import { iconsRouter } from "./routes/icons.ts";
 import type { AuthVars } from "./middleware/auth.ts";
 import { consumeFireQueue, scheduledFanout } from "./services/fanout.ts";
@@ -55,6 +56,7 @@ app.route("/api/avatars", avatarsRouter);
 app.route("/api/homes", homesRouter);
 app.route("/api/push", pushRouter);
 app.route("/api/dashboard", dashboardRouter);
+app.route("/api/firmware", firmwareRouter);
 app.route("/api/icons", iconsRouter);
 
 app.notFound((c) => c.json({ error: "not-found" }, 404));

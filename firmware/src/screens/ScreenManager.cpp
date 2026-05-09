@@ -636,10 +636,23 @@ void ScreenManager::onEvent(int rotateDelta, bool tap, bool doubleTap,
                 app.pendingDone() = {};
                 app.pendingDone().taskId = sel->taskId;
                 app.pendingDone().occurrenceId = sel->occurrenceId;
-                app.pendingDone().resultTypeId = sel->resultTypeId;
-                router.push(sel->resultTypeId.empty()
-                            ? ScreenId::UserPicker
-                            : ScreenId::ResultPicker);
+                // Push ResultPicker only when (a) the row carries a
+                // resultTypeId AND (b) we've actually synced that
+                // type from the server. Skipping the local-cache
+                // check used to land users on a "no result type
+                // (tap to skip)" placeholder whose tap action then
+                // recorded a stale resultValue from a previous
+                // pick — see PR fixing the requireUser() lockout
+                // on /api/task-results that left resultTypes_
+                // empty in production.
+                const bool hasUsableResult =
+                    !sel->resultTypeId.empty() &&
+                    app.findResultType(sel->resultTypeId) != nullptr;
+                app.pendingDone().resultTypeId =
+                    hasUsableResult ? sel->resultTypeId : "";
+                router.push(hasUsableResult
+                            ? ScreenId::ResultPicker
+                            : ScreenId::UserPicker);
             } else if (longPress) {
                 // Long-press = quick mark-done (no result, no user).
                 // The arc gave the user 600 ms of "are you sure"
@@ -754,10 +767,18 @@ void ScreenManager::onEvent(int rotateDelta, bool tap, bool doubleTap,
                 app.pendingDone() = {};
                 app.pendingDone().taskId = sel->taskId;
                 app.pendingDone().occurrenceId = sel->occurrenceId;
-                app.pendingDone().resultTypeId = sel->resultTypeId;
-                router.push(sel->resultTypeId.empty()
-                            ? ScreenId::UserPicker
-                            : ScreenId::ResultPicker);
+                // Same local-cache guard as the Dashboard branch —
+                // never push the picker when findResultType would
+                // return nullptr (otherwise the empty-state screen
+                // mis-records a stale value on tap).
+                const bool hasUsableResult =
+                    !sel->resultTypeId.empty() &&
+                    app.findResultType(sel->resultTypeId) != nullptr;
+                app.pendingDone().resultTypeId =
+                    hasUsableResult ? sel->resultTypeId : "";
+                router.push(hasUsableResult
+                            ? ScreenId::ResultPicker
+                            : ScreenId::UserPicker);
             } else if (longPress) {
                 app.pendingDone() = {};
                 app.pendingDone().taskId = sel->taskId;

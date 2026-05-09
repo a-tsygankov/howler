@@ -4,7 +4,7 @@ import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
 import type { Bindings } from "../env.ts";
 import { newUuid } from "../domain/ids.ts";
-import { requireAuth, requireUser, type AuthVars } from "../middleware/auth.ts";
+import { markDeviceAlive, requireAuth, requireUser, type AuthVars } from "../middleware/auth.ts";
 
 const TaskResultInput = z.object({
   displayName: z.string().min(1).max(40),
@@ -53,22 +53,30 @@ export const taskResultsRouter = new Hono<{
   Bindings: Bindings;
   Variables: AuthVars;
 }>()
-  .use("*", requireAuth(), requireUser())
+  // Loose auth at the router level so device tokens (issued by the
+  // pair flow) can hit the GET — the on-device result-picker has
+  // to look up the type a task is associated with, and gating the
+  // entire router behind requireUser() left the dial's
+  // findResultType() returning nullptr forever (resultTypes_ stays
+  // empty after every sync). Mutations re-arm requireUser() per
+  // route below — the device must not be able to create / edit /
+  // delete result-type rows.
+  .use("*", requireAuth(), markDeviceAlive())
 
   .get("/", async (c) => {
-    const info = c.get("user");
+    const homeId = c.get("auth").homeId;
     const { results } = await c.env.DB
       .prepare(
         `SELECT * FROM task_results
          WHERE home_id = ? AND is_deleted = 0
          ORDER BY sort_order ASC, display_name ASC`,
       )
-      .bind(info.homeId)
+      .bind(homeId)
       .all<TaskResultRow>();
     return c.json({ taskResults: results.map(toDto) });
   })
 
-  .post("/", zValidator("json", TaskResultInput), async (c) => {
+  .post("/", requireUser(), zValidator("json", TaskResultInput), async (c) => {
     const info = c.get("user");
     const body = c.req.valid("json");
     const id = newUuid();
@@ -95,7 +103,7 @@ export const taskResultsRouter = new Hono<{
     return c.json({ id, homeId: info.homeId, ...body, system: false, createdAt: nowSec, updatedAt: nowSec }, 201);
   })
 
-  .patch("/:id", zValidator("json", TaskResultInput.partial()), async (c) => {
+  .patch("/:id", requireUser(), zValidator("json", TaskResultInput.partial()), async (c) => {
     const info = c.get("user");
     const id = c.req.param("id");
     const patch = c.req.valid("json");
@@ -157,7 +165,7 @@ export const taskResultsRouter = new Hono<{
   // historical task_executions stay legible via the snapshotted
   // result_unit. We surface a count of affected tasks in the
   // response so the SPA can show the warning before confirming.
-  .delete("/:id", async (c) => {
+  .delete("/:id", requireUser(), async (c) => {
     const info = c.get("user");
     const id = c.req.param("id");
     const row = await c.env.DB

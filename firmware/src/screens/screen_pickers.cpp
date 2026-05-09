@@ -39,13 +39,18 @@ void ScreenManager::buildResultPicker() {
     const auto* rt = app.findResultType(pending.resultTypeId);
 
     if (!rt) {
-        // Nothing to enter — bounce straight through. Belt-and-braces:
-        // the dashboard's tap handler already short-circuits this case
-        // via `resultTypeId.empty()`, but if the result type was deleted
-        // server-side between the dashboard fetch and the press we end
-        // up here.
+        // Belt-and-braces. The dashboard / tasklist tap handlers
+        // short-circuit when findResultType returns nullptr (clear
+        // resultTypeId, push UserPicker directly), so this branch
+        // shouldn't fire on a healthy device. If it ever does —
+        // e.g. the result type was deleted server-side AFTER the
+        // tap but BEFORE this build — strip resultTypeId so the
+        // picker's tap handler doesn't propagate a stale
+        // resultValue from a previous pick.
+        app.pendingDone().resultTypeId = "";
+        app.pendingDone().hasResultValue = false;
         auto* l = lv_label_create(root_);
-        lv_label_set_text(l, "no result type\n(tap to skip)");
+        lv_label_set_text(l, "result type missing\n(2x back)");
         lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, 0);
         lv_obj_set_style_text_color(l, Palette::ink2(), 0);
         lv_obj_center(l);

@@ -11,7 +11,7 @@ import {
   updateTask,
 } from "../services/task-service.ts";
 import { asHomeId, asTaskId } from "../domain/ids.ts";
-import { requireAuth, requireUser, type AuthVars } from "../middleware/auth.ts";
+import { markDeviceAlive, requireAuth, requireUser, type AuthVars } from "../middleware/auth.ts";
 
 const replaceAssignments = async (
   db: D1Database,
@@ -56,9 +56,15 @@ export const tasksRouter = new Hono<{
   Bindings: Bindings;
   Variables: AuthVars;
 }>()
-  .use("*", requireAuth(), requireUser())
+  // Loose auth so device tokens can hit the
+  // /:id/complete direct-completion path used by the firmware
+  // mark-done flow when no live occurrence exists. Every other
+  // handler re-arms requireUser() because the device shouldn't be
+  // creating, editing, or deleting tasks. Same shape dashboard.ts
+  // and occurrences.ts already use.
+  .use("*", requireAuth(), markDeviceAlive())
 
-  .get("/", async (c) => {
+  .get("/", requireUser(), async (c) => {
     const homeId = asHomeId(c.get("user").homeId);
     const uow = new D1UnitOfWork(c.env.DB);
     const tasks = await listTasks(uow, homeId);
@@ -91,7 +97,7 @@ export const tasksRouter = new Hono<{
     });
   })
 
-  .get("/:id", async (c) => {
+  .get("/:id", requireUser(), async (c) => {
     const callerHomeId = c.get("user").homeId;
     const uow = new D1UnitOfWork(c.env.DB);
     const result = await getTask(uow, c.req.param("id"));
@@ -126,7 +132,7 @@ export const tasksRouter = new Hono<{
     });
   })
 
-  .post("/", zValidator("json", CreateTaskSchema), async (c) => {
+  .post("/", requireUser(), zValidator("json", CreateTaskSchema), async (c) => {
     const auth = c.get("user");
     const home = await c.env.DB
       .prepare("SELECT tz FROM homes WHERE id = ?")
@@ -188,7 +194,7 @@ export const tasksRouter = new Hono<{
     return c.json(dto, 201);
   })
 
-  .patch("/:id", zValidator("json", UpdateTaskSchema), async (c) => {
+  .patch("/:id", requireUser(), zValidator("json", UpdateTaskSchema), async (c) => {
     const auth = c.get("user");
     const id = c.req.param("id");
     const uow = new D1UnitOfWork(c.env.DB);
@@ -213,7 +219,7 @@ export const tasksRouter = new Hono<{
   // The schedule attached to a task — its current rule + tz +
   // next_fire_at. Used by the SPA to populate the daily-time-picker
   // when entering edit mode for a task.
-  .get("/:id/schedule", async (c) => {
+  .get("/:id/schedule", requireUser(), async (c) => {
     const callerHomeId = c.get("user").homeId;
     const id = c.req.param("id");
     const task = await c.env.DB
@@ -249,7 +255,7 @@ export const tasksRouter = new Hono<{
   // (plan §6.5) are the dashboard's data source for sparklines and
   // aggregates ("avg daily grams over the last 7 days"). Limit
   // capped server-side; default 30 covers a month of daily acks.
-  .get("/:id/executions", async (c) => {
+  .get("/:id/executions", requireUser(), async (c) => {
     const callerHomeId = c.get("user").homeId;
     const id = c.req.param("id");
     const limit = Math.min(
@@ -309,7 +315,15 @@ export const tasksRouter = new Hono<{
   // See webapp/src/lib/executionQueue.ts for the offline queue
   // that drives this.
   .post("/:id/complete", async (c) => {
-    const auth = c.get("user");
+    // Accepts BOTH user and device tokens — the dial uses this
+    // endpoint for tasks without a live occurrence (long-press or
+    // a tap on an "open task" row that has no PENDING occurrence).
+    // For user tokens, actorUserId defaults to the caller; for
+    // device tokens, the body MUST carry a userId (picked via the
+    // post-done UserPicker) or the row is recorded with userId =
+    // NULL ("skip attribution"). device_id is set from the token
+    // when present so the ack carries the originating dial.
+    const auth = c.get("auth");
     const taskId = c.req.param("id");
     const body = (await c.req.json().catch(() => ({}))) as {
       id?: string;
@@ -333,7 +347,11 @@ export const tasksRouter = new Hono<{
     // Optional userId override — for shared-device contexts where
     // the session is generic but the actual completer is a
     // specific home member. Validate same-home before trusting.
-    let actorUserId = auth.userId;
+    // Default for user tokens: the caller. Default for device
+    // tokens: NULL (no attribution) — the device can override by
+    // sending body.userId from the on-device UserPicker.
+    let actorUserId: string | null =
+      auth.type === "user" ? auth.userId : null;
     if (body.userId && /^[0-9a-f]{32}$/.test(body.userId)) {
       const u = await c.env.DB
         .prepare(
@@ -344,6 +362,7 @@ export const tasksRouter = new Hono<{
       if (!u) return c.json({ error: "user not in this home" }, 403);
       actorUserId = body.userId;
     }
+    const ackedByDevice = auth.type === "device" ? auth.deviceId : null;
     let unit: string | null = null;
     if (task.result_type_id) {
       const rt = await c.env.DB
@@ -362,13 +381,14 @@ export const tasksRouter = new Hono<{
         `INSERT OR IGNORE INTO task_executions
            (id, home_id, task_id, occurrence_id, user_id, device_id,
             label_id, result_type_id, result_value, result_unit, notes, ts)
-         VALUES (?, ?, ?, NULL, ?, NULL, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .bind(
         body.id,
         auth.homeId,
         taskId,
         actorUserId,
+        ackedByDevice,
         task.label_id,
         task.result_type_id,
         body.resultValue ?? null,
@@ -388,7 +408,7 @@ export const tasksRouter = new Hono<{
     });
   })
 
-  .delete("/:id", async (c) => {
+  .delete("/:id", requireUser(), async (c) => {
     const auth = c.get("user");
     const id = c.req.param("id");
     const uow = new D1UnitOfWork(c.env.DB);

@@ -4,7 +4,7 @@ import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
 import type { Bindings } from "../env.ts";
 import { newUuid } from "../domain/ids.ts";
-import { requireAuth, requireUser, type AuthVars } from "../middleware/auth.ts";
+import { markDeviceAlive, requireAuth, requireUser, type AuthVars } from "../middleware/auth.ts";
 
 const CreateUser = z.object({
   displayName: z.string().min(1).max(40),
@@ -48,10 +48,15 @@ export const usersRouter = new Hono<{
   Bindings: Bindings;
   Variables: AuthVars;
 }>()
-  .use("*", requireAuth(), requireUser())
+  // Loose auth at the router level so device tokens can hit GET —
+  // the post-done UserPicker on the dial needs the home roster to
+  // attribute completions. Same pattern dashboard.ts uses; mutating
+  // verbs below re-arm requireUser() per route so the device can
+  // never create / rename / delete users.
+  .use("*", requireAuth(), markDeviceAlive())
 
   .get("/", async (c) => {
-    const u = c.get("user");
+    const homeId = c.get("auth").homeId;
     const { results } = await c.env.DB
       .prepare(
         `SELECT id, home_id, display_name, login, avatar_id, bg_color,
@@ -59,12 +64,12 @@ export const usersRouter = new Hono<{
          FROM users WHERE home_id = ? AND is_deleted = 0
          ORDER BY created_at ASC`,
       )
-      .bind(u.homeId)
+      .bind(homeId)
       .all<UserRow>();
     return c.json({ users: results.map(toDto) });
   })
 
-  .post("/", zValidator("json", CreateUser), async (c) => {
+  .post("/", requireUser(), zValidator("json", CreateUser), async (c) => {
     const u = c.get("user");
     const { displayName, login } = c.req.valid("json");
 
@@ -99,7 +104,7 @@ export const usersRouter = new Hono<{
     );
   })
 
-  .patch("/:id", zValidator("json", UpdateUser), async (c) => {
+  .patch("/:id", requireUser(), zValidator("json", UpdateUser), async (c) => {
     const u = c.get("user");
     const id = c.req.param("id");
     const patch = c.req.valid("json");
@@ -141,7 +146,7 @@ export const usersRouter = new Hono<{
   //   - the deleted user can no longer log in / appear in pickers
   // We refuse to delete the last user in a home — at least one must
   // survive so the home is reachable from /api/auth/login.
-  .delete("/:id", async (c) => {
+  .delete("/:id", requireUser(), async (c) => {
     const u = c.get("user");
     const id = c.req.param("id");
     if (id === u.userId) return c.json({ error: "cannot delete yourself" }, 400);

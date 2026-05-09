@@ -13,6 +13,7 @@ import init0007 from "../migrations/0007_task_avatar_backfill.sql?raw";
 import init0008 from "../migrations/0008_rule_modified_at.sql?raw";
 import init0009 from "../migrations/0009_user_bg_color.sql?raw";
 import init0012 from "../migrations/0012_update_counter.sql?raw";
+import init0013 from "../migrations/0013_firmware_releases.sql?raw";
 
 // Parse SQL into top-level statements. The naive split-on-';' breaks
 // on trigger bodies (`CREATE TRIGGER … BEGIN … ; … END;`) — every
@@ -61,7 +62,7 @@ const applyMigrations = async () => {
   // bitmap data we don't need in the in-memory DB. Leaving them out
   // keeps test boot fast; if a future test exercises the icon
   // pipeline they should be added here.
-  for (const sql of [init0000, init0001, init0002, init0003, init0004, init0005, init0006, init0007, init0008, init0009, init0012]) {
+  for (const sql of [init0000, init0001, init0002, init0003, init0004, init0005, init0006, init0007, init0008, init0009, init0012, init0013]) {
     for (const s of splitStatements(sql)) {
       await env.DB.exec(s.replace(/\s+/g, " "));
     }
@@ -86,6 +87,7 @@ const reset = async () => {
     "auth_logs",
     "push_subscriptions",
     "avatars",
+    "firmware_releases",
     "users",
     "homes",
   ]) {
@@ -259,14 +261,24 @@ describe("pair + login-by-QR flow", () => {
 });
 
 describe("tasks + occurrences", () => {
+  // Per-call cf-connecting-ip stamps so each auth() lands in its
+  // own rate-limit bucket (RATE_LIMITER binding is wired in tests
+  // and the 10/60 bucket is shared across the whole vitest worker).
+  // Same trick as the "home update counter" describe below — a real
+  // fleet has distinct outbound IPs naturally.
+  let nextIp = 100;
   const auth = async (): Promise<{
     token: string;
     homeId: string;
     userId: string;
   }> => {
+    const ip = `10.0.1.${nextIp++}`;
     const res = await SELF.fetch("https://t/api/auth/quick-setup", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: {
+        "content-type": "application/json",
+        "cf-connecting-ip": ip,
+      },
       body: "{}",
     });
     const body = await json(res);
@@ -476,6 +488,503 @@ describe("tasks + occurrences", () => {
     expect(row?.result_unit).toBe("gr");
     expect(row?.notes).toBe("morning meal");
   });
+
+  // Reported on-device: tapping a task with the seeded "Rating"
+  // result lands on the picker's empty-state ("no result type
+  // (tap to skip)") instead of the star widget. The early-return
+  // in screen_pickers.cpp::buildResultPicker fires when the
+  // device's `findResultType(task.resultTypeId)` returns null —
+  // either the task points at a type the device hasn't synced
+  // (server-side data inconsistency) or the IDs returned by
+  // /api/dashboard differ from /api/task-results for the same
+  // row. This sweeps both: a task created with each seeded type
+  // must round-trip the same UUID through the dashboard *and*
+  // task-results endpoints, so the device's lookup can succeed.
+  for (const type of [
+    "Count",
+    "Grams",
+    "Minutes",
+    "Rating",
+    "Percent",
+  ]) {
+    it(`task created with ${type} result type round-trips a matching id through both /api/dashboard and /api/task-results`, async () => {
+      const { token, homeId } = await auth();
+
+      // Seeded task_results row for this display name. Each home
+      // gets all 5 at quick-setup; the DB lookup confirms the
+      // seeder ran and returns the canonical UUID.
+      const seeded = await env.DB
+        .prepare(
+          "SELECT id FROM task_results WHERE home_id = ? AND display_name = ? AND is_deleted = 0",
+        )
+        .bind(homeId, type)
+        .first<{ id: string }>();
+      expect(
+        seeded,
+        `seeder must produce a "${type}" task_result for every new home`,
+      ).not.toBeNull();
+      const seededId = seeded!.id;
+
+      // Create a task that points at this result type.
+      const create = await SELF.fetch("https://t/api/tasks", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          title: `t-${type}`,
+          kind: "ONESHOT",
+          resultTypeId: seededId,
+        }),
+      });
+      expect(create.status).toBe(201);
+
+      // ── /api/task-results round-trip ─────────────────────────
+      // The device reads this via fetchResultTypes() into
+      // resultTypes_; the picker's findResultType() then matches
+      // task.resultTypeId against entry.id.
+      const trRes = await SELF.fetch("https://t/api/task-results", {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(trRes.status).toBe(200);
+      const trBody = (await json(trRes)) as {
+        taskResults: Array<{ id: string; displayName: string }>;
+      };
+      const matchingResultType = trBody.taskResults.find(
+        (r) => r.id === seededId,
+      );
+      expect(
+        matchingResultType,
+        `/api/task-results must include the seeded "${type}" entry the task references`,
+      ).toBeDefined();
+      expect(matchingResultType?.displayName).toBe(type);
+
+      // ── /api/dashboard round-trip ────────────────────────────
+      // The device reads this via fetchDashboard() into
+      // DashboardItem.resultTypeId; tapping seeds
+      // pendingDone.resultTypeId. The id MUST be byte-identical
+      // to the one task-results returned, otherwise the on-
+      // device findResultType() walk produces nullptr and the
+      // picker shows the empty-state placeholder.
+      const dashRes = await SELF.fetch(
+        "https://t/api/dashboard?include=hidden",
+        { headers: { authorization: `Bearer ${token}` } },
+      );
+      expect(dashRes.status).toBe(200);
+      const dashBody = (await json(dashRes)) as {
+        tasks: Array<{ task: { id: string; resultTypeId: string | null } }>;
+      };
+      const dashboardRow = dashBody.tasks.find(
+        (t) => t.task.resultTypeId === seededId,
+      );
+      expect(
+        dashboardRow,
+        `/api/dashboard task.resultTypeId must equal the id /api/task-results returned for "${type}"`,
+      ).toBeDefined();
+    });
+  }
+});
+
+describe("device-token authorization (firmware-side mark-done)", () => {
+  // Same per-call cf-connecting-ip pattern as the other suites —
+  // these tests mint multiple homes / tokens and would otherwise
+  // race the shared rate-limit bucket.
+  let nextIp = 200;
+  const auth = async () => {
+    const ip = `10.0.2.${nextIp++}`;
+    const res = await SELF.fetch("https://t/api/auth/quick-setup", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "cf-connecting-ip": ip,
+      },
+      body: "{}",
+    });
+    const body = await json(res);
+    return {
+      token: body["token"] as string,
+      homeId: body["homeId"] as string,
+      userId: body["userId"] as string,
+    };
+  };
+
+  // The dial pairs into a home and gets a DeviceToken. Subsequent
+  // sync rounds + mark-done calls authenticate with that token,
+  // not a UserToken. Several endpoints used to gate everything
+  // behind requireUser() — the device's GETs returned 403 silently
+  // and resultTypes_ / users_ stayed empty, breaking the post-done
+  // pickers. These tests pin the device-token contract so a future
+  // refactor can't quietly re-block the dial.
+  const mintDeviceToken = async (homeId: string): Promise<string> => {
+    const { issueDeviceToken } = await import("../src/auth.ts");
+    const secret = (env as unknown as { AUTH_SECRET: string }).AUTH_SECRET;
+    return issueDeviceToken(
+      homeId,
+      "0".repeat(20) + "abcdef012345",
+      secret,
+    );
+  };
+
+  it("device token can GET /api/task-results (was 403 — root cause of 'no result type')", async () => {
+    const { homeId } = await auth();
+    const deviceToken = await mintDeviceToken(homeId);
+
+    const r = await SELF.fetch("https://t/api/task-results", {
+      headers: { authorization: `Bearer ${deviceToken}` },
+    });
+    expect(r.status).toBe(200);
+    const body = (await json(r)) as {
+      taskResults: Array<{ id: string; displayName: string }>;
+    };
+    // Seeded list — every new home gets all 5.
+    const names = body.taskResults.map((t) => t.displayName).sort();
+    expect(names).toEqual(["Count", "Grams", "Minutes", "Percent", "Rating"]);
+  });
+
+  it("device token can GET /api/users (UserPicker on the dial needs the home roster)", async () => {
+    const { homeId } = await auth();
+    const deviceToken = await mintDeviceToken(homeId);
+
+    const r = await SELF.fetch("https://t/api/users", {
+      headers: { authorization: `Bearer ${deviceToken}` },
+    });
+    expect(r.status).toBe(200);
+    const body = (await json(r)) as { users: Array<{ id: string }> };
+    expect(body.users.length).toBeGreaterThan(0);
+  });
+
+  it("device token can POST /api/tasks/:id/complete (direct-completion path when no occurrence exists)", async () => {
+    const { token: userToken, homeId } = await auth();
+    const userHeaders = {
+      authorization: `Bearer ${userToken}`,
+      "content-type": "application/json",
+    } as const;
+
+    // Create a task as the user (creation stays user-only).
+    const create = await SELF.fetch("https://t/api/tasks", {
+      method: "POST",
+      headers: userHeaders,
+      body: JSON.stringify({ title: "device-completes-this", kind: "ONESHOT" }),
+    });
+    expect(create.status).toBe(201);
+    const task = (await json(create)) as { id: string };
+
+    // Now complete it via the device token. The device sends a
+    // stable execution id (UUID) so the call is idempotent.
+    const deviceToken = await mintDeviceToken(homeId);
+    const executionId = "f".repeat(32);
+    const complete = await SELF.fetch(
+      `https://t/api/tasks/${task.id}/complete`,
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${deviceToken}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ id: executionId }),
+      },
+    );
+    expect(complete.status).toBe(200);
+
+    // Row landed in task_executions; userId NULL (device skipped
+    // the UserPicker), device_id populated from the token.
+    const row = await env.DB
+      .prepare(
+        "SELECT user_id, device_id FROM task_executions WHERE id = ?",
+      )
+      .bind(executionId)
+      .first<{ user_id: string | null; device_id: string | null }>();
+    expect(row?.user_id).toBeNull();
+    expect(row?.device_id).not.toBeNull();
+  });
+
+  it("device-token mutations on user-only routes still 403 (POST /api/task-results, /api/users, etc.)", async () => {
+    const { homeId } = await auth();
+    const deviceToken = await mintDeviceToken(homeId);
+
+    // Negative checks: the device must NOT be able to create /
+    // delete result types or users. The per-route requireUser()
+    // we re-armed on each mutation handler enforces this.
+    const postResult = await SELF.fetch("https://t/api/task-results", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${deviceToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ displayName: "X", unitName: "x", step: 1 }),
+    });
+    expect(postResult.status).toBe(403);
+
+    const postUser = await SELF.fetch("https://t/api/users", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${deviceToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ displayName: "Mallory" }),
+    });
+    expect(postUser.status).toBe(403);
+
+    const postTask = await SELF.fetch("https://t/api/tasks", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${deviceToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ title: "rogue", kind: "ONESHOT" }),
+    });
+    expect(postTask.status).toBe(403);
+  });
+});
+
+describe("task completion propagates to all clients", () => {
+  // End-to-end pin: when the dial completes a task (via either the
+  // occurrence-ack or the direct-complete path), the resulting
+  // status change must (a) land in DB, (b) bump the home's
+  // update_counter so the dial's next peek picks up the change,
+  // (c) drop out of /api/occurrences/pending, (d) reflect on
+  // /api/dashboard's lastExecutionAt + recompute urgency, and
+  // (e) be visible to the webapp (user-token clients) without
+  // any extra coordination.
+
+  let nextIp = 300;
+  const auth = async () => {
+    const ip = `10.0.3.${nextIp++}`;
+    const res = await SELF.fetch("https://t/api/auth/quick-setup", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "cf-connecting-ip": ip,
+      },
+      body: "{}",
+    });
+    const body = await json(res);
+    return {
+      token: body["token"] as string,
+      homeId: body["homeId"] as string,
+      userId: body["userId"] as string,
+    };
+  };
+
+  const mintDeviceToken = async (homeId: string): Promise<string> => {
+    const { issueDeviceToken } = await import("../src/auth.ts");
+    const secret = (env as unknown as { AUTH_SECRET: string }).AUTH_SECRET;
+    return issueDeviceToken(
+      homeId,
+      "0".repeat(20) + "abcdef012345",
+      secret,
+    );
+  };
+
+  const peekCounter = async (token: string): Promise<number> => {
+    const res = await SELF.fetch("https://t/api/homes/peek", {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(res.status).toBe(200);
+    const body = (await json(res)) as { counter: number };
+    return body.counter;
+  };
+
+  it("occurrence ack via device token: status flips, /pending drops, peek advances, dashboard sees lastExecutionAt, webapp sees the same", async () => {
+    const { token: userToken, homeId } = await auth();
+    const userHeaders = {
+      authorization: `Bearer ${userToken}`,
+      "content-type": "application/json",
+    } as const;
+    const deviceToken = await mintDeviceToken(homeId);
+
+    // Create a task + insert a PENDING occurrence (skipping the
+    // cron path so the test is deterministic).
+    const create = await SELF.fetch("https://t/api/tasks", {
+      method: "POST",
+      headers: userHeaders,
+      body: JSON.stringify({ title: "drink water", kind: "ONESHOT" }),
+    });
+    expect(create.status).toBe(201);
+    const task = (await json(create)) as { id: string };
+
+    const occId = "1".repeat(32);
+    const nowMs = Date.now();
+    await env.DB
+      .prepare(
+        `INSERT INTO occurrences (id, task_id, due_at, status,
+           created_at, updated_at, is_deleted)
+         VALUES (?, ?, ?, 'PENDING', ?, ?, 0)`,
+      )
+      .bind(occId, task.id, Math.floor(nowMs / 1000), nowMs, nowMs)
+      .run();
+
+    // ── Snapshot state before the ack ────────────────────────
+    const counterBefore = await peekCounter(deviceToken);
+
+    // Device's view of the pending list MUST include the occurrence
+    // (sanity — if it doesn't, the rest of the test is meaningless).
+    const pendingBefore = await SELF.fetch(
+      "https://t/api/occurrences/pending",
+      { headers: { authorization: `Bearer ${deviceToken}` } },
+    );
+    expect(pendingBefore.status).toBe(200);
+    const pendingBeforeBody = (await json(pendingBefore)) as {
+      occurrences: Array<{ id: string }>;
+    };
+    expect(
+      pendingBeforeBody.occurrences.some((o) => o.id === occId),
+      "occurrence must show up in /pending before the ack",
+    ).toBe(true);
+
+    // ── Device acks the occurrence ───────────────────────────
+    const ack = await SELF.fetch(
+      `https://t/api/occurrences/${occId}/ack`,
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${deviceToken}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ notes: "test-ack" }),
+      },
+    );
+    expect(ack.status).toBe(200);
+    expect((await json(ack))["status"]).toBe("ACKED");
+
+    // ── (a) DB state ─────────────────────────────────────────
+    const occRow = await env.DB
+      .prepare("SELECT status, acked_at, acked_by_device_id FROM occurrences WHERE id = ?")
+      .bind(occId)
+      .first<{
+        status: string;
+        acked_at: number | null;
+        acked_by_device_id: string | null;
+      }>();
+    expect(occRow?.status).toBe("ACKED");
+    expect(occRow?.acked_at).not.toBeNull();
+    expect(occRow?.acked_by_device_id).not.toBeNull();
+
+    const execRows = await env.DB
+      .prepare("SELECT id, ts, device_id FROM task_executions WHERE task_id = ?")
+      .bind(task.id)
+      .all<{ id: string; ts: number; device_id: string | null }>();
+    expect(execRows.results).toHaveLength(1);
+    expect(execRows.results[0]?.device_id).not.toBeNull();
+    const execTs = execRows.results[0]!.ts;
+
+    // ── (b) Peek counter advanced (slice-A triggers fired) ───
+    const counterAfter = await peekCounter(deviceToken);
+    expect(
+      counterAfter,
+      "ack must bump update_counter so the dial's next peek picks up the change",
+    ).toBeGreaterThan(counterBefore);
+
+    // ── (c) /pending no longer returns the occurrence ────────
+    // Pinned for BOTH the device's view AND the webapp's
+    // (user-token) view — a regression in either direction
+    // means a client gets a stale "still pending" badge for an
+    // already-completed occurrence.
+    for (const [label, tok] of [
+      ["device", deviceToken],
+      ["user", userToken],
+    ] as const) {
+      const after = await SELF.fetch(
+        "https://t/api/occurrences/pending",
+        { headers: { authorization: `Bearer ${tok}` } },
+      );
+      expect(after.status).toBe(200);
+      const afterBody = (await json(after)) as {
+        occurrences: Array<{ id: string }>;
+      };
+      expect(
+        afterBody.occurrences.some((o) => o.id === occId),
+        `${label}-token /pending must NOT contain the acked occurrence`,
+      ).toBe(false);
+    }
+
+    // ── (d) Dashboard reflects the new lastExecutionAt ───────
+    // Slice B adds lastExecutionAt to /api/dashboard; the
+    // device drives local urgency from it. After a fresh ack
+    // it must equal the new task_executions.ts.
+    for (const [label, tok] of [
+      ["device", deviceToken],
+      ["user", userToken],
+    ] as const) {
+      const dash = await SELF.fetch(
+        "https://t/api/dashboard?include=hidden",
+        { headers: { authorization: `Bearer ${tok}` } },
+      );
+      expect(dash.status).toBe(200);
+      const dashBody = (await json(dash)) as {
+        tasks: Array<{
+          task: { id: string };
+          lastExecutionAt: number | null;
+        }>;
+      };
+      const row = dashBody.tasks.find((t) => t.task.id === task.id);
+      expect(
+        row,
+        `${label}-token dashboard must still surface the task after ack (it's still active)`,
+      ).toBeDefined();
+      expect(
+        row?.lastExecutionAt,
+        `${label}-token dashboard must echo the new task_executions.ts`,
+      ).toBe(execTs);
+    }
+  });
+
+  it("direct task completion via device token: task_executions row, peek advances, /tasks/:id/executions reflects on user-token GET", async () => {
+    const { token: userToken, homeId } = await auth();
+    const userHeaders = {
+      authorization: `Bearer ${userToken}`,
+      "content-type": "application/json",
+    } as const;
+    const deviceToken = await mintDeviceToken(homeId);
+
+    // Create a task without manually inserting an occurrence —
+    // device hits /tasks/:id/complete directly.
+    const create = await SELF.fetch("https://t/api/tasks", {
+      method: "POST",
+      headers: userHeaders,
+      body: JSON.stringify({ title: "stretch", kind: "ONESHOT" }),
+    });
+    expect(create.status).toBe(201);
+    const task = (await json(create)) as { id: string };
+
+    const counterBefore = await peekCounter(deviceToken);
+
+    const executionId = "e".repeat(32);
+    const complete = await SELF.fetch(
+      `https://t/api/tasks/${task.id}/complete`,
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${deviceToken}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ id: executionId }),
+      },
+    );
+    expect(complete.status).toBe(200);
+
+    // Counter advanced (task_executions INSERT fires the slice-A
+    // trigger, same as occurrence ack).
+    const counterAfter = await peekCounter(deviceToken);
+    expect(counterAfter).toBeGreaterThan(counterBefore);
+
+    // Webapp sees the execution via the per-task history endpoint
+    // — same view the SPA's TaskDetail screen renders.
+    const history = await SELF.fetch(
+      `https://t/api/tasks/${task.id}/executions`,
+      { headers: { authorization: `Bearer ${userToken}` } },
+    );
+    expect(history.status).toBe(200);
+    const historyBody = (await json(history)) as {
+      executions: Array<{ id: string; deviceId: string | null }>;
+    };
+    expect(historyBody.executions).toHaveLength(1);
+    expect(historyBody.executions[0]?.id).toBe(executionId);
+    // Device-id stamped on the execution row so the webapp can
+    // surface "completed by the dial" attribution.
+    expect(historyBody.executions[0]?.deviceId).not.toBeNull();
+  });
 });
 
 describe("home update counter (peek-then-merge sync)", () => {
@@ -587,5 +1096,190 @@ describe("home update counter (peek-then-merge sync)", () => {
   it("peek requires auth", async () => {
     const res = await SELF.fetch("https://t/api/homes/peek");
     expect(res.status).toBe(401);
+  });
+});
+
+describe("OTA — firmware release advisory (Phase 6 foundation)", () => {
+  let nextIp = 400;
+  const auth = async () => {
+    const ip = `10.0.4.${nextIp++}`;
+    const res = await SELF.fetch("https://t/api/auth/quick-setup", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "cf-connecting-ip": ip,
+      },
+      body: "{}",
+    });
+    const body = await json(res);
+    return {
+      token: body["token"] as string,
+      homeId: body["homeId"] as string,
+    };
+  };
+
+  const mintDeviceToken = async (
+    homeId: string,
+    deviceId = "0".repeat(20) + "abcdef012345",
+  ): Promise<string> => {
+    const { issueDeviceToken } = await import("../src/auth.ts");
+    const secret = (env as unknown as { AUTH_SECRET: string }).AUTH_SECRET;
+    return issueDeviceToken(homeId, deviceId, secret);
+  };
+
+  const insertRelease = async (overrides: {
+    version: string;
+    active?: 0 | 1;
+    rolloutRules?: string | null;
+    sizeBytes?: number;
+  }) => {
+    const nowSec = Math.floor(Date.now() / 1000);
+    await env.DB.prepare(
+      `INSERT INTO firmware_releases
+         (version, sha256, r2_key, size_bytes, rollout_rules, active, created_at, promoted_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+      .bind(
+        overrides.version,
+        "a".repeat(64),
+        `firmware/firmware-${overrides.version}.bin`,
+        overrides.sizeBytes ?? 1_400_000,
+        overrides.rolloutRules ?? null,
+        overrides.active ?? 1,
+        nowSec,
+        overrides.active === 1 ? nowSec : null,
+      )
+      .run();
+  };
+
+  it("/firmware/check returns updateAvailable=false when device is at the latest version", async () => {
+    const { homeId } = await auth();
+    const deviceToken = await mintDeviceToken(homeId);
+    await insertRelease({ version: "1.4.2" });
+
+    const res = await SELF.fetch(
+      "https://t/api/firmware/check?fwVersion=1.4.2",
+      { headers: { authorization: `Bearer ${deviceToken}` } },
+    );
+    expect(res.status).toBe(200);
+    expect((await json(res))["updateAvailable"]).toBe(false);
+  });
+
+  it("/firmware/check returns the highest active release > current (and a SQL ORDER BY would mis-rank '1.10.0' vs '1.2.0')", async () => {
+    const { homeId } = await auth();
+    const deviceToken = await mintDeviceToken(homeId);
+    await insertRelease({ version: "1.2.0" });
+    await insertRelease({ version: "1.10.0" });
+
+    const res = await SELF.fetch(
+      "https://t/api/firmware/check?fwVersion=1.0.0",
+      { headers: { authorization: `Bearer ${deviceToken}` } },
+    );
+    expect(res.status).toBe(200);
+    const body = (await json(res)) as {
+      updateAvailable: boolean;
+      version: string;
+    };
+    expect(body.updateAvailable).toBe(true);
+    expect(body.version).toBe("1.10.0");
+  });
+
+  it("/firmware/check skips inactive releases", async () => {
+    const { homeId } = await auth();
+    const deviceToken = await mintDeviceToken(homeId);
+    await insertRelease({ version: "2.0.0", active: 0 });
+    await insertRelease({ version: "1.5.0", active: 1 });
+
+    const res = await SELF.fetch(
+      "https://t/api/firmware/check?fwVersion=1.0.0",
+      { headers: { authorization: `Bearer ${deviceToken}` } },
+    );
+    const body = (await json(res)) as { version?: string };
+    expect(body.version).toBe("1.5.0");
+  });
+
+  it("/firmware/check honours rollout_rules deviceIds whitelist", async () => {
+    const { homeId } = await auth();
+    const targetDeviceId = "11".repeat(16);
+    const otherDeviceId = "22".repeat(16);
+    await insertRelease({
+      version: "1.6.0",
+      rolloutRules: JSON.stringify({ deviceIds: [targetDeviceId] }),
+    });
+
+    const targetToken = await mintDeviceToken(homeId, targetDeviceId);
+    const otherToken = await mintDeviceToken(homeId, otherDeviceId);
+
+    const targetRes = await SELF.fetch(
+      "https://t/api/firmware/check?fwVersion=1.0.0",
+      { headers: { authorization: `Bearer ${targetToken}` } },
+    );
+    const targetBody = (await json(targetRes)) as { version?: string };
+    expect(targetBody.version).toBe("1.6.0");
+
+    const otherRes = await SELF.fetch(
+      "https://t/api/firmware/check?fwVersion=1.0.0",
+      { headers: { authorization: `Bearer ${otherToken}` } },
+    );
+    expect((await json(otherRes))["updateAvailable"]).toBe(false);
+  });
+
+  it("/devices/heartbeat updates fw_version + advises updateAvailable in one round-trip", async () => {
+    const { homeId } = await auth();
+    const deviceId = "33".repeat(16);
+    const deviceToken = await mintDeviceToken(homeId, deviceId);
+
+    // Seed the device row first so the heartbeat's UPDATE has a
+    // target. (Pair flow normally creates this on /pair/confirm;
+    // tests short-circuit by inserting directly.)
+    const nowSec = Math.floor(Date.now() / 1000);
+    await env.DB.prepare(
+      `INSERT INTO devices (id, home_id, serial, hw_model, fw_version, created_at, updated_at, is_deleted)
+       VALUES (?, ?, ?, 'crowpanel', '0.3.0', ?, ?, 0)`,
+    )
+      .bind(deviceId, homeId, "S-" + deviceId.slice(0, 6), nowSec, nowSec)
+      .run();
+
+    await insertRelease({ version: "0.4.0" });
+
+    const res = await SELF.fetch("https://t/api/devices/heartbeat", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${deviceToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ fwVersion: "0.3.0" }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await json(res)) as {
+      ok: boolean;
+      updateAvailable: boolean;
+      version?: string;
+    };
+    expect(body.ok).toBe(true);
+    expect(body.updateAvailable).toBe(true);
+    expect(body.version).toBe("0.4.0");
+
+    // Persistence: devices.fw_version landed on the row + last_seen
+    // ticked forward.
+    const row = await env.DB
+      .prepare("SELECT fw_version, last_seen_at FROM devices WHERE id = ?")
+      .bind(deviceId)
+      .first<{ fw_version: string; last_seen_at: number | null }>();
+    expect(row?.fw_version).toBe("0.3.0");
+    expect(row?.last_seen_at).not.toBeNull();
+  });
+
+  it("/devices/heartbeat rejects user tokens (device-only endpoint)", async () => {
+    const { token: userToken } = await auth();
+    const res = await SELF.fetch("https://t/api/devices/heartbeat", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${userToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ fwVersion: "0.3.0" }),
+    });
+    expect(res.status).toBe(403);
   });
 });
