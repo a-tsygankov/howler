@@ -201,6 +201,25 @@ void ScreenManager::tick(uint32_t millisNow) {
         aboutNextRefreshMs_ = millisNow + 1000;
     }
 
+    // User-initiated Sync-now follow-through. Either the watermark
+    // advanced (success) or the deadline elapsed (failure /
+    // offline). The result toast replaces the in-flight
+    // "syncing..." via showToast's delete-and-recreate path.
+    if (userSyncRequestActive_) {
+        if (app_.lastFullSyncSec() > userSyncBaselineSec_) {
+            showToast("synced", 1200);
+            userSyncRequestActive_ = false;
+        } else if (millisNow >= userSyncDeadlineMs_) {
+            // Distinguish "we tried and failed" from "we never
+            // tried because no network" — the user wants to know
+            // which side the problem is on.
+            const bool online = app_.network().isOnline();
+            showToast(online ? "sync failed" : "sync offline",
+                      online ? 1500u        : 1200u);
+            userSyncRequestActive_ = false;
+        }
+    }
+
     if (app_.router().current() != rendered_ || rebuildPending_) {
         rebuildPending_ = false;
         rebuildScreen();
@@ -345,6 +364,26 @@ void ScreenManager::pollAndDispatch(uint32_t /*millisNow*/) {
     // lv_timer_handler and swallow the press silently.
     if (tap || longPress) g_enc.pendingPress = true;
     onEvent(delta, tap, doubleTap, longPress, vert, horz);
+}
+
+void ScreenManager::requestUserSync() {
+    // Capture the watermark BEFORE asking SyncService to run a
+    // round so we can detect advancement against this exact value.
+    // Setting requestSync() before reading the watermark would race
+    // an in-flight tick that's already running a round — we'd see
+    // the new value and report success without the user-initiated
+    // round having actually executed.
+    userSyncBaselineSec_   = app_.lastFullSyncSec();
+    // 6 s budget — typical successful round is 0.5–2 s; the long
+    // tail (DNS reset, slow Wi-Fi reassociation) is rare enough
+    // that timing out and showing "sync failed" is the right
+    // user-visible signal even when a stuck round eventually
+    // succeeds. The next 30 s tick will then update the badge if
+    // it lands later.
+    userSyncDeadlineMs_    = millis() + 6000;
+    userSyncRequestActive_ = true;
+    app_.sync().requestSync();
+    showToast("syncing...", 1500);
 }
 
 void ScreenManager::paintNetworkBadge() {

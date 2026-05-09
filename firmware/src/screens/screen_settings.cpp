@@ -81,11 +81,14 @@ void ScreenManager::buildSettings() {
         auto& app = this->app();
         const auto& id = it.id;
         if (id == "sync") {
-            // Force a sync round on the next tick. The toast gives
-            // visible feedback even when the network round-trip is
-            // fast.
-            app.sync().requestSync();
-            this->showToast("syncing...", 1500);
+            // requestUserSync wraps the underlying requestSync()
+            // call with the toast lifecycle — captures a baseline
+            // watermark + a 6 s deadline so the in-flight
+            // "syncing..." gets replaced by "synced" / "sync
+            // failed" / "sync offline" once the round actually
+            // resolves. Without that wrapper the toast just
+            // expired after 1.5 s with no signal of outcome.
+            this->requestUserSync();
         }
         else if (id == "theme") {
             // Push the dedicated Theme switcher screen so the user

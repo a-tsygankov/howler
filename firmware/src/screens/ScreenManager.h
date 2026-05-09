@@ -58,6 +58,16 @@ public:
     /// Lives outside the screen tree so it survives screen rebuilds.
     void showToast(const char* text, uint32_t durationMs = 1500);
 
+    /// Wraps a user-initiated sync (Settings → Sync now). Captures
+    /// the watermark + a deadline up front, calls
+    /// `app.sync().requestSync()`, and shows the "syncing..." toast.
+    /// `tick()` then polls for completion and replaces the toast
+    /// with "synced" / "sync failed" / "sync offline" once the
+    /// round either lands or times out — without this the toast
+    /// just expired after 1.5 s regardless of the actual outcome,
+    /// so the user got no signal whether Sync now had any effect.
+    void requestUserSync();
+
     /// Force a screen rebuild on the next tick even when the active
     /// router id hasn't changed. Used by handlers that change visual
     /// state without navigating — e.g. the Theme toggle in Settings,
@@ -118,6 +128,20 @@ private:
     /// Settings → "Sync now" to surface "syncing..." for ~1.5 s.
     lv_obj_t* toastLabel_ = nullptr;
     uint32_t  toastUntilMs_ = 0;
+
+    /// Pending user-initiated sync state. `userSyncBaselineSec_` is
+    /// the watermark value at request time — `tick()` watches for
+    /// `app.lastFullSyncSec()` to advance past it as the success
+    /// signal. `userSyncDeadlineMs_` is the wall-clock cap; on
+    /// expiry without success we show a failure / offline toast and
+    /// clear the pending flag. -1 / 0 means "no request in flight".
+    /// `userSyncRequestActive_` distinguishes "no request" (false)
+    /// from "request whose baseline happened to be 0" so a
+    /// never-synced device's first Sync now still resolves
+    /// correctly.
+    int64_t  userSyncBaselineSec_ = 0;
+    uint32_t userSyncDeadlineMs_  = 0;
+    bool     userSyncRequestActive_ = false;
 
     /// Done-animation overlay: green check on the top layer that
     /// fades in + scales up briefly when `playDoneAnimation()` fires.
