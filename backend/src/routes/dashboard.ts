@@ -228,10 +228,11 @@ export const dashboardRouter = new Hono<{
       // ignore the new fields; they're additive.
       tasks: items.map((it) => {
         const sched = scheduleByTask.get(it.task.id);
+        // it.task.deadlineHint already carries the value via taskDto
+        // — no need for the O(N) `tasks.find()` per row I had on the
+        // first pass.
         const oneshotDeadline =
-          it.rule?.kind === "ONESHOT"
-            ? (tasks.find((t) => t.id === it.task.id)?.deadline_hint ?? null)
-            : null;
+          it.rule?.kind === "ONESHOT" ? it.task.deadlineHint : null;
         return {
           task: it.task,
           rule: it.rule,
