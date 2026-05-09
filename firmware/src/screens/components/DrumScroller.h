@@ -41,6 +41,7 @@
 // forwards via fireActivate()).
 
 #include "RoundCard.h"
+#include "../../domain/DrumLayout.h"
 
 #include <Arduino.h>
 #include <functional>
@@ -241,25 +242,16 @@ public:
             if (!slots_[i]) continue;
             lv_obj_clean(slots_[i]);
             const int tier = i - kCentreSlot;
-            // Aliasing-aware tier suppression. With n items, the
-            // modulo-wrap means tier ±k aliases tier ∓(n-k) — e.g.
-            // n=4, tier-2 wraps to the same index as tier+2; n=3,
-            // tier-2 aliases tier+1; n=6, tier-3 aliases tier+3.
-            // Rendering the same item at two tiers looks broken (the
-            // user sees one row "echoing" the other), so we hide far
-            // slots until the list is long enough that no two visible
-            // tiers collide. Boundaries:
-            //   tier ±1 safe iff n ≥ 3 (n=2 aliases ±1 to each other,
-            //                           accept it — the drum still
-            //                           rotates cleanly with two)
-            //   tier ±2 safe iff n ≥ 5
-            //   tier ±3 safe iff n ≥ 7
-            const int dist = tier < 0 ? -tier : tier;
-            if (dist > maxVisibleDistance_) continue;
-            if (itemCount_ == 0) continue;
-            if (itemCount_ == 1 && tier != 0) continue;
-            if (itemCount_ < 5  && (tier == -2 || tier == 2)) continue;
-            if (itemCount_ < 7  && (tier == -3 || tier == 3)) continue;
+            // Aliasing-aware tier suppression — pure rule lives in
+            // domain/DrumLayout.h so the n=0/1/2/<5/<7 boundaries
+            // are unit-testable without LVGL. n=2 used to render
+            // both tier-1 and tier+1 even though both alias to the
+            // same OTHER item; the user reported the visible
+            // duplicate (item appears above AND below the centre)
+            // and that's now suppressed: we keep tier+1, drop
+            // tier-1.
+            if (domain::drumTierAliases(itemCount_, tier,
+                                        maxVisibleDistance_)) continue;
             const long n   = static_cast<long>(itemCount_);
             const long idx = ((static_cast<long>(cursor_) + tier) % n + n) % n;
             render_(slots_[i], static_cast<size_t>(idx), tier);

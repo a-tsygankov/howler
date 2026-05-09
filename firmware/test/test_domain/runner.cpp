@@ -62,6 +62,16 @@ void test_arc_idle_when_not_held();
 void test_arc_charges_then_fires();
 void test_arc_releases_before_threshold_resets();
 
+// test_drum_layout.cpp — pure aliasing-suppression rule
+void test_drum_layout_n0_renders_nothing();
+void test_drum_layout_n1_only_centre();
+void test_drum_layout_n2_centre_and_one_neighbour();
+void test_drum_layout_n3_centre_plus_two_neighbours();
+void test_drum_layout_n4_still_suppresses_far_neighbours();
+void test_drum_layout_n5_unlocks_tier_pm2();
+void test_drum_layout_n7_unlocks_all_seven_tiers();
+void test_drum_layout_respects_maxVisibleDistance_cap();
+
 // test_urgency.cpp — port of backend/test/urgency.test.ts
 void test_urgency_daily_urgent_in_last_quarter_of_gap();
 void test_urgency_daily_non_urgent_in_second_to_last_quarter();
@@ -138,6 +148,15 @@ int main(int, char**) {
     RUN_TEST(test_arc_idle_when_not_held);
     RUN_TEST(test_arc_charges_then_fires);
     RUN_TEST(test_arc_releases_before_threshold_resets);
+
+    RUN_TEST(test_drum_layout_n0_renders_nothing);
+    RUN_TEST(test_drum_layout_n1_only_centre);
+    RUN_TEST(test_drum_layout_n2_centre_and_one_neighbour);
+    RUN_TEST(test_drum_layout_n3_centre_plus_two_neighbours);
+    RUN_TEST(test_drum_layout_n4_still_suppresses_far_neighbours);
+    RUN_TEST(test_drum_layout_n5_unlocks_tier_pm2);
+    RUN_TEST(test_drum_layout_n7_unlocks_all_seven_tiers);
+    RUN_TEST(test_drum_layout_respects_maxVisibleDistance_cap);
 
     RUN_TEST(test_urgency_daily_urgent_in_last_quarter_of_gap);
     RUN_TEST(test_urgency_daily_non_urgent_in_second_to_last_quarter);
