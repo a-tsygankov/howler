@@ -21,6 +21,16 @@ namespace howler::adapters {
 /// look up the transition's direction, and accumulate. One full
 /// detent (4 transitions on this encoder) emits one rotation event.
 ///
+/// **One mechanical click → one rotation event.** The CrowPanel's
+/// encoder is a standard 4-edge-per-detent type, so the threshold
+/// `accumulator_ == ±4` matches the user's mental model exactly.
+/// If a future board uses a half-step encoder (2 edges per detent)
+/// the threshold below would need to drop to ±2; if it overshoots
+/// we'd add a post-emit cooldown. Verified by code-review against
+/// dev-26 user spec; if the device is observed advancing >1 item
+/// per click flip on `HOWLER_DEBUG_INPUT` and watch the per-event
+/// trace for spurious double-fires.
+///
 /// `HOWLER_DEBUG_INPUT` (set via build flag) prints every event to
 /// Serial — useful when you don't trust the pin map yet.
 class RotaryInput : public howler::application::IInputDevice {

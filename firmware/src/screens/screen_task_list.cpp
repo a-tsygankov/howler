@@ -34,6 +34,22 @@ void ScreenManager::buildTaskList() {
         components::buildTabStrip(root_, entries, 3, /*activeIndex=*/1);
     }
 
+    // dev-26: small task-count chip below the tab strip — the user
+    // asked for an indicator that differentiates this screen from
+    // Dashboard. Tab strip pill already shows which screen is
+    // selected; this gives the additional "and how many tasks the
+    // unfiltered view contains" cue without competing with the drum.
+    if (!app_.allTasks().empty()) {
+        char buf[16];
+        snprintf(buf, sizeof(buf), "%u tasks",
+                 static_cast<unsigned>(app_.allTasks().size()));
+        auto* chip = lv_label_create(root_);
+        lv_label_set_text(chip, buf);
+        lv_obj_set_style_text_color(chip, Palette::ink3(), 0);
+        lv_obj_set_style_text_font(chip, &lv_font_montserrat_10, 0);
+        lv_obj_align(chip, LV_ALIGN_TOP_MID, 0, 50);
+    }
+
     auto& all = app_.allTasks();
     if (all.empty()) {
         auto* card = buildCenterCard(root_, 180, Palette::paper2());
@@ -68,7 +84,8 @@ void ScreenManager::buildTaskList() {
         L{kMiniGap, kDetailW - 16, kMiniH, LV_OPA_COVER});
     taskDrum_.setTierLayoutByDistance(2,
         L{kMiniGap + (kMiniH - 7), kDetailW - 36, kMiniH, LV_OPA_90});
-    taskDrum_.setMaxVisibleDistance(2);
+    // Match Dashboard — see comment there. 3 cards visible only.
+    taskDrum_.setMaxVisibleDistance(1);
     taskDrum_.setItemCount(n);
     taskDrum_.setCursor(all.cursor());
     taskDrum_.setRender([this, &items, serverNow](

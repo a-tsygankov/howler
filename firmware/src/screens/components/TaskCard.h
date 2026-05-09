@@ -517,7 +517,13 @@ inline lv_obj_t* buildMiniTaskCard(
     lv_obj_align(row, LV_ALIGN_CENTER, 0, yOffset);
     lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_radius(row, 10, 0);
-    lv_obj_set_style_bg_color(row, Palette::paper2(), 0);
+    // dev-26: less contrast — paper3 (one notch darker than the
+    // centre card's paper2) for the bg and ink2 (mid-tone) for the
+    // title. Both themes get a quieter mini that doesn't fight the
+    // selected detail for visual weight. The urgency-tone due chip
+    // and avatar arc still read clearly because their colour is
+    // independent of the bg.
+    lv_obj_set_style_bg_color(row, Palette::paper3(), 0);
     lv_obj_set_style_border_color(row, Palette::lineSoft(), 0);
     lv_obj_set_style_border_width(row, 1, 0);
     lv_obj_set_style_pad_all(row, 0, 0);
@@ -554,7 +560,7 @@ inline lv_obj_t* buildMiniTaskCard(
     const int titleW = rowW - kPadL - kAvatar - kGap - dueW - kPadR;
     const int titleH = lv_font_get_line_height(titleFont);
     lv_obj_set_size(title, titleW > 30 ? titleW : 30, titleH);
-    lv_obj_set_style_text_color(title, Palette::ink(), 0);
+    lv_obj_set_style_text_color(title, Palette::ink2(), 0);
     lv_obj_set_style_text_font(title, titleFont, 0);
     lv_obj_align(title, LV_ALIGN_LEFT_MID, kPadL + kAvatar + kGap, 0);
 
@@ -650,6 +656,101 @@ inline TierCounts countTiers(const std::vector<domain::DashboardItem>& items) {
         else ++c.hidden;
     }
     return c;
+}
+
+// ─── Dashboard bottom dot indicator (dev-26) ─────────────────────
+//
+// One row of small coloured dots showing the home's overall shape:
+//
+//   • • •  +     • •  +
+//   urgent (red) soon (yellow)
+//
+// Up to `kMaxDotsPerTier` dots render per tier; beyond that we
+// append a tone-coloured "+" so the user knows there's more. Empty
+// tiers collapse out (no dots, no separator) so a healthy home
+// just shows nothing rather than a row of zero markers. Returns
+// the wrapping container; caller positions it.
+inline lv_obj_t* buildBottomDotIndicator(
+    lv_obj_t* parent, const TierCounts& counts) {
+    constexpr int kMaxDotsPerTier = 3;
+    constexpr int kDotSize = 6;
+    constexpr int kGap     = 4;
+    constexpr int kTierGap = 8;
+
+    // Tier ordering: urgent first (most actionable), then soon. We
+    // intentionally don't surface the "hidden / later" count down
+    // here — the rim indicator already shows total list position,
+    // and a quiet hidden bucket isn't worth a third row of dots.
+    struct Tier { size_t count; lv_color_t tone; };
+    const Tier tiers[] = {
+        {counts.urgent, urgencyTone(3)},   // missed/urgent → terracotta
+        {counts.soon,   urgencyTone(1)},   // soon            → amber
+    };
+
+    auto* row = lv_obj_create(parent);
+    lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(row, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_bg_opa(row, LV_OPA_0, 0);
+    lv_obj_set_style_border_width(row, 0, 0);
+    lv_obj_set_style_pad_all(row, 0, 0);
+    lv_obj_set_layout(row, LV_LAYOUT_FLEX);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    bool firstTier = true;
+    int totalW = 0;
+    for (const auto& t : tiers) {
+        if (t.count == 0) continue;
+        if (!firstTier) {
+            // Spacer so different tiers visually group apart.
+            auto* spacer = lv_obj_create(row);
+            lv_obj_set_size(spacer, kTierGap, kDotSize);
+            lv_obj_clear_flag(spacer, LV_OBJ_FLAG_SCROLLABLE);
+            lv_obj_clear_flag(spacer, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_set_style_bg_opa(spacer, LV_OPA_0, 0);
+            lv_obj_set_style_border_width(spacer, 0, 0);
+            lv_obj_set_style_pad_all(spacer, 0, 0);
+            totalW += kTierGap;
+        }
+        firstTier = false;
+
+        const size_t dotCount = t.count > kMaxDotsPerTier
+                              ? kMaxDotsPerTier : t.count;
+        for (size_t i = 0; i < dotCount; ++i) {
+            auto* dot = lv_obj_create(row);
+            lv_obj_set_size(dot, kDotSize, kDotSize);
+            lv_obj_clear_flag(dot, LV_OBJ_FLAG_SCROLLABLE);
+            lv_obj_clear_flag(dot, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_set_style_radius(dot, kDotSize / 2, 0);
+            lv_obj_set_style_bg_color(dot, t.tone, 0);
+            lv_obj_set_style_border_width(dot, 0, 0);
+            lv_obj_set_style_pad_all(dot, 0, 0);
+            lv_obj_set_style_margin_right(dot, kGap, 0);
+            totalW += kDotSize + kGap;
+        }
+        if (t.count > kMaxDotsPerTier) {
+            // Trailing "+" in the same tone — explicit "more" affordance.
+            auto* plus = lv_label_create(row);
+            lv_label_set_text(plus, "+");
+            lv_obj_set_style_text_color(plus, t.tone, 0);
+            lv_obj_set_style_text_font(plus, &lv_font_montserrat_10, 0);
+            totalW += 8;
+        } else {
+            // Last dot of this tier doesn't need a trailing margin.
+            // (A tiny aesthetic clean-up; LVGL flex will eat it
+            //  naturally since the row sizes to content.)
+        }
+    }
+    if (firstTier) {
+        // No dots — caller can choose to delete the row entirely.
+        // We return it anyway so the call site doesn't need to
+        // null-check; LVGL renders nothing for an empty flex row.
+    }
+    // Width = sum of children; height = dot diameter + 2 for any
+    // outline rounding LVGL applies.
+    lv_obj_set_size(row, totalW > 4 ? totalW : 4, kDotSize + 2);
+    return row;
 }
 
 }  // namespace howler::screens::components
