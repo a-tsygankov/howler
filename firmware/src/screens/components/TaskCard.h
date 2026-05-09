@@ -658,11 +658,9 @@ inline TierCounts countTiers(const std::vector<domain::DashboardItem>& items) {
     return c;
 }
 
-// ─── Dashboard bottom bar (dev-27) ───────────────────────────────
+// ─── Dashboard bottom bar (dev-27, layout fix) ───────────────────
 //
-// Single horizontal row spanning most of the disc width near the
-// bottom. Three independent groups, manually positioned so we don't
-// depend on flex layout edge-cases:
+// Single horizontal row near the bottom of the disc. Three groups:
 //
 //   ••• +              7              ••  +
 //   ←─ red (left)     centre count    yellow (right) ─→
@@ -673,10 +671,17 @@ inline TierCounts countTiers(const std::vector<domain::DashboardItem>& items) {
 //   final "+" sits at the rightmost position.
 // • Total dashboard count sits centred between the two groups.
 //
-// Each tier caps at 3 dots; any overflow appends a tone-matched
-// "+". An empty tier shows nothing on its side. Manual lv_obj_set_pos
-// avoids the flex-row clipping the dev-26 implementation hit when
-// the row's height was smaller than the "+" label's natural height.
+// **Round-disc fit (the dev-27 first-pass bug)**: the bar's vertical
+// position is chosen so the row's bottom edge sits at chord ≈ 175 px
+// of the 240×240 disc. The width is then 130 px so even the leftmost
+// dot has a comfortable 22 px buffer from the disc rim — the
+// previous 180 px row at y=-26 had its leftmost dot at screen
+// x=30 while the disc's chord at that y started at x=46, clipping
+// 16 px off each side.
+//
+// All children align via lv_obj_align(LEFT_MID / RIGHT_MID / CENTER)
+// so vertical centering is automatic — no more "+" floating outside
+// the row's bounds.
 //
 // Returns the wrapping container; caller positions it.
 inline lv_obj_t* buildDashboardBottomBar(
@@ -686,12 +691,9 @@ inline lv_obj_t* buildDashboardBottomBar(
     constexpr int kMaxDotsPerTier = 3;
     constexpr int kDotSize = 6;
     constexpr int kDotGap  = 4;
-    constexpr int kPlusW   = 8;
-    // Wide enough for two 3+plus groups and a centred count comfortably
-    // inside the disc's bottom chord (≈ 188 px at y=210).
-    constexpr int kRowW    = 180;
+    constexpr int kPlusW   = 9;          // montserrat_12 "+" advance ≈ 7
+    constexpr int kRowW    = 130;        // shrunk from 180; fits the chord
     constexpr int kRowH    = 16;
-    const int dotY = (kRowH - kDotSize) / 2;
 
     auto* row = lv_obj_create(parent);
     lv_obj_set_size(row, kRowW, kRowH);
@@ -701,33 +703,45 @@ inline lv_obj_t* buildDashboardBottomBar(
     lv_obj_set_style_border_width(row, 0, 0);
     lv_obj_set_style_pad_all(row, 0, 0);
 
+    auto buildDot = [&](lv_color_t tone) {
+        auto* dot = lv_obj_create(row);
+        lv_obj_set_size(dot, kDotSize, kDotSize);
+        lv_obj_clear_flag(dot, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_clear_flag(dot, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_style_radius(dot, kDotSize / 2, 0);
+        lv_obj_set_style_bg_color(dot, tone, 0);
+        lv_obj_set_style_border_width(dot, 0, 0);
+        lv_obj_set_style_pad_all(dot, 0, 0);
+        return dot;
+    };
+    auto buildPlus = [&](lv_color_t tone) {
+        auto* p = lv_label_create(row);
+        lv_label_set_text(p, "+");
+        lv_obj_set_style_text_color(p, tone, 0);
+        // dev-27 fix: bump from montserrat_10 to montserrat_12 so the
+        // "+" reads cleanly next to 6-px dots.
+        lv_obj_set_style_text_font(p, &lv_font_montserrat_12, 0);
+        return p;
+    };
+
     // ── LEFT: missed / urgent in tier-3 terracotta ───────────────
     {
         const lv_color_t tone = urgencyTone(3);
         const size_t total = counts.urgent;
         const size_t dots  = total > kMaxDotsPerTier
                            ? kMaxDotsPerTier : total;
-        int x = 0;
+        int xOff = 0;
         for (size_t i = 0; i < dots; ++i) {
-            auto* dot = lv_obj_create(row);
-            lv_obj_set_size(dot, kDotSize, kDotSize);
-            lv_obj_set_pos(dot, x, dotY);
-            lv_obj_clear_flag(dot, LV_OBJ_FLAG_SCROLLABLE);
-            lv_obj_clear_flag(dot, LV_OBJ_FLAG_CLICKABLE);
-            lv_obj_set_style_radius(dot, kDotSize / 2, 0);
-            lv_obj_set_style_bg_color(dot, tone, 0);
-            lv_obj_set_style_border_width(dot, 0, 0);
-            lv_obj_set_style_pad_all(dot, 0, 0);
-            x += kDotSize + kDotGap;
+            auto* dot = buildDot(tone);
+            lv_obj_align(dot, LV_ALIGN_LEFT_MID, xOff, 0);
+            xOff += kDotSize + kDotGap;
         }
         if (total > kMaxDotsPerTier) {
-            auto* plus = lv_label_create(row);
-            lv_label_set_text(plus, "+");
-            lv_obj_set_style_text_color(plus, tone, 0);
-            lv_obj_set_style_text_font(plus, &lv_font_montserrat_10, 0);
-            // y = -1 nudges the "+" baseline up so it visually centres
-            // on the dots rather than sitting below them.
-            lv_obj_set_pos(plus, x - 2, -1);
+            auto* plus = buildPlus(tone);
+            // Drop a tiny 1-px breathing space between the last dot
+            // and the "+" so they don't visually fuse.
+            lv_obj_align(plus, LV_ALIGN_LEFT_MID,
+                         xOff - kDotGap + 2, 0);
         }
     }
 
@@ -737,29 +751,16 @@ inline lv_obj_t* buildDashboardBottomBar(
         const size_t total = counts.soon;
         const size_t dots  = total > kMaxDotsPerTier
                            ? kMaxDotsPerTier : total;
-        int x = kRowW;
+        int xOff = 0;
         if (total > kMaxDotsPerTier) {
-            x -= kPlusW;
-            auto* plus = lv_label_create(row);
-            lv_label_set_text(plus, "+");
-            lv_obj_set_style_text_color(plus, tone, 0);
-            lv_obj_set_style_text_font(plus, &lv_font_montserrat_10, 0);
-            lv_obj_set_pos(plus, x, -1);
+            auto* plus = buildPlus(tone);
+            lv_obj_align(plus, LV_ALIGN_RIGHT_MID, -xOff, 0);
+            xOff += kPlusW;
         }
         for (size_t i = 0; i < dots; ++i) {
-            x -= kDotSize + kDotGap;
-            auto* dot = lv_obj_create(row);
-            lv_obj_set_size(dot, kDotSize, kDotSize);
-            // Pull right-most dot flush to the right edge — the gap
-            // belongs between dots, not at the rightmost outside.
-            lv_obj_set_pos(dot, x + (i == 0 && total <= kMaxDotsPerTier
-                                     ? kDotGap : 0), dotY);
-            lv_obj_clear_flag(dot, LV_OBJ_FLAG_SCROLLABLE);
-            lv_obj_clear_flag(dot, LV_OBJ_FLAG_CLICKABLE);
-            lv_obj_set_style_radius(dot, kDotSize / 2, 0);
-            lv_obj_set_style_bg_color(dot, tone, 0);
-            lv_obj_set_style_border_width(dot, 0, 0);
-            lv_obj_set_style_pad_all(dot, 0, 0);
+            auto* dot = buildDot(tone);
+            lv_obj_align(dot, LV_ALIGN_RIGHT_MID, -xOff, 0);
+            xOff += kDotSize + kDotGap;
         }
     }
 
@@ -771,7 +772,7 @@ inline lv_obj_t* buildDashboardBottomBar(
                  static_cast<unsigned>(totalDashboardCount));
         lv_label_set_text(total, buf);
         lv_obj_set_style_text_color(total, Palette::ink2(), 0);
-        lv_obj_set_style_text_font(total, &lv_font_montserrat_10, 0);
+        lv_obj_set_style_text_font(total, &lv_font_montserrat_12, 0);
         lv_obj_align(total, LV_ALIGN_CENTER, 0, 0);
     }
 

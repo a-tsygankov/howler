@@ -117,11 +117,15 @@ void ScreenManager::buildDashboard() {
     // total count (centre), yellow dots for upcoming (right). Up to
     // 3 dots per tier; tone-coloured "+" for overflow. Stacks above
     // the OFFLINE/STALE badge when both are visible.
+    //
+    // y=-32 places the row so its bottom edge sits at screen y=208,
+    // chord ~163 px — the row's 130 px width has 16 px of buffer to
+    // each side of the disc rim, comfortably inside the curve.
     {
         const auto counts = components::countTiers(items);
         auto* dotRow = components::buildDashboardBottomBar(
             root_, counts, /*total=*/n);
-        lv_obj_align(dotRow, LV_ALIGN_BOTTOM_MID, 0, -26);
+        lv_obj_align(dotRow, LV_ALIGN_BOTTOM_MID, 0, -32);
     }
 
     // Network-state badge: only rendered when the device is in
