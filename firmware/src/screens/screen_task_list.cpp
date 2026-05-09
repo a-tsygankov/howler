@@ -34,21 +34,8 @@ void ScreenManager::buildTaskList() {
         components::buildTabStrip(root_, entries, 3, /*activeIndex=*/1);
     }
 
-    // dev-26: small task-count chip below the tab strip — the user
-    // asked for an indicator that differentiates this screen from
-    // Dashboard. Tab strip pill already shows which screen is
-    // selected; this gives the additional "and how many tasks the
-    // unfiltered view contains" cue without competing with the drum.
-    if (!app_.allTasks().empty()) {
-        char buf[16];
-        snprintf(buf, sizeof(buf), "%u tasks",
-                 static_cast<unsigned>(app_.allTasks().size()));
-        auto* chip = lv_label_create(root_);
-        lv_label_set_text(chip, buf);
-        lv_obj_set_style_text_color(chip, Palette::ink3(), 0);
-        lv_obj_set_style_text_font(chip, &lv_font_montserrat_10, 0);
-        lv_obj_align(chip, LV_ALIGN_TOP_MID, 0, 50);
-    }
+    // (dev-27: count moved to bottom alongside the cursor index —
+    //  see taskIndexLabel_ build below.)
 
     auto& all = app_.allTasks();
     if (all.empty()) {
@@ -97,6 +84,23 @@ void ScreenManager::buildTaskList() {
     taskDrumActive_ = true;
 
     taskCursorDots_ = buildDrumRimIndicator(root_, n, all.cursor());
+
+    // dev-27: bottom "X / N" index — updates on every drum scroll
+    // (handler in ScreenManager::onEvent's TaskList branch). The
+    // label is a plain lv_label; we re-set its text in place so the
+    // index moves in lockstep with the rim indicator's active dot.
+    {
+        char buf[16];
+        snprintf(buf, sizeof(buf), "%u / %u",
+                 static_cast<unsigned>(all.cursor() + 1),
+                 static_cast<unsigned>(n));
+        auto* idx = lv_label_create(root_);
+        lv_label_set_text(idx, buf);
+        lv_obj_set_style_text_color(idx, Palette::ink2(), 0);
+        lv_obj_set_style_text_font(idx, &lv_font_montserrat_10, 0);
+        lv_obj_align(idx, LV_ALIGN_BOTTOM_MID, 0, -16);
+        taskIndexLabel_ = idx;
+    }
 
     // Same network-health badge as the Dashboard — keeps the offline
     // cue consistent across the two task-list screens.

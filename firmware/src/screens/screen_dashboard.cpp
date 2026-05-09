@@ -113,18 +113,19 @@ void ScreenManager::buildDashboard() {
     // at x ≈ -8 from the right edge, active dot drawn 10 px tall.
     taskCursorDots_ = buildDrumRimIndicator(root_, n, dash.cursor());
 
-    // Bottom dot indicator (dev-26): tone-coloured dots summarising
-    // the home's tier shape — terracotta for missed/urgent, amber
-    // for soon. Up to 3 dots per tier; "+" beyond that. Stacks
-    // above the OFFLINE/STALE badge when both are visible. Skip
-    // when the tier counts are all zero so a healthy home shows
-    // nothing rather than an empty row.
+    // Dashboard bottom bar (dev-27): red dots for missed (left),
+    // total count (centre), yellow dots for upcoming (right). Up to
+    // 3 dots per tier; tone-coloured "+" for overflow. Stacks above
+    // the OFFLINE/STALE badge when both are visible.
+    //
+    // y=-32 places the row so its bottom edge sits at screen y=208,
+    // chord ~163 px — the row's 130 px width has 16 px of buffer to
+    // each side of the disc rim, comfortably inside the curve.
     {
         const auto counts = components::countTiers(items);
-        if (counts.urgent + counts.soon > 0) {
-            auto* dotRow = components::buildBottomDotIndicator(root_, counts);
-            lv_obj_align(dotRow, LV_ALIGN_BOTTOM_MID, 0, -28);
-        }
+        auto* dotRow = components::buildDashboardBottomBar(
+            root_, counts, /*total=*/n);
+        lv_obj_align(dotRow, LV_ALIGN_BOTTOM_MID, 0, -32);
     }
 
     // Network-state badge: only rendered when the device is in

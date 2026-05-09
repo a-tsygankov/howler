@@ -658,99 +658,133 @@ inline TierCounts countTiers(const std::vector<domain::DashboardItem>& items) {
     return c;
 }
 
-// ─── Dashboard bottom dot indicator (dev-26) ─────────────────────
+// ─── Dashboard bottom bar (dev-27, layout fix) ───────────────────
 //
-// One row of small coloured dots showing the home's overall shape:
+// Single horizontal row near the bottom of the disc. Three groups:
 //
-//   • • •  +     • •  +
-//   urgent (red) soon (yellow)
+//   ••• +              7              ••  +
+//   ←─ red (left)     centre count    yellow (right) ─→
+//   missed/urgent     total            upcoming/soon
 //
-// Up to `kMaxDotsPerTier` dots render per tier; beyond that we
-// append a tone-coloured "+" so the user knows there's more. Empty
-// tiers collapse out (no dots, no separator) so a healthy home
-// just shows nothing rather than a row of zero markers. Returns
-// the wrapping container; caller positions it.
-inline lv_obj_t* buildBottomDotIndicator(
-    lv_obj_t* parent, const TierCounts& counts) {
+// • Red dots (urgency tier 3) anchor LEFT, packed left-to-right.
+// • Yellow dots (tier 1) anchor RIGHT, packed right-to-left so the
+//   final "+" sits at the rightmost position.
+// • Total dashboard count sits centred between the two groups.
+//
+// **Round-disc fit (the dev-27 first-pass bug)**: the bar's vertical
+// position is chosen so the row's bottom edge sits at chord ≈ 175 px
+// of the 240×240 disc. The width is then 130 px so even the leftmost
+// dot has a comfortable 22 px buffer from the disc rim — the
+// previous 180 px row at y=-26 had its leftmost dot at screen
+// x=30 while the disc's chord at that y started at x=46, clipping
+// 16 px off each side.
+//
+// All children align via lv_obj_align(LEFT_MID / RIGHT_MID / CENTER)
+// so vertical centering is automatic — no more "+" floating outside
+// the row's bounds.
+//
+// Returns the wrapping container; caller positions it.
+inline lv_obj_t* buildDashboardBottomBar(
+    lv_obj_t* parent,
+    const TierCounts& counts,
+    size_t totalDashboardCount) {
     constexpr int kMaxDotsPerTier = 3;
     constexpr int kDotSize = 6;
-    constexpr int kGap     = 4;
-    constexpr int kTierGap = 8;
-
-    // Tier ordering: urgent first (most actionable), then soon. We
-    // intentionally don't surface the "hidden / later" count down
-    // here — the rim indicator already shows total list position,
-    // and a quiet hidden bucket isn't worth a third row of dots.
-    struct Tier { size_t count; lv_color_t tone; };
-    const Tier tiers[] = {
-        {counts.urgent, urgencyTone(3)},   // missed/urgent → terracotta
-        {counts.soon,   urgencyTone(1)},   // soon            → amber
-    };
+    constexpr int kDotGap  = 4;
+    constexpr int kPlusW   = 9;          // montserrat_12 "+" advance ≈ 7
+    constexpr int kRowW    = 130;        // shrunk from 180; fits the chord
+    constexpr int kRowH    = 16;
 
     auto* row = lv_obj_create(parent);
+    lv_obj_set_size(row, kRowW, kRowH);
     lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_clear_flag(row, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_style_bg_opa(row, LV_OPA_0, 0);
     lv_obj_set_style_border_width(row, 0, 0);
     lv_obj_set_style_pad_all(row, 0, 0);
-    lv_obj_set_layout(row, LV_LAYOUT_FLEX);
-    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_CENTER,
-                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
-    bool firstTier = true;
-    int totalW = 0;
-    for (const auto& t : tiers) {
-        if (t.count == 0) continue;
-        if (!firstTier) {
-            // Spacer so different tiers visually group apart.
-            auto* spacer = lv_obj_create(row);
-            lv_obj_set_size(spacer, kTierGap, kDotSize);
-            lv_obj_clear_flag(spacer, LV_OBJ_FLAG_SCROLLABLE);
-            lv_obj_clear_flag(spacer, LV_OBJ_FLAG_CLICKABLE);
-            lv_obj_set_style_bg_opa(spacer, LV_OPA_0, 0);
-            lv_obj_set_style_border_width(spacer, 0, 0);
-            lv_obj_set_style_pad_all(spacer, 0, 0);
-            totalW += kTierGap;
-        }
-        firstTier = false;
+    auto buildDot = [&](lv_color_t tone) {
+        auto* dot = lv_obj_create(row);
+        lv_obj_set_size(dot, kDotSize, kDotSize);
+        lv_obj_clear_flag(dot, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_clear_flag(dot, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_style_radius(dot, kDotSize / 2, 0);
+        lv_obj_set_style_bg_color(dot, tone, 0);
+        lv_obj_set_style_border_width(dot, 0, 0);
+        lv_obj_set_style_pad_all(dot, 0, 0);
+        return dot;
+    };
+    auto buildPlus = [&](lv_color_t tone) {
+        auto* p = lv_label_create(row);
+        lv_label_set_text(p, "+");
+        lv_obj_set_style_text_color(p, tone, 0);
+        // dev-27 fix: bump from montserrat_10 to montserrat_12 so the
+        // "+" reads cleanly next to 6-px dots.
+        lv_obj_set_style_text_font(p, &lv_font_montserrat_12, 0);
+        return p;
+    };
 
-        const size_t dotCount = t.count > kMaxDotsPerTier
-                              ? kMaxDotsPerTier : t.count;
-        for (size_t i = 0; i < dotCount; ++i) {
-            auto* dot = lv_obj_create(row);
-            lv_obj_set_size(dot, kDotSize, kDotSize);
-            lv_obj_clear_flag(dot, LV_OBJ_FLAG_SCROLLABLE);
-            lv_obj_clear_flag(dot, LV_OBJ_FLAG_CLICKABLE);
-            lv_obj_set_style_radius(dot, kDotSize / 2, 0);
-            lv_obj_set_style_bg_color(dot, t.tone, 0);
-            lv_obj_set_style_border_width(dot, 0, 0);
-            lv_obj_set_style_pad_all(dot, 0, 0);
-            lv_obj_set_style_margin_right(dot, kGap, 0);
-            totalW += kDotSize + kGap;
+    // ── LEFT: missed / urgent in tier-3 terracotta ───────────────
+    {
+        const lv_color_t tone = urgencyTone(3);
+        const size_t total = counts.urgent;
+        const size_t dots  = total > kMaxDotsPerTier
+                           ? kMaxDotsPerTier : total;
+        int xOff = 0;
+        for (size_t i = 0; i < dots; ++i) {
+            auto* dot = buildDot(tone);
+            lv_obj_align(dot, LV_ALIGN_LEFT_MID, xOff, 0);
+            xOff += kDotSize + kDotGap;
         }
-        if (t.count > kMaxDotsPerTier) {
-            // Trailing "+" in the same tone — explicit "more" affordance.
-            auto* plus = lv_label_create(row);
-            lv_label_set_text(plus, "+");
-            lv_obj_set_style_text_color(plus, t.tone, 0);
-            lv_obj_set_style_text_font(plus, &lv_font_montserrat_10, 0);
-            totalW += 8;
-        } else {
-            // Last dot of this tier doesn't need a trailing margin.
-            // (A tiny aesthetic clean-up; LVGL flex will eat it
-            //  naturally since the row sizes to content.)
+        if (total > kMaxDotsPerTier) {
+            auto* plus = buildPlus(tone);
+            // Drop a tiny 1-px breathing space between the last dot
+            // and the "+" so they don't visually fuse.
+            lv_obj_align(plus, LV_ALIGN_LEFT_MID,
+                         xOff - kDotGap + 2, 0);
         }
     }
-    if (firstTier) {
-        // No dots — caller can choose to delete the row entirely.
-        // We return it anyway so the call site doesn't need to
-        // null-check; LVGL renders nothing for an empty flex row.
+
+    // ── RIGHT: upcoming / soon in tier-1 amber ───────────────────
+    {
+        const lv_color_t tone = urgencyTone(1);
+        const size_t total = counts.soon;
+        const size_t dots  = total > kMaxDotsPerTier
+                           ? kMaxDotsPerTier : total;
+        int xOff = 0;
+        if (total > kMaxDotsPerTier) {
+            auto* plus = buildPlus(tone);
+            lv_obj_align(plus, LV_ALIGN_RIGHT_MID, -xOff, 0);
+            xOff += kPlusW;
+        }
+        for (size_t i = 0; i < dots; ++i) {
+            auto* dot = buildDot(tone);
+            lv_obj_align(dot, LV_ALIGN_RIGHT_MID, -xOff, 0);
+            xOff += kDotSize + kDotGap;
+        }
     }
-    // Width = sum of children; height = dot diameter + 2 for any
-    // outline rounding LVGL applies.
-    lv_obj_set_size(row, totalW > 4 ? totalW : 4, kDotSize + 2);
+
+    // ── CENTRE: total dashboard task count ───────────────────────
+    if (totalDashboardCount > 0) {
+        auto* total = lv_label_create(row);
+        char buf[8];
+        snprintf(buf, sizeof(buf), "%u",
+                 static_cast<unsigned>(totalDashboardCount));
+        lv_label_set_text(total, buf);
+        lv_obj_set_style_text_color(total, Palette::ink2(), 0);
+        lv_obj_set_style_text_font(total, &lv_font_montserrat_12, 0);
+        lv_obj_align(total, LV_ALIGN_CENTER, 0, 0);
+    }
+
     return row;
+}
+
+// Legacy alias retained so callers compiled against dev-26 still
+// link until they migrate. The new bar adds a centred total count
+// and explicit left/right alignment per dev-27 user spec.
+inline lv_obj_t* buildBottomDotIndicator(
+    lv_obj_t* parent, const TierCounts& counts) {
+    return buildDashboardBottomBar(parent, counts, /*total=*/0);
 }
 
 }  // namespace howler::screens::components
