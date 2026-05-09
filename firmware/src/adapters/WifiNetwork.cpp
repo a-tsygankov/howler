@@ -235,4 +235,22 @@ howler::application::NetResult WifiNetwork::fetchIcon(
     return NetResult::ok();
 }
 
+howler::application::NetResult WifiNetwork::fetchIconManifest(
+    std::vector<std::string>& outNames) {
+    String body;
+    auto r = doGet("/api/icons", body);
+    if (!r.isOk()) return r;
+    JsonDocument doc;
+    if (deserializeJson(doc, body))
+        return howler::application::NetResult::transient();
+    auto arr = doc["icons"].as<JsonArrayConst>();
+    outNames.clear();
+    outNames.reserve(arr.size());
+    for (auto v : arr) {
+        const std::string name = v["name"] | "";
+        if (!name.empty()) outNames.push_back(name);
+    }
+    return r;
+}
+
 }  // namespace howler::adapters

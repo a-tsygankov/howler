@@ -5,7 +5,14 @@
 > question in [`docs/plan.md`](docs/plan.md) §17, or discovers a new risk.
 > If this grows past one page it's wrong — move detail into `docs/`.
 
-**Last updated:** 2026-05-08 — `dev-23` (PR #24) is in flight: device-side rendering polish per the design handoff. After dev-22 added the drum carousel + inertial swipe + initial icon storage, dev-23 fixed the on-device issues that surfaced in HIL testing:
+**Last updated:** 2026-05-08 — `dev-25` (PR #26) is in flight: Phase 5 "offline degraded mode" + CVD redundancy.
+
+- **Offline degraded mode** — `App::networkHealth()` classifies into Fresh / Stale / Offline. Dashboard + TaskList show an `OFFLINE` / `STALE` pill at the bottom when not Fresh; LED ring switches to a dim cool-blue breath when offline; `playDoneAnimation` shows a "queued offline" toast next to the green check when commits land while the network is down.
+- **CVD redundancy** — status-arc avatar ring stroke width now varies with urgency tier (1 / 2 / 2 / 3 px on detail, 1 / 1 / 1 / 2 on mini). Addresses the design handoff §13 colorblind note that previously relied entirely on hue.
+
+Phase 5 deferred items: HiveMQ MQTT broker + bridge service, MQTT adapter (the `INetwork` abstraction makes the REST → MQTT swap a one-adapter change when ready).
+
+**`dev-23` (PR #24, merged 0056c01)** — device-side rendering polish per the design handoff. After dev-22 added the drum carousel + inertial swipe + initial icon storage, dev-23 fixed the on-device issues that surfaced in HIL testing:
 
 - **Icons render correctly.** The IconCache used `LV_COLOR_FORMAT_A1` which LVGL 9's software renderer explicitly excludes (`lv_color.h` line 137 marks A1/A2/A4 as GPU-only). Switched to A8 with 1bpp→8bpp unpacking on the device — A8 IS software-supported and pairs with `lv_image_recolor` for theme-aware tinting.
 - **Mini titles single-line, fonts scaled.** Added `lv_font_montserrat_10` / `_12`; mini title now uses 12 pt, due chip 10 pt (clearly smaller than detail's 18 pt). Title gets explicit height so `LV_LABEL_LONG_DOT` truncates instead of wrapping.
@@ -13,7 +20,7 @@
 - **Sync-aware rebuild.** DashboardModel + DashboardModel-as-allTasks bump a generation counter on every replace / removeById; ScreenManager watches and rebuilds the active drum screen so a sync round's data refresh propagates without requiring a scroll.
 - **Async icon prefetch.** `IconCache.get()` no longer blocks on HTTP. Misses enqueue; `tickPrefetch(1)` drains one fetch per tick from the main loop. First online tick prewarms the full LABEL_ICON_CHOICES set so dashboards paint with real icons within ~1–2 s of connect.
 
-**Phase 4** earlier dev-cycles: dev-16 = MVP (40 tests + HIL-2). dev-21 = LED status ring + MarqueeLabel. dev-22 = DrumScroller + inertial swipe + icon storage end-to-end (D1 table, seed script, `/api/icons/:name`).
+**Phase 4** earlier dev-cycles: dev-16 = MVP (40 tests + HIL-2). dev-21 = LED status ring + MarqueeLabel. dev-22 = DrumScroller + inertial swipe + icon storage end-to-end (D1 table, seed script, `/api/icons/:name`). dev-24 = detail card redesign (compact + marquee title + no check button).
 
 ## Live URLs
 

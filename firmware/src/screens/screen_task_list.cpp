@@ -80,6 +80,21 @@ void ScreenManager::buildTaskList() {
     taskDrumActive_ = true;
 
     taskCursorDots_ = buildDrumRimIndicator(root_, n, all.cursor());
+
+    // Same network-health badge as the Dashboard — keeps the offline
+    // cue consistent across the two task-list screens.
+    switch (app_.networkHealth()) {
+        case application::App::NetworkHealth::Offline:
+            components::buildNetworkBadge(root_, "OFFLINE",
+                                          Palette::accent());
+            break;
+        case application::App::NetworkHealth::Stale:
+            components::buildNetworkBadge(root_, "STALE",
+                                          Palette::warn());
+            break;
+        case application::App::NetworkHealth::Fresh:
+            break;
+    }
 }
 
 void ScreenManager::buildTaskDetail() {

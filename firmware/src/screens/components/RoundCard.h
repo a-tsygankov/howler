@@ -143,6 +143,55 @@ inline lv_obj_t* buildTabStrip(lv_obj_t* parent,
     return row;
 }
 
+/// Network-state pill rendered above the tab strip when the device
+/// is offline or its data is stale. Single line, mono caption with
+/// a small leading dot in the matching tone:
+///   "OFFLINE" — accent (terracotta), set when WiFi/token is down
+///   "STALE"   — warn  (amber), set when we haven't synced in
+///               > 2 min despite the network claiming online
+/// Caller passes one of those literals; we don't interpret further.
+/// Returns nullptr when `text` is empty so the call site can pass
+/// "" for the Fresh case without an `if`.
+inline lv_obj_t* buildNetworkBadge(lv_obj_t* parent,
+                                   const char* text,
+                                   lv_color_t tone) {
+    if (!text || text[0] == 0) return nullptr;
+    auto* pill = lv_obj_create(parent);
+    // Sized to the longest expected label ("OFFLINE", 7 chars at
+    // ~6 px each in montserrat_10 ≈ 42 px + chrome). Anchored at
+    // BOTTOM_MID since the dashboard's tab strip already occupies
+    // TOP_MID — the bottom of the disc is otherwise empty in the
+    // dev-24 layout (rim indicator is on the right side, not the
+    // centre column).
+    lv_obj_set_size(pill, 70, 14);
+    lv_obj_align(pill, LV_ALIGN_BOTTOM_MID, 0, -8);
+    lv_obj_clear_flag(pill, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(pill, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_radius(pill, 7, 0);
+    lv_obj_set_style_bg_color(pill, Palette::paper3(), 0);
+    lv_obj_set_style_bg_opa(pill, LV_OPA_80, 0);
+    lv_obj_set_style_border_width(pill, 0, 0);
+    lv_obj_set_style_pad_all(pill, 0, 0);
+
+    // Leading 5 px tone dot at the left edge.
+    auto* dot = lv_obj_create(pill);
+    lv_obj_set_size(dot, 5, 5);
+    lv_obj_align(dot, LV_ALIGN_LEFT_MID, 6, 0);
+    lv_obj_clear_flag(dot, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(dot, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_radius(dot, 3, 0);
+    lv_obj_set_style_bg_color(dot, tone, 0);
+    lv_obj_set_style_border_width(dot, 0, 0);
+    lv_obj_set_style_pad_all(dot, 0, 0);
+
+    auto* lbl = lv_label_create(pill);
+    lv_label_set_text(lbl, text);
+    lv_obj_set_style_text_color(lbl, tone, 0);
+    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_10, 0);
+    lv_obj_align(lbl, LV_ALIGN_LEFT_MID, 16, 0);
+    return pill;
+}
+
 /// Build a circular content card centered on the parent. Smaller
 /// than the screen so the arc indicators (urgency / hold-progress)
 /// have room around it.

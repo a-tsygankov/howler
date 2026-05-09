@@ -246,6 +246,17 @@ inline lv_obj_t* buildStatusAvatar(lv_obj_t* parent,
     const lv_color_t tone = urgencyTone(tier);
     const int fillDeg = urgencyFillDegrees(tier);
 
+    // CVD redundancy: ring stroke width varies with urgency so a
+    // colour-blind viewer still gets a per-tier signal. The
+    // baseline `ringWidth` is the "tier 1" stroke; tier 0 idles a
+    // pixel thinner, tier 3 a pixel thicker. Capped at ≥ 1 so a
+    // 1-px baseline doesn't underflow.
+    int adjRing = ringWidth;
+    if (tier == 0)      adjRing = ringWidth - 1;
+    else if (tier == 3) adjRing = ringWidth + 1;
+    if (adjRing < 1) adjRing = 1;
+    const int effRing = adjRing;
+
     auto* wrap = lv_obj_create(parent);
     lv_obj_set_size(wrap, size, size);
     lv_obj_align(wrap, LV_ALIGN_CENTER, 0, 0);
@@ -267,8 +278,8 @@ inline lv_obj_t* buildStatusAvatar(lv_obj_t* parent,
     lv_arc_set_value(arc, 0);
     lv_obj_remove_style(arc, nullptr, LV_PART_KNOB);
     lv_obj_clear_flag(arc, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_set_style_arc_width(arc, ringWidth, LV_PART_MAIN);
-    lv_obj_set_style_arc_width(arc, ringWidth, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_width(arc, effRing, LV_PART_MAIN);
+    lv_obj_set_style_arc_width(arc, effRing, LV_PART_INDICATOR);
     lv_obj_set_style_arc_color(arc, Palette::lineSoft(), LV_PART_MAIN);
     lv_obj_set_style_arc_color(arc, tone, LV_PART_INDICATOR);
     lv_obj_set_style_arc_rounded(arc, true, LV_PART_INDICATOR);
@@ -278,9 +289,9 @@ inline lv_obj_t* buildStatusAvatar(lv_obj_t* parent,
     lv_obj_set_style_border_width(arc, 0, 0);
     lv_obj_set_style_pad_all(arc, 0, 0);
 
-    // Inner disc — the avatar surface itself. Inset by ringWidth + 1
+    // Inner disc — the avatar surface itself. Inset by effRing + 1
     // so the ring has a 1 px breathing gap to the disc edge.
-    const int innerInset = ringWidth + 1;
+    const int innerInset = effRing + 1;
     const int innerSize  = size - 2 * innerInset;
     auto* disc = lv_obj_create(wrap);
     lv_obj_set_size(disc, innerSize, innerSize);
