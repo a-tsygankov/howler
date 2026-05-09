@@ -60,8 +60,14 @@ void ScreenManager::buildSettings() {
     const bool isDark = app_.settings().theme == domain::Theme::Dark;
     menuModel_.replace({
         mk("sync",      "Sync now",    "fetch latest"),
-        mk("theme",     "Theme",       isDark ? "dark | tap to flip"
-                                              : "light | tap to flip"),
+        // The "tap to flip" subtitle from the dev-22 carousel was a
+        // lie — tapping pushes the SettingsTheme picker, doesn't
+        // toggle in place. Show the current theme instead so the
+        // text describes state (matching the "screen level" / "phone
+        // link" / "device info" peers) rather than mis-describing
+        // the tap action.
+        mk("theme",     "Theme",       isDark ? "now: dark"
+                                              : "now: light"),
         mk("wifi",      "Wi-Fi",       "scan + connect"),
         mk("login-qr",  "Login by QR", "phone link"),
         mk("brightness","Brightness",  "screen level"),
@@ -282,15 +288,25 @@ void formatUptime(char* buf, size_t cap, uint32_t millisNow) {
 }
 
 // "30s ago" / "5m ago" / "2h ago" / "—" if never synced.
-void formatSyncAge(char* buf, size_t cap, int64_t lastSec, int64_t nowSec) {
+//
+// `failedSinceLastOk` flags the case where we've successfully
+// synced before (so an age is meaningful) but the *most recent*
+// attempt failed — append " · err" so the user gets the diagnostic
+// before the data crosses the 120 s staleness threshold and the
+// `net` row flips to STALE on its own. We don't surface err while
+// offline; the `net` row already says "offline" in that case and
+// duplicating it adds noise.
+void formatSyncAge(char* buf, size_t cap, int64_t lastSec, int64_t nowSec,
+                   bool failedSinceLastOk) {
     if (lastSec <= 0 || nowSec <= 0 || nowSec < lastSec) {
         snprintf(buf, cap, "—");
         return;
     }
     const int64_t age = nowSec - lastSec;
-    if (age < 60)         snprintf(buf, cap, "%llds ago", (long long)age);
-    else if (age < 3600)  snprintf(buf, cap, "%lldm ago", (long long)(age / 60));
-    else                  snprintf(buf, cap, "%lldh ago", (long long)(age / 3600));
+    const char* tail = failedSinceLastOk ? " err" : "";
+    if (age < 60)         snprintf(buf, cap, "%llds ago%s", (long long)age, tail);
+    else if (age < 3600)  snprintf(buf, cap, "%lldm ago%s", (long long)(age / 60), tail);
+    else                  snprintf(buf, cap, "%lldh ago%s", (long long)(age / 3600), tail);
 }
 
 const char* networkHealthLabel(application::App::NetworkHealth h) {
@@ -333,9 +349,19 @@ void formatAboutBody(char* buf, size_t cap, application::App& app) {
     char ageBuf[24];
     char upBuf[24];
     char wifiBuf[40];
+    // "err" only fires when we're online AND we've previously synced
+    // — that's the case where the net row hasn't yet flipped to
+    // STALE but the most recent attempt actually failed. While
+    // offline, networkHealth() already reports Offline on the net
+    // row, so the err marker would be redundant.
+    const bool syncFailedSinceOk =
+        app.network().isOnline() &&
+        app.lastFullSyncSec() > 0 &&
+        !app.sync().lastSyncOk();
     formatSyncAge(ageBuf, sizeof(ageBuf),
                    app.lastFullSyncSec(),
-                   app.clock().nowEpochSeconds());
+                   app.clock().nowEpochSeconds(),
+                   syncFailedSinceOk);
     formatUptime(upBuf, sizeof(upBuf), millis());
     formatWifiLine(wifiBuf, sizeof(wifiBuf), app);
 
