@@ -9,6 +9,9 @@
 #include "ScreenManager.h"
 #include "components/RoundCard.h"
 #include "../application/PairCoordinator.h"
+#include "../application/Version.h"
+#include <Arduino.h>
+#include <esp_heap_caps.h>
 #include <stdio.h>
 
 namespace howler::screens {
@@ -245,6 +248,49 @@ void ScreenManager::buildSettingsTheme() {
     lv_obj_align(hint2, LV_ALIGN_BOTTOM_MID, 0, -10);
 }
 
+// Helpers for the About screen — kept here (not exported) because
+// they're only useful for the diagnostic readout below. Each one
+// renders a single value into a fixed-size buffer the caller owns.
+
+namespace {
+
+// "Xh Ym" / "Ym Xs" / "Xs" — device uptime since power-on.
+void formatUptime(char* buf, size_t cap, uint32_t millisNow) {
+    const uint32_t secs = millisNow / 1000;
+    const uint32_t mins = secs / 60;
+    const uint32_t hrs  = mins / 60;
+    if (hrs > 0)        snprintf(buf, cap, "%uh %um", hrs, mins % 60);
+    else if (mins > 0)  snprintf(buf, cap, "%um %us", mins, secs % 60);
+    else                snprintf(buf, cap, "%us", secs);
+}
+
+// "30s ago" / "5m ago" / "2h ago" / "—" if never synced.
+void formatSyncAge(char* buf, size_t cap, int64_t lastSec, int64_t nowSec) {
+    if (lastSec <= 0 || nowSec <= 0 || nowSec < lastSec) {
+        snprintf(buf, cap, "—");
+        return;
+    }
+    const int64_t age = nowSec - lastSec;
+    if (age < 60)         snprintf(buf, cap, "%llds ago", (long long)age);
+    else if (age < 3600)  snprintf(buf, cap, "%lldm ago", (long long)(age / 60));
+    else                  snprintf(buf, cap, "%lldh ago", (long long)(age / 3600));
+}
+
+const char* networkHealthLabel(application::App::NetworkHealth h) {
+    switch (h) {
+        case application::App::NetworkHealth::Fresh:   return "online";
+        case application::App::NetworkHealth::Stale:   return "stale";
+        case application::App::NetworkHealth::Offline: return "offline";
+    }
+    return "?";
+}
+
+const char* themeLabel(domain::Theme t) {
+    return t == domain::Theme::Dark ? "dark" : "light";
+}
+
+}  // namespace
+
 void ScreenManager::buildSettingsAbout() {
     root_ = buildRoundBackground();
 
@@ -252,30 +298,112 @@ void ScreenManager::buildSettingsAbout() {
         auto* h = lv_label_create(root_);
         lv_label_set_text(h, "About");
         lv_obj_set_style_text_color(h, Palette::ink2(), 0);
-        lv_obj_align(h, LV_ALIGN_TOP_MID, 0, 18);
+        lv_obj_set_style_text_font(h, &lv_font_montserrat_14, 0);
+        lv_obj_align(h, LV_ALIGN_TOP_MID, 0, 14);
     }
 
-    auto* card = components::buildCenterCard(root_, 180, Palette::paper2());
-    auto* l = lv_label_create(card);
-    char buf[200];
-    // Show only the last 8 hex chars of the device id — the leading
-    // 24 are zero-padding, not interesting to read aloud.
+    // Centre card — slightly taller than the legacy 180-px disc so
+    // the multi-line readout doesn't crowd the rim. Width matches
+    // the dashboard's detail card so the visual rhythm is consistent
+    // across the Settings sub-screens.
+    auto* card = lv_obj_create(root_);
+    lv_obj_set_size(card, 188, 158);
+    lv_obj_align(card, LV_ALIGN_CENTER, 0, 6);
+    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(card, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_radius(card, 14, 0);
+    lv_obj_set_style_bg_color(card, Palette::paper2(), 0);
+    lv_obj_set_style_border_color(card, Palette::lineSoft(), 0);
+    lv_obj_set_style_border_width(card, 1, 0);
+    lv_obj_set_style_pad_all(card, 10, 0);
+
+    // Title row — firmware name + version. Centred.
+    {
+        char title[40];
+        snprintf(title, sizeof(title), "Howler · fw %s",
+                 application::kFirmwareVersion);
+        auto* l = lv_label_create(card);
+        lv_label_set_text(l, title);
+        lv_obj_set_style_text_color(l, Palette::ink(), 0);
+        lv_obj_set_style_text_font(l, &lv_font_montserrat_12, 0);
+        lv_obj_align(l, LV_ALIGN_TOP_MID, 0, 0);
+    }
+
+    // Hairline separator under the title — purely cosmetic, gives
+    // the multi-line readout below a clear break from the heading.
+    {
+        auto* line = lv_obj_create(card);
+        lv_obj_set_size(line, 140, 1);
+        lv_obj_align(line, LV_ALIGN_TOP_MID, 0, 16);
+        lv_obj_clear_flag(line, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_clear_flag(line, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_style_bg_color(line, Palette::lineSoft(), 0);
+        lv_obj_set_style_border_width(line, 0, 0);
+        lv_obj_set_style_pad_all(line, 0, 0);
+    }
+
+    // Body — one big multi-line label with all the diagnostics. We
+    // build it as a single label (not 6 separate labels) so the
+    // line-spacing stays uniform and a small font swap touches one
+    // place.
+    char body[256];
+    char ageBuf[24];
+    char upBuf[24];
+    formatSyncAge(ageBuf, sizeof(ageBuf),
+                   app_.lastFullSyncSec(),
+                   app_.clock().nowEpochSeconds());
+    formatUptime(upBuf, sizeof(upBuf), millis());
+
+    // Free heap in KB. Use heap_caps for the most accurate "what's
+    // really left" — `ESP.getFreeHeap()` returns the same number on
+    // ESP32-S3 builds but heap_caps_get_free_size avoids any
+    // Arduino-vs-IDF mismatch.
+    const uint32_t heapBytes = heap_caps_get_free_size(MALLOC_CAP_DEFAULT);
+    const uint32_t heapKB    = heapBytes / 1024;
+
+    // Show only the last 8 hex chars of the device id — leading
+    // 24 are zero-padding, hard to read aloud.
     const auto& did = app_.deviceId();
-    const std::string tail = did.size() >= 8
+    const std::string didTail = did.size() >= 8
         ? did.substr(did.size() - 8) : did;
-    snprintf(buf, sizeof(buf),
-        "Howler\nfw 0.2.0\ndev %s\npending %u",
-        tail.c_str(),
-        (unsigned)app_.queue().size());
-    lv_label_set_text(l, buf);
+
+    // Wi-Fi SSID — empty when not associated; we replace with "—"
+    // so the row stays the same shape regardless of state.
+    const std::string ssid = app_.wifi().isConnected()
+                               ? app_.wifi().currentSsid()
+                               : std::string{};
+    const char* ssidStr = ssid.empty() ? "—" : ssid.c_str();
+
+    snprintf(body, sizeof(body),
+             "net    %s\n"
+             "wifi   %s\n"
+             "sync   %s\n"
+             "ram    %u KB\n"
+             "up     %s\n"
+             "queue  %u pending\n"
+             "theme  %s\n"
+             "dev    %s",
+             networkHealthLabel(app_.networkHealth()),
+             ssidStr,
+             ageBuf,
+             static_cast<unsigned>(heapKB),
+             upBuf,
+             static_cast<unsigned>(app_.queue().size()),
+             themeLabel(app_.settings().theme),
+             didTail.c_str());
+
+    auto* l = lv_label_create(card);
+    lv_label_set_text(l, body);
     lv_obj_set_style_text_color(l, Palette::ink(), 0);
-    lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_center(l);
+    lv_obj_set_style_text_font(l, &lv_font_montserrat_10, 0);
+    lv_obj_set_style_text_line_space(l, 2, 0);
+    lv_obj_align(l, LV_ALIGN_TOP_LEFT, 4, 22);
 
     auto* hint = lv_label_create(root_);
     lv_label_set_text(hint, "2x back");
     lv_obj_set_style_text_color(hint, Palette::ink3(), 0);
-    lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -12);
+    lv_obj_set_style_text_font(hint, &lv_font_montserrat_10, 0);
+    lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -8);
 }
 
 }  // namespace howler::screens

@@ -74,6 +74,11 @@ public:
     /// 0 until the first sync round succeeds. Screens render relative
     /// time labels ("in 14 m") from this rather than the local clock.
     int64_t serverNowSec() const { return watermark_.serverNowSec; }
+    /// Epoch seconds of the last sync round that completed at least
+    /// one successful fetch. 0 until the first round lands. Used by
+    /// networkHealth() and the Settings → About screen to show
+    /// "last sync 30 s ago" relative to clock.nowEpochSeconds().
+    int64_t lastFullSyncSec() const { return watermark_.lastFullSync; }
 
     /// Network state classifier for the offline-indicator UX. Three
     /// degrees of degradation, ordered by severity:
