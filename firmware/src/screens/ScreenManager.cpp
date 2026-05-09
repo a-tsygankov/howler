@@ -235,6 +235,24 @@ void ScreenManager::tick(uint32_t millisNow) {
         rebuildScreen();
     }
     lv_timer_handler();
+
+    // Deferred Wi-Fi connect — runs AFTER the WifiConnect
+    // "connecting..." frame has been pushed to the LCD by
+    // lv_timer_handler. The connect call itself blocks for up to
+    // 12 s; before this deferral the user saw the Wi-Fi list
+    // freeze with no feedback because the activate handler did
+    // the connect inline before any new frame was painted. By
+    // the time we reach this block, the screen already shows
+    // "connecting..." — the block then drives saveAndConnectWifi,
+    // captures the outcome, and asks for a follow-up rebuild so
+    // the next frame shows "connected" or "connection failed".
+    if (pendingWifiConnectActive_) {
+        const bool ok = app_.saveAndConnectWifi(pendingWifiConfig_);
+        wifiConnectFailed_        = !ok;
+        pendingWifiConnectActive_ = false;
+        pendingWifiConfig_        = {};
+        rebuildPending_           = true;
+    }
 }
 
 bool ScreenManager::isOnTaskListRoot() const {
@@ -374,6 +392,16 @@ void ScreenManager::pollAndDispatch(uint32_t /*millisNow*/) {
     // lv_timer_handler and swallow the press silently.
     if (tap || longPress) g_enc.pendingPress = true;
     onEvent(delta, tap, doubleTap, longPress, vert, horz);
+}
+
+void ScreenManager::requestWifiConnect(const howler::domain::WifiConfig& cfg) {
+    pendingWifiConfig_        = cfg;
+    pendingWifiConnectActive_ = true;
+    // New attempt — clear any prior failure so the re-entry to
+    // WifiConnect doesn't paint the "failed" branch before we've
+    // had a chance to actually try again.
+    wifiConnectFailed_ = false;
+    app_.router().push(domain::ScreenId::WifiConnect);
 }
 
 void ScreenManager::requestUserSync() {

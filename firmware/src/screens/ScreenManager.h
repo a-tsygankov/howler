@@ -68,6 +68,14 @@ public:
     /// so the user got no signal whether Sync now had any effect.
     void requestUserSync();
 
+    /// Stage a Wi-Fi connect attempt. Pushes WifiConnect immediately
+    /// (so the "connecting..." screen paints), then defers the
+    /// blocking `saveAndConnectWifi` to the end of the current tick,
+    /// after `lv_timer_handler` has flushed the new screen to the
+    /// LCD. Without this deferral the user saw the Wi-Fi list freeze
+    /// for the 12 s connect-attempt budget with zero feedback.
+    void requestWifiConnect(const howler::domain::WifiConfig& cfg);
+
     /// Force a screen rebuild on the next tick even when the active
     /// router id hasn't changed. Used by handlers that change visual
     /// state without navigating — e.g. the Theme toggle in Settings,
@@ -142,6 +150,19 @@ private:
     int64_t  userSyncBaselineSec_ = 0;
     uint32_t userSyncDeadlineMs_  = 0;
     bool     userSyncRequestActive_ = false;
+
+    /// Pending Wi-Fi connect, drained at the end of `tick()` once
+    /// the WifiConnect "connecting..." screen has been built and
+    /// flushed. `pendingWifiConnectActive_` distinguishes "no
+    /// request" from "request with empty ssid", since
+    /// `WifiConfig::ssid.empty()` is a valid no-op value the
+    /// adapter rejects. `wifiConnectFailed_` carries the result of
+    /// the most recent attempt so a re-entry to WifiConnect after
+    /// failure shows a "connection failed" state instead of an
+    /// indefinite "connecting...".
+    howler::domain::WifiConfig pendingWifiConfig_;
+    bool                       pendingWifiConnectActive_ = false;
+    bool                       wifiConnectFailed_ = false;
 
     /// Done-animation overlay: green check on the top layer that
     /// fades in + scales up briefly when `playDoneAnimation()` fires.
