@@ -211,6 +211,13 @@ private:
     void teardownScreen();
     void pollAndDispatch(uint32_t millisNow);
 
+    /// Paint the OFFLINE / STALE network badge on the active root_,
+    /// or do nothing for Fresh. Used by both the Dashboard and the
+    /// All-Tasks list — and by both their populated AND empty
+    /// branches, so a never-synced or offline device shows the
+    /// degradation cue even when there are no rows to draw.
+    void paintNetworkBadge();
+
     // Per-screen builders defined in their respective .cpp files.
     void buildBoot();
     void buildPair();

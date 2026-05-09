@@ -347,6 +347,23 @@ void ScreenManager::pollAndDispatch(uint32_t /*millisNow*/) {
     onEvent(delta, tap, doubleTap, longPress, vert, horz);
 }
 
+void ScreenManager::paintNetworkBadge() {
+    if (!root_) return;
+    using components::buildNetworkBadge;
+    using components::Palette;
+    switch (app_.networkHealth()) {
+        case application::App::NetworkHealth::Offline:
+            buildNetworkBadge(root_, "OFFLINE", Palette::accent());
+            break;
+        case application::App::NetworkHealth::Stale:
+            buildNetworkBadge(root_, "STALE",   Palette::warn());
+            break;
+        case application::App::NetworkHealth::Fresh:
+            // No badge — Fresh is the silent default.
+            break;
+    }
+}
+
 void ScreenManager::teardownScreen() {
     if (group_) lv_group_remove_all_objs(group_);
     if (root_) {

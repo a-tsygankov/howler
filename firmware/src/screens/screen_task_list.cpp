@@ -48,6 +48,10 @@ void ScreenManager::buildTaskList() {
         lv_label_set_text(hint, "2x back");
         lv_obj_set_style_text_color(hint, Palette::ink3(), 0);
         lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -10);
+        // Same rationale as Dashboard's empty branch — show the
+        // OFFLINE/STALE cue here too so the user can distinguish
+        // "genuinely empty list" from "couldn't sync".
+        paintNetworkBadge();
         return;
     }
 
@@ -102,20 +106,9 @@ void ScreenManager::buildTaskList() {
         taskIndexLabel_ = idx;
     }
 
-    // Same network-health badge as the Dashboard — keeps the offline
-    // cue consistent across the two task-list screens.
-    switch (app_.networkHealth()) {
-        case application::App::NetworkHealth::Offline:
-            components::buildNetworkBadge(root_, "OFFLINE",
-                                          Palette::accent());
-            break;
-        case application::App::NetworkHealth::Stale:
-            components::buildNetworkBadge(root_, "STALE",
-                                          Palette::warn());
-            break;
-        case application::App::NetworkHealth::Fresh:
-            break;
-    }
+    // Same network-health badge as the Dashboard — keeps the
+    // offline cue consistent across the two task-list screens.
+    paintNetworkBadge();
 }
 
 void ScreenManager::buildTaskDetail() {
