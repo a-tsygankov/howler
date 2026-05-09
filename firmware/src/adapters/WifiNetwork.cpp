@@ -1,5 +1,7 @@
 #include "WifiNetwork.h"
 
+#include "../domain/Urgency.h"  // parseDailyTime + ScheduleRule
+
 namespace howler::adapters {
 
 namespace {
@@ -109,6 +111,48 @@ howler::application::NetResult WifiNetwork::fetchDashboard(
         d.dueAt = v["nextDeadline"] | static_cast<long long>(-1);
         d.isMissed = v["isMissed"] | false;
         d.updatedAt = v["task"]["updatedAt"] | 0;
+
+        // Slice B: parse the rule + anchors so the device can
+        // recompute urgency locally per frame. The fields are
+        // additive — older Worker deploys may omit them, in which
+        // case `hasRule` stays false and the screen renderer falls
+        // back to the server snapshot above.
+        auto ruleNode = v["rule"];
+        const std::string ruleKindStr = ruleNode["kind"] | "";
+        const int64_t modAt = v["scheduleModifiedAt"]
+                                | static_cast<long long>(-1);
+        if (!ruleKindStr.empty() && modAt > 0) {
+            if (ruleKindStr == "DAILY") {
+                d.ruleKind = 0;
+                auto times = ruleNode["times"].as<JsonArrayConst>();
+                d.dailyMinutes.reserve(times.size());
+                for (auto t : times) {
+                    const std::string s = t.as<const char*>() ? t.as<const char*>() : "";
+                    const int mod = howler::domain::parseDailyTime(s);
+                    if (mod >= 0) {
+                        d.dailyMinutes.push_back(static_cast<uint16_t>(mod));
+                    }
+                }
+                d.hasRule = !d.dailyMinutes.empty();
+            } else if (ruleKindStr == "PERIODIC") {
+                d.ruleKind = 1;
+                d.intervalDays =
+                    static_cast<int32_t>(ruleNode["intervalDays"] | 0);
+                d.hasRule = d.intervalDays > 0;
+            } else if (ruleKindStr == "ONESHOT") {
+                d.ruleKind = 2;
+                // Optional cadence; absent ⇒ 0 (no reminders).
+                d.intervalDays =
+                    static_cast<int32_t>(ruleNode["intervalDays"] | 0);
+                d.hasRule = true;
+            }
+            d.scheduleModifiedAt = modAt;
+            d.oneshotDeadline =
+                v["oneshotDeadline"] | static_cast<long long>(-1);
+            d.lastExecutionAt =
+                v["lastExecutionAt"] | static_cast<long long>(-1);
+        }
+
         out.push_back(std::move(d));
     }
     return r;

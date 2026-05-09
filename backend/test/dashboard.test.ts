@@ -445,4 +445,72 @@ describe("GET /api/dashboard", () => {
     expect(body.tasks.length).toBeGreaterThan(0);
     expect(body.tasks[0]?.task.title).toBe("device-side");
   });
+
+  it("emits scheduleModifiedAt + lastExecutionAt + oneshotDeadline so devices can compute urgency locally (slice B)", async () => {
+    const { token } = await auth();
+
+    // ONESHOT task: oneshotDeadline must come back as the
+    // task.deadlineHint we passed in.
+    const oneshotDue = Math.floor(testClock.nowMs() / 1000) + 8 * 86400;
+    const oneshot = await SELF.fetch("https://t/api/tasks", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        title: "oneshot-with-deadline",
+        kind: "ONESHOT",
+        deadlineHint: oneshotDue,
+      }),
+    });
+    expect(oneshot.status).toBe(201);
+
+    // PERIODIC task: oneshotDeadline must be null.
+    const periodic = await SELF.fetch("https://t/api/tasks", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        title: "periodic-3d",
+        kind: "PERIODIC",
+        intervalDays: 3,
+      }),
+    });
+    expect(periodic.status).toBe(201);
+
+    const res = await SELF.fetch("https://t/api/dashboard?include=hidden", {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(res.status).toBe(200);
+    const body = await json<{
+      tasks: Array<{
+        task: { title: string; kind: string };
+        scheduleModifiedAt: number | null;
+        lastExecutionAt: number | null;
+        oneshotDeadline: number | null;
+      }>;
+    }>(res);
+
+    const oneshotRow = body.tasks.find(
+      (t) => t.task.title === "oneshot-with-deadline",
+    );
+    const periodicRow = body.tasks.find(
+      (t) => t.task.title === "periodic-3d",
+    );
+    expect(oneshotRow).toBeDefined();
+    expect(periodicRow).toBeDefined();
+    // Anchor present + positive epoch seconds.
+    expect(typeof oneshotRow?.scheduleModifiedAt).toBe("number");
+    expect((oneshotRow?.scheduleModifiedAt ?? 0)).toBeGreaterThan(0);
+    expect(typeof periodicRow?.scheduleModifiedAt).toBe("number");
+    // Never executed → null.
+    expect(oneshotRow?.lastExecutionAt).toBeNull();
+    expect(periodicRow?.lastExecutionAt).toBeNull();
+    // ONESHOT carries the deadline; PERIODIC must not.
+    expect(oneshotRow?.oneshotDeadline).toBe(oneshotDue);
+    expect(periodicRow?.oneshotDeadline).toBeNull();
+  });
 });

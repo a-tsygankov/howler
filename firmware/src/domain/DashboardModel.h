@@ -1,6 +1,7 @@
 #pragma once
 
 #include "DashboardItem.h"
+#include "Urgency.h"
 #include <algorithm>
 #include <cstddef>
 #include <vector>
@@ -42,6 +43,41 @@ public:
     size_t cursor() const { return cursor_; }
     bool empty() const { return items_.empty(); }
     size_t size() const { return items_.size(); }
+
+    /// Slice B (docs/sync-analysis.md): recompute urgency for every
+    /// item from its rule + anchor fields against `nowSec`,
+    /// overwriting the server-snapshot `urgency` / `isMissed` /
+    /// `dueAt` fields in place. Items without a parseable rule
+    /// (`hasRule == false`) keep the snapshot — fallback for older
+    /// Worker deploys that don't emit slice-B fields yet.
+    ///
+    /// Doesn't bump generation: classification changes don't move
+    /// items in/out of the list, so screens shouldn't rebuild
+    /// solely because of urgency drift. ScreenManager drives the
+    /// periodic rebuild that picks the new urgency up via its own
+    /// time-tick (every ~30 s while a task screen is rendered).
+    void refreshUrgency(int64_t nowSec) {
+        if (nowSec <= 0) return;
+        for (auto& it : items_) {
+            if (!it.hasRule) continue;
+            ScheduleRule rule;
+            rule.kind = static_cast<ScheduleRule::Kind>(it.ruleKind);
+            rule.dailyMinutes = it.dailyMinutes;
+            rule.intervalDays = it.intervalDays;
+            const auto u = computeUrgency(rule, it.scheduleModifiedAt,
+                                          it.oneshotDeadline,
+                                          it.lastExecutionAt, nowSec);
+            it.urgency  = u.tier;
+            it.isMissed = u.isMissed;
+            // nextDeadline drives the device's "due chip" ("IN 14M"
+            // / "1H LATE"). For ONESHOTs whose deadline already
+            // passed, computeUrgency leaves nextDeadline = -1 and
+            // prevDeadline = the deadline — fall back so the chip
+            // still renders MISSED instead of vanishing.
+            it.dueAt = u.nextDeadline >= 0 ? u.nextDeadline
+                                            : u.prevDeadline;
+        }
+    }
 
     /// Return the index of the first non-urgent item, or items_.size()
     /// if there are none. Useful for the screen separator.

@@ -38,6 +38,9 @@ void ScreenManager::buildTaskList() {
     //  see taskIndexLabel_ build below.)
 
     auto& all = app_.allTasks();
+    // Slice B: see screen_dashboard.cpp — local urgency
+    // classification, refreshed on every build.
+    all.refreshUrgency(lastServerNowSec_);
     if (all.empty()) {
         auto* card = buildCenterCard(root_, 180, Palette::paper2());
         auto* l = lv_label_create(card);

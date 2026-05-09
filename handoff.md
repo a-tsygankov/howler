@@ -5,22 +5,29 @@
 > question in [`docs/plan.md`](docs/plan.md) §17, or discovers a new risk.
 > If this grows past one page it's wrong — move detail into `docs/`.
 
-**Last updated:** 2026-05-08 — `dev-25` (PR #26) is in flight: Phase 5 "offline degraded mode" + CVD redundancy.
+**Last updated:** 2026-05-09 — `dev-29` (PR #30) in flight: sync slice B (local urgency on device). `dev-28` (PR #29) shipped slice A + a round of device-screen trust polish.
 
-- **Offline degraded mode** — `App::networkHealth()` classifies into Fresh / Stale / Offline. Dashboard + TaskList show an `OFFLINE` / `STALE` pill at the bottom when not Fresh; LED ring switches to a dim cool-blue breath when offline; `playDoneAnimation` shows a "queued offline" toast next to the green check when commits land while the network is down.
-- **CVD redundancy** — status-arc avatar ring stroke width now varies with urgency tier (1 / 2 / 2 / 3 px on detail, 1 / 1 / 1 / 2 on mini). Addresses the design handoff §13 colorblind note that previously relied entirely on hue.
+**`dev-29` (PR #30, in flight)** — sync slice B per [`docs/sync-analysis.md`](docs/sync-analysis.md). With slice A's peek-then-fetch already cheap on idle rounds, the remaining drift was server-computed urgency (`urgency` / `nextDeadline` / `secondsUntilNext` / `isMissed`) shifting purely with `now` between counter advances — slice A papered over it with a 5-min stopgap full-refresh. Slice B retires the stopgap by porting `services/urgency.ts` to firmware so the device computes urgency every frame.
+
+- `firmware/src/domain/Urgency.h` is a header-only line-by-line port of `services/urgency.ts`. 22 unit tests in `test_domain/test_urgency.cpp` mirror `backend/test/urgency.test.ts` (same `T0`, same constants).
+- `/api/dashboard` carries the urgency *inputs* (`scheduleModifiedAt`, `oneshotDeadline`, `lastExecutionAt`, `rule`) alongside the existing snapshot. Webapp ignores the new fields; older firmware falls back via `hasRule == false`.
+- `DashboardModel::refreshUrgency(nowSec)` overwrites snapshot urgency / isMissed / dueAt with locally-computed values. ScreenManager rebuilds Dashboard / TaskList every ~30 s so labels track the clock.
+- `SyncService.fullRefreshMs_` raised from 5 min → 1 h. Counter peek is authoritative; the hourly safety net only catches a future home-scoped table mutating without firing a counter trigger.
+
+**`dev-28` (PR #29, merged 533e4e2)** — two themes in one PR: device-screen trust polish (every status surface now reflects truth in real time) + sync slice A (peek-then-fetch). 10 commits.
+
+- **Device screens stop lying.** About card refreshes diagnostic readout @ 1 Hz (live sync age / uptime / RAM / queue); RSSI + IP added (replaced `theme` row); brightness centre value tracks the arc; OFFLINE/STALE badge survives empty-list paths; sync row gains an `err` suffix when the most recent attempt failed; "Sync now" toast follows through with `synced` / `sync failed` / `sync offline`; Pair screen rebuilds on phase transitions; WifiConnect actually shows "connecting..." while the 12 s blocking call runs (deferred to post-paint).
+- **Slice A.** Migration `0012_update_counter.sql` adds `homes.update_counter` + 24 triggers covering every home-scoped table. `GET /api/homes/peek` returns `{counter}` (accepts user + device tokens). Firmware `SyncService::runRoundIfNeeded()` peeks first; counter equal → skip the four fetches; advanced or peek failed → full round + post-round peek to anchor.
+
+⚠ **Migration `0012_update_counter.sql` has NOT been applied to remote D1 yet** (the apply was sandbox-denied during the slice A session). Run `pnpm dlx wrangler d1 migrations apply howler-db --remote` from `backend/` before merging PR #30 — slice B's response shape is additive on top of slice A's counter machinery.
+
+**`dev-27` (PR #28, merged 6cafe2d)** — device dashboard bottom-bar redesign (left red dots / centre count / right yellow dots; `+` overflow chip). All-tasks index moved to bottom of disc with `X / N` cursor. Three-layer dark-theme rim-border fix (long-press arc track LV_OPA_TRANSP, black scr_act bg, retained arc bg_opa=0). Settings → About becomes a 9-row diagnostic card (`net / wifi / sync / ram / up / queue / theme / dev`) — the dev-28 polish landed on top of this.
+
+**`dev-26` (PR #27, merged 1a6580d)** — Dashboard + TaskList polish: 3-card drum (centre + ±1, dropped ±2 silhouettes), less-contrast minis, bottom-dot tier indicator, tab-strip fit, all-tasks count chip.
 
 Phase 5 deferred items: HiveMQ MQTT broker + bridge service, MQTT adapter (the `INetwork` abstraction makes the REST → MQTT swap a one-adapter change when ready).
 
-**`dev-23` (PR #24, merged 0056c01)** — device-side rendering polish per the design handoff. After dev-22 added the drum carousel + inertial swipe + initial icon storage, dev-23 fixed the on-device issues that surfaced in HIL testing:
-
-- **Icons render correctly.** The IconCache used `LV_COLOR_FORMAT_A1` which LVGL 9's software renderer explicitly excludes (`lv_color.h` line 137 marks A1/A2/A4 as GPU-only). Switched to A8 with 1bpp→8bpp unpacking on the device — A8 IS software-supported and pairs with `lv_image_recolor` for theme-aware tinting.
-- **Mini titles single-line, fonts scaled.** Added `lv_font_montserrat_10` / `_12`; mini title now uses 12 pt, due chip 10 pt (clearly smaller than detail's 18 pt). Title gets explicit height so `LV_LABEL_LONG_DOT` truncates instead of wrapping.
-- **Tier ±2 = silhouette only.** Per design spec, only centre + ±1 carry real data; ±2 shows just the rounded pill shape.
-- **Sync-aware rebuild.** DashboardModel + DashboardModel-as-allTasks bump a generation counter on every replace / removeById; ScreenManager watches and rebuilds the active drum screen so a sync round's data refresh propagates without requiring a scroll.
-- **Async icon prefetch.** `IconCache.get()` no longer blocks on HTTP. Misses enqueue; `tickPrefetch(1)` drains one fetch per tick from the main loop. First online tick prewarms the full LABEL_ICON_CHOICES set so dashboards paint with real icons within ~1–2 s of connect.
-
-**Phase 4** earlier dev-cycles: dev-16 = MVP (40 tests + HIL-2). dev-21 = LED status ring + MarqueeLabel. dev-22 = DrumScroller + inertial swipe + icon storage end-to-end (D1 table, seed script, `/api/icons/:name`). dev-24 = detail card redesign (compact + marquee title + no check button).
+**Phase 4** earlier dev-cycles: dev-16 = MVP (40 tests + HIL-2). dev-21 = LED status ring + MarqueeLabel. dev-22 = DrumScroller + inertial swipe + icon storage end-to-end (D1 table, seed script, `/api/icons/:name`). dev-23 = device-side rendering polish per the design handoff (LV_COLOR_FORMAT_A8 icons, sync-aware rebuilds, async icon prefetch). dev-24 = detail card redesign (compact + marquee title + no check button). dev-25 = offline degraded mode (NetworkHealth classifier; OFFLINE/STALE pill on Dashboard + TaskList; cool-blue LED breath when offline; "queued offline" toast on done-animation) + CVD redundancy (urgency-tier ring stroke width, addresses design handoff §13).
 
 ## Live URLs
 
@@ -154,8 +161,12 @@ create-task form (DAILY times / PERIODIC interval / ONESHOT remind-in).
 - 🔵 HIL-3 (real CrowPanel) — deferred to release/* gating; needs
   attached hardware on a self-hosted runner
 
-**Next:** unified menu component (plan §11) + LVGL theming for the
-dial (Phase 5), or pick up server-side Phase 5 work (MQTT bridge).
+**Next:** the obvious open items, in rough priority order:
+
+1. **Apply `0012_update_counter.sql` to remote D1** before merging PR #30 — slice B is additive on slice A's counter machinery and the migration is still pending on prod.
+2. **MQTT bridge** (Phase 5 deferred). Non-Cloudflare component (HiveMQ Cloud / AWS IoT / self-hosted Mosquitto) — pick a broker, write the bridge service, swap in an `MqttNetwork` adapter behind a feature flag. The `INetwork` abstraction means the device side is a one-adapter change.
+3. **Visual regression baselines** (deferred from Phase 2.8). The bottom-tab nav landed in dev-14, so the gate is met; needs a canonical Linux Chromium run to seed the snapshots.
+4. **TaskDetail screen** (currently a stub at `firmware/src/screens/screen_task_list.cpp:121` — never reached, just satisfies the ScreenId enum). Either wire a tap-into-detail path or remove the enum entry.
 
 **What's left in Phase 0:**
 
@@ -193,65 +204,14 @@ recommendations; if you disagree, raise it before Phase 1 starts.
 
 ## Recently completed
 
-- 2026-05-06 — Phase 0 scaffold: monorepo (`backend/`, `webapp/`,
-  `firmware/`, `scripts/`); Hono Worker stub with `/api/health` and a
-  thin `/api/tasks` end-to-end; drizzle-kit wired with one initial
-  migration; Pages Functions `[[path]].ts` proxy; PlatformIO with
-  `crowpanel`, `simulator`, `native` envs and a placeholder Unity test;
-  CI workflow with path filters mirroring Feedme.
-- 2026-05-06 — First deploy live. D1, R2, Queues provisioned;
-  `0000_init.sql` applied to remote; Worker + Pages deployed;
-  `AUTH_SECRET` set on Worker, `WORKER_ORIGIN` set on Pages.
-  End-to-end smoke: `https://howler-webapp.pages.dev/api/health` →
-  `{ok:true}` proves the Pages → Functions → Worker → D1 chain.
-- 2026-05-06 — Phase 1 step 1 (auth) on `dev-1`. Migration `0001_auth.sql`
-  applied to local + remote D1 (rebuilt `users` table to add
-  `username` + relax `email/display_name` to nullable; added
-  `pending_pairings`, `login_qr_tokens`, `auth_logs`). Auth primitives
-  (PBKDF2 PIN + HMAC user/device tokens), Hono middleware, and
-  routes for `/api/auth/{setup,login,me,logout,set-pin,quick-setup,
-  login-token-create,login-qr}` + `/api/pair/{start,check,confirm}`.
-  `/api/tasks` no longer accepts `X-User-Id`; Bearer token required.
-  Webapp adds Quick-start / Log in / Sign up tabs and a `?token=&deviceId=`
-  QR-landing path. 13/13 unit tests pass; full pair+QR chain verified
-  against prod Worker.
-- 2026-05-06 — Phase 1 step 2 (scheduler) on `dev-1`. D1 repos for
-  Schedule + Occurrence; pure `computeNextFireAt` (7 unit tests);
-  cron-driven fan-out + Queue consumer materialise PENDING rows and
-  advance `next_fire_at`. `POST /api/tasks` creates Task + Schedule
-  atomically with kind-default rules. New routes `/api/occurrences/
-  {pending,/:id/ack}` (idempotent re-ack). Webapp dashboard surfaces
-  pending list + create-task form with kind-aware fields.
-  20/20 backend tests green. Cron + queue path verified end-to-end
-  in prod (ONESHOT now+5 → cron tick → pending → ack).
-- 2026-05-06 — Phase 2.0 — home-centric model rework on `dev-2`.
-  Migration `0002_home.sql` rebuilds the schema (home, user-as-child,
-  labels, task_results, task_assignments, task_executions; tokens
-  carry homeId; auth flow grows a user-picker step). Application-
-  level seed inserts the 4 default labels + 5 TaskResult templates
-  per new home. `POST /api/occurrences/:id/ack` now accepts
-  `{resultValue?, notes?}` and writes a denormalized snapshot to
-  `task_executions` in the same UoW batch. New CRUD routes for
-  `/api/labels` and `/api/task-results`. **31/31 backend tests
-  green** (10 in the integration suite, including a new `ack-with-
-  resultValue stores the snapshot` case). Worker live at the same
-  URL; webapp live at https://dev-2.howler-webapp.pages.dev with a
-  user-picker after login + an ack dialog that asks for the value
-  when a task has a result type.
-- 2026-05-06 — Integration tests via `@cloudflare/vitest-pool-workers`.
-  9 tests exercise the live Worker (auth, pair+QR end-to-end with
-  replay rejection + deviceId mismatch, task RBAC across two users,
-  ack idempotency). Migrations applied to in-memory D1 via
-  `?raw` SQL imports. **29/29 backend tests green.**
-- 2026-05-06 — Webapp CRUD complete-the-loop. `DELETE /api/tasks/:id`
-  (soft delete, owner-checked) + Delete buttons on every task; a
-  Pair-a-device tile on the dashboard that POSTs `/api/pair/confirm`
-  so the SPA can drive the full pair flow without leaving the page.
-- 2026-05-06 — Task EDIT. `PATCH /api/tasks/:id` for
-  `{title, description, priority, active}` (kind changes still go via
-  delete-and-recreate — schedule rebuild is non-trivial). Inline-
-  edit row in the dashboard. **30/30 backend tests green** (added
-  the PATCH happy-path + non-owner 403).
+> Per `plan.md §19`, this is the last ~5 PRs. Older history is in
+> `git log` and the plan's "Phase X status" sections.
+
+- 2026-05-09 — **dev-29** ([PR #30](https://github.com/a-tsygankov/howler/pull/30)). Sync slice B — device computes urgency locally each frame from rule + anchor inputs in the dashboard payload. `services/urgency.ts` ported line-by-line to `firmware/src/domain/Urgency.h`; 22 unit tests mirror the backend's. `DashboardModel::refreshUrgency(nowSec)` drives the per-frame override; `ScreenManager` rebuilds Dashboard / TaskList every ~30 s so labels track the clock. `SyncService.fullRefreshMs_` raised 5 min → 1 h. Tests: backend 70/70, firmware native 83/83 (was 61, +22 urgency).
+- 2026-05-09 — **dev-28** ([PR #29](https://github.com/a-tsygankov/howler/pull/29), merged `533e4e2`). Two-theme cycle: device-screen trust polish (8 commits) + sync slice A (peek-then-fetch). About becomes a 1 Hz live diagnostic readout (sync age / RAM / queue / Wi-Fi RSSI + IP); brightness number tracks the arc; OFFLINE / STALE badge on empty paths; sync row gains `err` suffix; "Sync now" toast follows through with synced/failed/offline; Pair screen rebuilds on phase transitions; WifiConnect actually shows "connecting…" while the 12 s blocking call runs. Slice A: migration `0012_update_counter.sql` (column + 24 triggers covering every home-scoped table); `GET /api/homes/peek`; firmware `runRoundIfNeeded()` skips the four fetches on counter equality.
+- 2026-05-08 — **dev-27** ([PR #28](https://github.com/a-tsygankov/howler/pull/28), merged `6cafe2d`). Dashboard bottom-bar redesign (left red dots / centre count / right yellow dots; `+` overflow chip). All-tasks `X / N` cursor index. Three-layer dark-theme rim-border fix. About card → 9-row diagnostic readout (`net / wifi / sync / ram / up / queue / theme / dev`).
+- 2026-05-08 — **dev-26** ([PR #27](https://github.com/a-tsygankov/howler/pull/27), merged `1a6580d`). Dashboard + TaskList polish: 3-card drum (centre + ±1, dropped ±2 silhouettes), less-contrast minis, bottom-dot tier indicator, tab-strip fit, all-tasks count chip.
+- 2026-05-08 — **dev-25** ([PR #26](https://github.com/a-tsygankov/howler/pull/26), merged `2870446`). Phase 5 offline degraded mode (`App::networkHealth()` Fresh / Stale / Offline; OFFLINE / STALE pill on Dashboard + TaskList; cool-blue LED breath when offline; "queued offline" toast on done-animation). CVD redundancy (status-arc avatar ring stroke width per urgency tier — addresses design handoff §13).
 
 ## Open questions (synced with plan §17)
 
@@ -260,7 +220,7 @@ recommendations; if you disagree, raise it before Phase 1 starts.
 | 1 | Device ↔ server HIL strategy | **Decided.** HIL-1 + HIL-2 (Wokwi) on every PR; HIL-3 nightly + on `release/*`. |
 | 2 | Dial flash budget for LVGL 9 + assets + dual OTA | **Open.** Profile during Phase 1 once firmware has real screens. |
 | 3 | Schedule rule schema may calcify (JSON column) | **Open.** Mitigated by Zod + a `version` field on rules. |
-| 4 | MQTT bridge is a non-Cloudflare component | **Deferred to Phase 3.** |
+| 4 | MQTT bridge is a non-Cloudflare component | **Deferred to Phase 5.** Picked up next per the §"Next" pointer. |
 | 5 | AI bg-removal quality on user photos | **Deferred to Phase 5.** Ship Option B (round + ring) first. |
 | 6 | DST edges on "every 3 days" tasks | **Open.** Test plan: store schedules in user TZ, materialize occurrences in UTC. |
 | 7 | Lost vs duplicate ack | **Designed.** Idempotency key on every device write; `INSERT OR IGNORE`. |
@@ -270,7 +230,19 @@ recommendations; if you disagree, raise it before Phase 1 starts.
 
 ## Anything blocked
 
-- _(none — Phase 0 is unblocked.)_
+- **PR #30 (slice B) merge** is gated on the user applying
+  migration `0012_update_counter.sql` to remote D1. The migration
+  itself is in `main` (PR #29 merged); the apply was sandbox-denied
+  during the slice A session. Run from `backend/`:
+
+  ```bash
+  pnpm dlx wrangler d1 migrations apply howler-db --remote
+  ```
+
+  Slice B's response shape is additive on top — order is forgiving
+  (older device falls back to the snapshot when slice-A fields
+  aren't present), but the worker shouldn't deploy slice B without
+  slice A's column having landed first.
 
 ---
 

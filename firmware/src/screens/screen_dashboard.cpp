@@ -37,6 +37,12 @@ void ScreenManager::buildDashboard() {
     root_ = buildRoundBackground();
 
     auto& dash = app_.dashboard();
+    // Slice B: rerun urgency classification per item against the
+    // server's "now" before the drum captures the items by
+    // reference. ScreenManager's periodic urgency tick (every ~30 s
+    // while a task screen is rendered) calls refreshUrgency +
+    // requestRebuild so labels stay accurate without a full sync.
+    dash.refreshUrgency(lastServerNowSec_);
 
     // Perimeter arc — always built so the update loop can fade it
     // in/out without rebuilding the whole screen.
