@@ -259,14 +259,24 @@ describe("pair + login-by-QR flow", () => {
 });
 
 describe("tasks + occurrences", () => {
+  // Per-call cf-connecting-ip stamps so each auth() lands in its
+  // own rate-limit bucket (RATE_LIMITER binding is wired in tests
+  // and the 10/60 bucket is shared across the whole vitest worker).
+  // Same trick as the "home update counter" describe below — a real
+  // fleet has distinct outbound IPs naturally.
+  let nextIp = 100;
   const auth = async (): Promise<{
     token: string;
     homeId: string;
     userId: string;
   }> => {
+    const ip = `10.0.1.${nextIp++}`;
     const res = await SELF.fetch("https://t/api/auth/quick-setup", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: {
+        "content-type": "application/json",
+        "cf-connecting-ip": ip,
+      },
       body: "{}",
     });
     const body = await json(res);
@@ -475,6 +485,254 @@ describe("tasks + occurrences", () => {
     expect(row?.result_value).toBe(80);
     expect(row?.result_unit).toBe("gr");
     expect(row?.notes).toBe("morning meal");
+  });
+
+  // Reported on-device: tapping a task with the seeded "Rating"
+  // result lands on the picker's empty-state ("no result type
+  // (tap to skip)") instead of the star widget. The early-return
+  // in screen_pickers.cpp::buildResultPicker fires when the
+  // device's `findResultType(task.resultTypeId)` returns null —
+  // either the task points at a type the device hasn't synced
+  // (server-side data inconsistency) or the IDs returned by
+  // /api/dashboard differ from /api/task-results for the same
+  // row. This sweeps both: a task created with each seeded type
+  // must round-trip the same UUID through the dashboard *and*
+  // task-results endpoints, so the device's lookup can succeed.
+  for (const type of [
+    "Count",
+    "Grams",
+    "Minutes",
+    "Rating",
+    "Percent",
+  ]) {
+    it(`task created with ${type} result type round-trips a matching id through both /api/dashboard and /api/task-results`, async () => {
+      const { token, homeId } = await auth();
+
+      // Seeded task_results row for this display name. Each home
+      // gets all 5 at quick-setup; the DB lookup confirms the
+      // seeder ran and returns the canonical UUID.
+      const seeded = await env.DB
+        .prepare(
+          "SELECT id FROM task_results WHERE home_id = ? AND display_name = ? AND is_deleted = 0",
+        )
+        .bind(homeId, type)
+        .first<{ id: string }>();
+      expect(
+        seeded,
+        `seeder must produce a "${type}" task_result for every new home`,
+      ).not.toBeNull();
+      const seededId = seeded!.id;
+
+      // Create a task that points at this result type.
+      const create = await SELF.fetch("https://t/api/tasks", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          title: `t-${type}`,
+          kind: "ONESHOT",
+          resultTypeId: seededId,
+        }),
+      });
+      expect(create.status).toBe(201);
+
+      // ── /api/task-results round-trip ─────────────────────────
+      // The device reads this via fetchResultTypes() into
+      // resultTypes_; the picker's findResultType() then matches
+      // task.resultTypeId against entry.id.
+      const trRes = await SELF.fetch("https://t/api/task-results", {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(trRes.status).toBe(200);
+      const trBody = (await json(trRes)) as {
+        taskResults: Array<{ id: string; displayName: string }>;
+      };
+      const matchingResultType = trBody.taskResults.find(
+        (r) => r.id === seededId,
+      );
+      expect(
+        matchingResultType,
+        `/api/task-results must include the seeded "${type}" entry the task references`,
+      ).toBeDefined();
+      expect(matchingResultType?.displayName).toBe(type);
+
+      // ── /api/dashboard round-trip ────────────────────────────
+      // The device reads this via fetchDashboard() into
+      // DashboardItem.resultTypeId; tapping seeds
+      // pendingDone.resultTypeId. The id MUST be byte-identical
+      // to the one task-results returned, otherwise the on-
+      // device findResultType() walk produces nullptr and the
+      // picker shows the empty-state placeholder.
+      const dashRes = await SELF.fetch(
+        "https://t/api/dashboard?include=hidden",
+        { headers: { authorization: `Bearer ${token}` } },
+      );
+      expect(dashRes.status).toBe(200);
+      const dashBody = (await json(dashRes)) as {
+        tasks: Array<{ task: { id: string; resultTypeId: string | null } }>;
+      };
+      const dashboardRow = dashBody.tasks.find(
+        (t) => t.task.resultTypeId === seededId,
+      );
+      expect(
+        dashboardRow,
+        `/api/dashboard task.resultTypeId must equal the id /api/task-results returned for "${type}"`,
+      ).toBeDefined();
+    });
+  }
+});
+
+describe("device-token authorization (firmware-side mark-done)", () => {
+  // Same per-call cf-connecting-ip pattern as the other suites —
+  // these tests mint multiple homes / tokens and would otherwise
+  // race the shared rate-limit bucket.
+  let nextIp = 200;
+  const auth = async () => {
+    const ip = `10.0.2.${nextIp++}`;
+    const res = await SELF.fetch("https://t/api/auth/quick-setup", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "cf-connecting-ip": ip,
+      },
+      body: "{}",
+    });
+    const body = await json(res);
+    return {
+      token: body["token"] as string,
+      homeId: body["homeId"] as string,
+      userId: body["userId"] as string,
+    };
+  };
+
+  // The dial pairs into a home and gets a DeviceToken. Subsequent
+  // sync rounds + mark-done calls authenticate with that token,
+  // not a UserToken. Several endpoints used to gate everything
+  // behind requireUser() — the device's GETs returned 403 silently
+  // and resultTypes_ / users_ stayed empty, breaking the post-done
+  // pickers. These tests pin the device-token contract so a future
+  // refactor can't quietly re-block the dial.
+  const mintDeviceToken = async (homeId: string): Promise<string> => {
+    const { issueDeviceToken } = await import("../src/auth.ts");
+    const secret = (env as unknown as { AUTH_SECRET: string }).AUTH_SECRET;
+    return issueDeviceToken(
+      homeId,
+      "0".repeat(20) + "abcdef012345",
+      secret,
+    );
+  };
+
+  it("device token can GET /api/task-results (was 403 — root cause of 'no result type')", async () => {
+    const { homeId } = await auth();
+    const deviceToken = await mintDeviceToken(homeId);
+
+    const r = await SELF.fetch("https://t/api/task-results", {
+      headers: { authorization: `Bearer ${deviceToken}` },
+    });
+    expect(r.status).toBe(200);
+    const body = (await json(r)) as {
+      taskResults: Array<{ id: string; displayName: string }>;
+    };
+    // Seeded list — every new home gets all 5.
+    const names = body.taskResults.map((t) => t.displayName).sort();
+    expect(names).toEqual(["Count", "Grams", "Minutes", "Percent", "Rating"]);
+  });
+
+  it("device token can GET /api/users (UserPicker on the dial needs the home roster)", async () => {
+    const { homeId } = await auth();
+    const deviceToken = await mintDeviceToken(homeId);
+
+    const r = await SELF.fetch("https://t/api/users", {
+      headers: { authorization: `Bearer ${deviceToken}` },
+    });
+    expect(r.status).toBe(200);
+    const body = (await json(r)) as { users: Array<{ id: string }> };
+    expect(body.users.length).toBeGreaterThan(0);
+  });
+
+  it("device token can POST /api/tasks/:id/complete (direct-completion path when no occurrence exists)", async () => {
+    const { token: userToken, homeId } = await auth();
+    const userHeaders = {
+      authorization: `Bearer ${userToken}`,
+      "content-type": "application/json",
+    } as const;
+
+    // Create a task as the user (creation stays user-only).
+    const create = await SELF.fetch("https://t/api/tasks", {
+      method: "POST",
+      headers: userHeaders,
+      body: JSON.stringify({ title: "device-completes-this", kind: "ONESHOT" }),
+    });
+    expect(create.status).toBe(201);
+    const task = (await json(create)) as { id: string };
+
+    // Now complete it via the device token. The device sends a
+    // stable execution id (UUID) so the call is idempotent.
+    const deviceToken = await mintDeviceToken(homeId);
+    const executionId = "f".repeat(32);
+    const complete = await SELF.fetch(
+      `https://t/api/tasks/${task.id}/complete`,
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${deviceToken}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ id: executionId }),
+      },
+    );
+    expect(complete.status).toBe(200);
+
+    // Row landed in task_executions; userId NULL (device skipped
+    // the UserPicker), device_id populated from the token.
+    const row = await env.DB
+      .prepare(
+        "SELECT user_id, device_id FROM task_executions WHERE id = ?",
+      )
+      .bind(executionId)
+      .first<{ user_id: string | null; device_id: string | null }>();
+    expect(row?.user_id).toBeNull();
+    expect(row?.device_id).not.toBeNull();
+  });
+
+  it("device-token mutations on user-only routes still 403 (POST /api/task-results, /api/users, etc.)", async () => {
+    const { homeId } = await auth();
+    const deviceToken = await mintDeviceToken(homeId);
+
+    // Negative checks: the device must NOT be able to create /
+    // delete result types or users. The per-route requireUser()
+    // we re-armed on each mutation handler enforces this.
+    const postResult = await SELF.fetch("https://t/api/task-results", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${deviceToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ displayName: "X", unitName: "x", step: 1 }),
+    });
+    expect(postResult.status).toBe(403);
+
+    const postUser = await SELF.fetch("https://t/api/users", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${deviceToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ displayName: "Mallory" }),
+    });
+    expect(postUser.status).toBe(403);
+
+    const postTask = await SELF.fetch("https://t/api/tasks", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${deviceToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ title: "rogue", kind: "ONESHOT" }),
+    });
+    expect(postTask.status).toBe(403);
   });
 });
 
