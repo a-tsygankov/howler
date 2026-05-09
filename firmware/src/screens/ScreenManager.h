@@ -160,6 +160,20 @@ private:
     /// every drum scroll without rebuilding the screen tree.
     lv_obj_t*                taskIndexLabel_ = nullptr;
 
+    /// Settings → About diagnostic body label. Set by
+    /// `buildSettingsAbout`, refreshed in place from `tick()` every
+    /// second so values like "sync 30s ago", "up 2h 14m", "ram",
+    /// and "queue N pending" stay current while the user is on the
+    /// screen. Cleared in teardownScreen so the dangling pointer
+    /// can never outlive the lv_obj it refers to.
+    lv_obj_t*                aboutBodyLabel_ = nullptr;
+    /// Wall-clock target for the next About refresh. The build path
+    /// initialises this to "now + 1 s"; tick() compares millisNow
+    /// against it before repainting and bumps it forward by 1000 ms
+    /// each time. Independent of the screen rebuild path so a sync
+    /// round mid-About doesn't race the live update.
+    uint32_t                 aboutNextRefreshMs_ = 0;
+
     /// Cached generation snapshot of the dashboard / all-tasks model
     /// at the time the current screen was built. tick() compares the
     /// live generation each frame and triggers a screen rebuild when
@@ -208,6 +222,13 @@ private:
     void buildSettings();
     void buildSettingsBrightness();
     void buildSettingsAbout();
+    /// Repaints the About diagnostic body in place. Called from
+    /// `tick()` once a second while SettingsAbout is rendered so
+    /// values that change with time (sync age, uptime, ram, queue
+    /// depth, network health) stay live without a full screen
+    /// rebuild — `lv_label_set_text` only redraws the dirty
+    /// rectangle, no LVGL tree teardown required.
+    void refreshSettingsAbout();
     void buildSettingsTheme();
     void buildWifi();
     void buildWifiConnect();

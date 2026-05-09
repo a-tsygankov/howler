@@ -289,6 +289,50 @@ const char* themeLabel(domain::Theme t) {
     return t == domain::Theme::Dark ? "dark" : "light";
 }
 
+// Format the multi-line diagnostic body into `buf`. Used by both
+// `buildSettingsAbout` (initial render) and the per-second refresh
+// in `ScreenManager::tick`, so a future field addition only touches
+// one place. Pulled out of the build path so the live update doesn't
+// duplicate the layout string.
+void formatAboutBody(char* buf, size_t cap, application::App& app) {
+    char ageBuf[24];
+    char upBuf[24];
+    formatSyncAge(ageBuf, sizeof(ageBuf),
+                   app.lastFullSyncSec(),
+                   app.clock().nowEpochSeconds());
+    formatUptime(upBuf, sizeof(upBuf), millis());
+
+    const uint32_t heapBytes = heap_caps_get_free_size(MALLOC_CAP_DEFAULT);
+    const uint32_t heapKB    = heapBytes / 1024;
+
+    const auto& did = app.deviceId();
+    const std::string didTail = did.size() >= 8
+        ? did.substr(did.size() - 8) : did;
+
+    const std::string ssid = app.wifi().isConnected()
+                               ? app.wifi().currentSsid()
+                               : std::string{};
+    const char* ssidStr = ssid.empty() ? "—" : ssid.c_str();
+
+    snprintf(buf, cap,
+             "net    %s\n"
+             "wifi   %s\n"
+             "sync   %s\n"
+             "ram    %u KB\n"
+             "up     %s\n"
+             "queue  %u pending\n"
+             "theme  %s\n"
+             "dev    %s",
+             networkHealthLabel(app.networkHealth()),
+             ssidStr,
+             ageBuf,
+             static_cast<unsigned>(heapKB),
+             upBuf,
+             static_cast<unsigned>(app.queue().size()),
+             themeLabel(app.settings().theme),
+             didTail.c_str());
+}
+
 }  // namespace
 
 void ScreenManager::buildSettingsAbout() {
@@ -345,52 +389,11 @@ void ScreenManager::buildSettingsAbout() {
     // Body — one big multi-line label with all the diagnostics. We
     // build it as a single label (not 6 separate labels) so the
     // line-spacing stays uniform and a small font swap touches one
-    // place.
+    // place. Same `formatAboutBody` runs from `tick()` once a
+    // second so live values (sync age, uptime, ram, queue) keep
+    // ticking up while the user reads the screen.
     char body[256];
-    char ageBuf[24];
-    char upBuf[24];
-    formatSyncAge(ageBuf, sizeof(ageBuf),
-                   app_.lastFullSyncSec(),
-                   app_.clock().nowEpochSeconds());
-    formatUptime(upBuf, sizeof(upBuf), millis());
-
-    // Free heap in KB. Use heap_caps for the most accurate "what's
-    // really left" — `ESP.getFreeHeap()` returns the same number on
-    // ESP32-S3 builds but heap_caps_get_free_size avoids any
-    // Arduino-vs-IDF mismatch.
-    const uint32_t heapBytes = heap_caps_get_free_size(MALLOC_CAP_DEFAULT);
-    const uint32_t heapKB    = heapBytes / 1024;
-
-    // Show only the last 8 hex chars of the device id — leading
-    // 24 are zero-padding, hard to read aloud.
-    const auto& did = app_.deviceId();
-    const std::string didTail = did.size() >= 8
-        ? did.substr(did.size() - 8) : did;
-
-    // Wi-Fi SSID — empty when not associated; we replace with "—"
-    // so the row stays the same shape regardless of state.
-    const std::string ssid = app_.wifi().isConnected()
-                               ? app_.wifi().currentSsid()
-                               : std::string{};
-    const char* ssidStr = ssid.empty() ? "—" : ssid.c_str();
-
-    snprintf(body, sizeof(body),
-             "net    %s\n"
-             "wifi   %s\n"
-             "sync   %s\n"
-             "ram    %u KB\n"
-             "up     %s\n"
-             "queue  %u pending\n"
-             "theme  %s\n"
-             "dev    %s",
-             networkHealthLabel(app_.networkHealth()),
-             ssidStr,
-             ageBuf,
-             static_cast<unsigned>(heapKB),
-             upBuf,
-             static_cast<unsigned>(app_.queue().size()),
-             themeLabel(app_.settings().theme),
-             didTail.c_str());
+    formatAboutBody(body, sizeof(body), app_);
 
     auto* l = lv_label_create(card);
     lv_label_set_text(l, body);
@@ -399,11 +402,25 @@ void ScreenManager::buildSettingsAbout() {
     lv_obj_set_style_text_line_space(l, 2, 0);
     lv_obj_align(l, LV_ALIGN_TOP_LEFT, 4, 22);
 
+    // Hand the label pointer to ScreenManager so the live-update
+    // tick can repaint it in place. The first refresh is scheduled
+    // ~1 s from now — earlier than that and the user would see the
+    // text flash on entry from a value that's already correct.
+    aboutBodyLabel_       = l;
+    aboutNextRefreshMs_   = millis() + 1000;
+
     auto* hint = lv_label_create(root_);
     lv_label_set_text(hint, "2x back");
     lv_obj_set_style_text_color(hint, Palette::ink3(), 0);
     lv_obj_set_style_text_font(hint, &lv_font_montserrat_10, 0);
     lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -8);
+}
+
+void ScreenManager::refreshSettingsAbout() {
+    if (!aboutBodyLabel_) return;
+    char body[256];
+    formatAboutBody(body, sizeof(body), app_);
+    lv_label_set_text(aboutBodyLabel_, body);
 }
 
 }  // namespace howler::screens

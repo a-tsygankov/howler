@@ -190,6 +190,17 @@ void ScreenManager::tick(uint32_t millisNow) {
         rebuildPending_ = true;
     }
 
+    // Live About refresh — repaint the diagnostic body once a second
+    // while SettingsAbout is rendered so sync age / uptime / ram /
+    // queue depth tick forward without a full screen rebuild. The
+    // label pointer is set by `buildSettingsAbout` and cleared in
+    // `teardownScreen`, so the guard covers screen transitions.
+    if (rendered_ == domain::ScreenId::SettingsAbout &&
+        aboutBodyLabel_ && millisNow >= aboutNextRefreshMs_) {
+        refreshSettingsAbout();
+        aboutNextRefreshMs_ = millisNow + 1000;
+    }
+
     if (app_.router().current() != rendered_ || rebuildPending_) {
         rebuildPending_ = false;
         rebuildScreen();
@@ -355,6 +366,11 @@ void ScreenManager::teardownScreen() {
     taskDrumActive_ = false;
     taskCursorDots_ = nullptr;
     taskIndexLabel_ = nullptr;
+    // About-screen live-refresh state — the label is a child of
+    // root_ which we just deleted; clear the pointer so the next
+    // tick() doesn't try to set_text on a stale lv_obj.
+    aboutBodyLabel_     = nullptr;
+    aboutNextRefreshMs_ = 0;
 }
 
 void ScreenManager::rebuildScreen() {
