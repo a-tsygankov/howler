@@ -308,3 +308,35 @@ export const deviceOutbox = sqliteTable(
     ),
   }),
 );
+
+// Phase 6 OTA — see migration 0013_firmware_releases.sql + docs/ota.md
+// for the design and remaining-work checklist. The bytes themselves
+// live in R2 (`howler-firmware`); this row carries only the manifest
+// + rollout-control metadata. Not home-scoped — releases are global,
+// and rollout rules in `rolloutRules` carve out per-device / per-home
+// canaries when needed.
+export const firmwareReleases = sqliteTable(
+  "firmware_releases",
+  {
+    version: text("version").primaryKey(),
+    sha256: text("sha256").notNull(),
+    r2Key: text("r2_key").notNull(),
+    sizeBytes: integer("size_bytes").notNull(),
+    /// Opaque JSON; null = "ship to everyone". The check endpoint
+    /// parses + applies. Future shapes: { deviceIds: [...] },
+    /// { homeIds: [...] }, { canaryPercent: 5 }.
+    rolloutRules: text("rollout_rules"),
+    /// 1 = devices may receive this build via /firmware/check.
+    /// 0 = uploaded but not yet promoted (or yanked).
+    active: integer("active").notNull().default(0),
+    createdAt: integer("created_at").notNull(),
+    promotedAt: integer("promoted_at"),
+    yankedAt: integer("yanked_at"),
+  },
+  (t) => ({
+    byActiveVersion: index("firmware_releases_active_version_idx").on(
+      t.active,
+      t.version,
+    ),
+  }),
+);

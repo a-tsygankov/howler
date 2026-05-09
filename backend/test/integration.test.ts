@@ -13,6 +13,7 @@ import init0007 from "../migrations/0007_task_avatar_backfill.sql?raw";
 import init0008 from "../migrations/0008_rule_modified_at.sql?raw";
 import init0009 from "../migrations/0009_user_bg_color.sql?raw";
 import init0012 from "../migrations/0012_update_counter.sql?raw";
+import init0013 from "../migrations/0013_firmware_releases.sql?raw";
 
 // Parse SQL into top-level statements. The naive split-on-';' breaks
 // on trigger bodies (`CREATE TRIGGER … BEGIN … ; … END;`) — every
@@ -61,7 +62,7 @@ const applyMigrations = async () => {
   // bitmap data we don't need in the in-memory DB. Leaving them out
   // keeps test boot fast; if a future test exercises the icon
   // pipeline they should be added here.
-  for (const sql of [init0000, init0001, init0002, init0003, init0004, init0005, init0006, init0007, init0008, init0009, init0012]) {
+  for (const sql of [init0000, init0001, init0002, init0003, init0004, init0005, init0006, init0007, init0008, init0009, init0012, init0013]) {
     for (const s of splitStatements(sql)) {
       await env.DB.exec(s.replace(/\s+/g, " "));
     }
@@ -86,6 +87,7 @@ const reset = async () => {
     "auth_logs",
     "push_subscriptions",
     "avatars",
+    "firmware_releases",
     "users",
     "homes",
   ]) {
@@ -1094,5 +1096,190 @@ describe("home update counter (peek-then-merge sync)", () => {
   it("peek requires auth", async () => {
     const res = await SELF.fetch("https://t/api/homes/peek");
     expect(res.status).toBe(401);
+  });
+});
+
+describe("OTA — firmware release advisory (Phase 6 foundation)", () => {
+  let nextIp = 400;
+  const auth = async () => {
+    const ip = `10.0.4.${nextIp++}`;
+    const res = await SELF.fetch("https://t/api/auth/quick-setup", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "cf-connecting-ip": ip,
+      },
+      body: "{}",
+    });
+    const body = await json(res);
+    return {
+      token: body["token"] as string,
+      homeId: body["homeId"] as string,
+    };
+  };
+
+  const mintDeviceToken = async (
+    homeId: string,
+    deviceId = "0".repeat(20) + "abcdef012345",
+  ): Promise<string> => {
+    const { issueDeviceToken } = await import("../src/auth.ts");
+    const secret = (env as unknown as { AUTH_SECRET: string }).AUTH_SECRET;
+    return issueDeviceToken(homeId, deviceId, secret);
+  };
+
+  const insertRelease = async (overrides: {
+    version: string;
+    active?: 0 | 1;
+    rolloutRules?: string | null;
+    sizeBytes?: number;
+  }) => {
+    const nowSec = Math.floor(Date.now() / 1000);
+    await env.DB.prepare(
+      `INSERT INTO firmware_releases
+         (version, sha256, r2_key, size_bytes, rollout_rules, active, created_at, promoted_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+      .bind(
+        overrides.version,
+        "a".repeat(64),
+        `firmware/firmware-${overrides.version}.bin`,
+        overrides.sizeBytes ?? 1_400_000,
+        overrides.rolloutRules ?? null,
+        overrides.active ?? 1,
+        nowSec,
+        overrides.active === 1 ? nowSec : null,
+      )
+      .run();
+  };
+
+  it("/firmware/check returns updateAvailable=false when device is at the latest version", async () => {
+    const { homeId } = await auth();
+    const deviceToken = await mintDeviceToken(homeId);
+    await insertRelease({ version: "1.4.2" });
+
+    const res = await SELF.fetch(
+      "https://t/api/firmware/check?fwVersion=1.4.2",
+      { headers: { authorization: `Bearer ${deviceToken}` } },
+    );
+    expect(res.status).toBe(200);
+    expect((await json(res))["updateAvailable"]).toBe(false);
+  });
+
+  it("/firmware/check returns the highest active release > current (and a SQL ORDER BY would mis-rank '1.10.0' vs '1.2.0')", async () => {
+    const { homeId } = await auth();
+    const deviceToken = await mintDeviceToken(homeId);
+    await insertRelease({ version: "1.2.0" });
+    await insertRelease({ version: "1.10.0" });
+
+    const res = await SELF.fetch(
+      "https://t/api/firmware/check?fwVersion=1.0.0",
+      { headers: { authorization: `Bearer ${deviceToken}` } },
+    );
+    expect(res.status).toBe(200);
+    const body = (await json(res)) as {
+      updateAvailable: boolean;
+      version: string;
+    };
+    expect(body.updateAvailable).toBe(true);
+    expect(body.version).toBe("1.10.0");
+  });
+
+  it("/firmware/check skips inactive releases", async () => {
+    const { homeId } = await auth();
+    const deviceToken = await mintDeviceToken(homeId);
+    await insertRelease({ version: "2.0.0", active: 0 });
+    await insertRelease({ version: "1.5.0", active: 1 });
+
+    const res = await SELF.fetch(
+      "https://t/api/firmware/check?fwVersion=1.0.0",
+      { headers: { authorization: `Bearer ${deviceToken}` } },
+    );
+    const body = (await json(res)) as { version?: string };
+    expect(body.version).toBe("1.5.0");
+  });
+
+  it("/firmware/check honours rollout_rules deviceIds whitelist", async () => {
+    const { homeId } = await auth();
+    const targetDeviceId = "11".repeat(16);
+    const otherDeviceId = "22".repeat(16);
+    await insertRelease({
+      version: "1.6.0",
+      rolloutRules: JSON.stringify({ deviceIds: [targetDeviceId] }),
+    });
+
+    const targetToken = await mintDeviceToken(homeId, targetDeviceId);
+    const otherToken = await mintDeviceToken(homeId, otherDeviceId);
+
+    const targetRes = await SELF.fetch(
+      "https://t/api/firmware/check?fwVersion=1.0.0",
+      { headers: { authorization: `Bearer ${targetToken}` } },
+    );
+    const targetBody = (await json(targetRes)) as { version?: string };
+    expect(targetBody.version).toBe("1.6.0");
+
+    const otherRes = await SELF.fetch(
+      "https://t/api/firmware/check?fwVersion=1.0.0",
+      { headers: { authorization: `Bearer ${otherToken}` } },
+    );
+    expect((await json(otherRes))["updateAvailable"]).toBe(false);
+  });
+
+  it("/devices/heartbeat updates fw_version + advises updateAvailable in one round-trip", async () => {
+    const { homeId } = await auth();
+    const deviceId = "33".repeat(16);
+    const deviceToken = await mintDeviceToken(homeId, deviceId);
+
+    // Seed the device row first so the heartbeat's UPDATE has a
+    // target. (Pair flow normally creates this on /pair/confirm;
+    // tests short-circuit by inserting directly.)
+    const nowSec = Math.floor(Date.now() / 1000);
+    await env.DB.prepare(
+      `INSERT INTO devices (id, home_id, serial, hw_model, fw_version, created_at, updated_at, is_deleted)
+       VALUES (?, ?, ?, 'crowpanel', '0.3.0', ?, ?, 0)`,
+    )
+      .bind(deviceId, homeId, "S-" + deviceId.slice(0, 6), nowSec, nowSec)
+      .run();
+
+    await insertRelease({ version: "0.4.0" });
+
+    const res = await SELF.fetch("https://t/api/devices/heartbeat", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${deviceToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ fwVersion: "0.3.0" }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await json(res)) as {
+      ok: boolean;
+      updateAvailable: boolean;
+      version?: string;
+    };
+    expect(body.ok).toBe(true);
+    expect(body.updateAvailable).toBe(true);
+    expect(body.version).toBe("0.4.0");
+
+    // Persistence: devices.fw_version landed on the row + last_seen
+    // ticked forward.
+    const row = await env.DB
+      .prepare("SELECT fw_version, last_seen_at FROM devices WHERE id = ?")
+      .bind(deviceId)
+      .first<{ fw_version: string; last_seen_at: number | null }>();
+    expect(row?.fw_version).toBe("0.3.0");
+    expect(row?.last_seen_at).not.toBeNull();
+  });
+
+  it("/devices/heartbeat rejects user tokens (device-only endpoint)", async () => {
+    const { token: userToken } = await auth();
+    const res = await SELF.fetch("https://t/api/devices/heartbeat", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${userToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ fwVersion: "0.3.0" }),
+    });
+    expect(res.status).toBe(403);
   });
 });
