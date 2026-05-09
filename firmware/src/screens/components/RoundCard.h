@@ -102,15 +102,22 @@ struct TabStripEntry { const char* label; };
 inline lv_obj_t* buildTabStrip(lv_obj_t* parent,
                                const TabStripEntry* entries, size_t count,
                                size_t activeIndex) {
+    // The 240 disc has a chord of only ~127 px at y=18 (the previous
+    // top edge of the strip). The old 192-px-wide strip clipped the
+    // first/last pill labels into the bezel — "today" → "oday" and
+    // "menu" → "men" on hardware. Move the strip down to a wider
+    // chord and shrink it to fit comfortably inside.
+    constexpr int kStripW = 150;
+    constexpr int kStripH = 22;
+    constexpr int kStripY = 22;     // top edge from disc top
+    constexpr int kPillH  = 18;
     auto* row = lv_obj_create(parent);
-    // Outer pill row; same width regardless of pill count so layout
-    // stays steady.
-    lv_obj_set_size(row, 192, 26);
-    lv_obj_align(row, LV_ALIGN_TOP_MID, 0, 18);
+    lv_obj_set_size(row, kStripW, kStripH);
+    lv_obj_align(row, LV_ALIGN_TOP_MID, 0, kStripY);
     lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_clear_flag(row, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_style_bg_color(row, Palette::paper3(), 0);
-    lv_obj_set_style_radius(row, 13, 0);
+    lv_obj_set_style_radius(row, 11, 0);
     lv_obj_set_style_border_width(row, 0, 0);
     lv_obj_set_style_pad_all(row, 2, 0);
     lv_obj_set_layout(row, LV_LAYOUT_FLEX);
@@ -118,16 +125,20 @@ inline lv_obj_t* buildTabStrip(lv_obj_t* parent,
     lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_EVENLY,
                           LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
-    // Per-pill width. The outer is 192 minus 2×2 padding = 188; we
-    // leave a small gap between pills via flex space-evenly.
-    const int pillW = (count == 0) ? 60 : (188 / static_cast<int>(count)) - 2;
+    // Per-pill width. Outer is kStripW − 4 px padding; flex evenly
+    // splits with a small gap. Use montserrat_10 explicitly so the
+    // 5-letter labels ("today" / "menu") fit even on 40-px-wide
+    // pills, regardless of LV_FONT_DEFAULT.
+    const int innerW = kStripW - 4;
+    const int pillW  = (count == 0) ? 60
+                     : (innerW / static_cast<int>(count)) - 2;
     for (size_t i = 0; i < count; ++i) {
         const bool active = (i == activeIndex);
         auto* pill = lv_obj_create(row);
-        lv_obj_set_size(pill, pillW, 22);
+        lv_obj_set_size(pill, pillW, kPillH);
         lv_obj_clear_flag(pill, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_clear_flag(pill, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_set_style_radius(pill, 11, 0);
+        lv_obj_set_style_radius(pill, 9, 0);
         lv_obj_set_style_bg_color(pill,
             active ? Palette::ink() : Palette::paper3(), 0);
         lv_obj_set_style_shadow_width(pill, 0, 0);
@@ -138,6 +149,7 @@ inline lv_obj_t* buildTabStrip(lv_obj_t* parent,
         lv_label_set_text(l, entries[i].label);
         lv_obj_set_style_text_color(l,
             active ? Palette::paper() : Palette::ink2(), 0);
+        lv_obj_set_style_text_font(l, &lv_font_montserrat_10, 0);
         lv_obj_center(l);
     }
     return row;

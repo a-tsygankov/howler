@@ -32,6 +32,15 @@ public:
         // touchpad target on the round perimeter).
         lv_obj_clear_flag(arc_, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_remove_style(arc_, nullptr, LV_PART_KNOB);
+        // dev-26: defensive — make sure the arc widget itself
+        // doesn't paint a faint background or border ring around
+        // the disc when nothing is happening. Investigation of a
+        // dark-theme "light edge" report; LVGL's default object
+        // styles can include a 1-px outline that survives
+        // LV_OBJ_FLAG_HIDDEN inconsistently across versions.
+        lv_obj_set_style_bg_opa(arc_, LV_OPA_0, 0);
+        lv_obj_set_style_border_width(arc_, 0, 0);
+        lv_obj_set_style_pad_all(arc_, 0, 0);
 
         // Track (unfilled) styled subtle so it doesn't compete with
         // the screen content while the arc is empty.

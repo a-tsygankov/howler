@@ -92,7 +92,12 @@ void ScreenManager::buildDashboard() {
         L{kMiniGap, kDetailW - 16, kMiniH, LV_OPA_COVER});
     taskDrum_.setTierLayoutByDistance(2,
         L{kMiniGap + (kMiniH - 7), kDetailW - 36, kMiniH, LV_OPA_90});
-    taskDrum_.setMaxVisibleDistance(2);
+    // dev-26: only render 3 cards total — centre + 1 above + 1
+    // below. The ±2 silhouettes were visually busy (the user saw
+    // them as overlap noise around the actual data) and the
+    // 240×240 disc's vertical real estate is better spent on
+    // breathing room around the centre detail card.
+    taskDrum_.setMaxVisibleDistance(1);
 
     taskDrum_.setItemCount(n);
     taskDrum_.setCursor(dash.cursor());
@@ -104,10 +109,23 @@ void ScreenManager::buildDashboard() {
     });
     taskDrumActive_ = true;
 
-    // Right-rim scroll indicator — replaces the previous bottom
-    // "# - - -" line. 3 px dots stacked vertically at x ≈ -8 from
-    // the right edge, active dot drawn 10 px tall.
+    // Right-rim scroll indicator — 3 px dots stacked vertically
+    // at x ≈ -8 from the right edge, active dot drawn 10 px tall.
     taskCursorDots_ = buildDrumRimIndicator(root_, n, dash.cursor());
+
+    // Bottom dot indicator (dev-26): tone-coloured dots summarising
+    // the home's tier shape — terracotta for missed/urgent, amber
+    // for soon. Up to 3 dots per tier; "+" beyond that. Stacks
+    // above the OFFLINE/STALE badge when both are visible. Skip
+    // when the tier counts are all zero so a healthy home shows
+    // nothing rather than an empty row.
+    {
+        const auto counts = components::countTiers(items);
+        if (counts.urgent + counts.soon > 0) {
+            auto* dotRow = components::buildBottomDotIndicator(root_, counts);
+            lv_obj_align(dotRow, LV_ALIGN_BOTTOM_MID, 0, -28);
+        }
+    }
 
     // Network-state badge: only rendered when the device is in
     // a degraded state (Stale or Offline). The buildNetworkBadge
