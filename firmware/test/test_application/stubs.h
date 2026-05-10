@@ -147,6 +147,19 @@ public:
         return NetResult::ok();
     }
 
+    NetResult fetchHomeIdentity(
+        domain::HomeIdentity& outIdentity) override {
+        ++homeIdentityCalls_;
+        if (!homeIdentityResults_.empty()) {
+            const auto r = homeIdentityResults_.front();
+            homeIdentityResults_.erase(homeIdentityResults_.begin());
+            if (r.isOk()) outIdentity = nextHomeIdentity_;
+            return r;
+        }
+        outIdentity = nextHomeIdentity_;
+        return NetResult::ok();
+    }
+
     // Test fixtures.
     bool online_ = true;
     std::vector<domain::DashboardItem> nextDashboard_;
@@ -172,6 +185,11 @@ public:
     std::vector<NetResult> firmwareCheckResults_;
     int                    firmwareCheckCalls_ = 0;
     std::string            lastCheckedVersion_;
+    // Home identity state — tests stage `homeIdentityResults_` for
+    // failure paths and seed `nextHomeIdentity_` for the body.
+    domain::HomeIdentity   nextHomeIdentity_;
+    std::vector<NetResult> homeIdentityResults_;
+    int                    homeIdentityCalls_ = 0;
 };
 
 class StubOtaPort : public application::IOtaPort {

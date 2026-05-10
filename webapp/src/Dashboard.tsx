@@ -23,6 +23,7 @@ import {
   fetchDashboard,
   fetchDevices,
   fetchLabels,
+  labelAvatarId,
   fetchScheduleTemplates,
   fetchTaskResults,
   fetchTasks,
@@ -1904,7 +1905,7 @@ const LabelsBlock = ({
       ))}
       {adding ? (
         <LabelEditor
-          initial={{ displayName: "", color: "#7A7060", icon: null }}
+          initial={{ displayName: "", color: "#7A7060", avatarId: null }}
           isNew
           onCancel={() => setAdding(false)}
           onSave={async (patch) => {
@@ -1945,7 +1946,10 @@ const LabelRow = ({
         initial={{
           displayName: label.displayName,
           color: label.color ?? "#7A7060",
-          icon: label.icon ?? null,
+          // Pre-PR#42 labels surfaced `icon` only; new ones surface
+          // `avatarId`. Resolve to the unified format upfront so the
+          // editor has one shape to reason about.
+          avatarId: labelAvatarId(label),
         }}
         isNew={false}
         onCancel={() => setEditing(false)}
@@ -1957,21 +1961,42 @@ const LabelRow = ({
       />
     );
   }
+  // Resolve avatar at render time so a label that's been migrated
+  // server-side (avatar_id populated) renders identically to a
+  // freshly-edited one (which goes through avatarId only). The
+  // colour-tinted background lets a label preset glyph and an
+  // uploaded photo both read at a glance.
+  const resolvedAvatar = labelAvatarId(label);
+  const isPhoto = resolvedAvatar !== null && !resolvedAvatar.startsWith("icon:");
+  const iconName = resolvedAvatar?.startsWith("icon:")
+    ? (resolvedAvatar.slice(5) as IconName)
+    : null;
   return (
     <div className="flex items-center justify-between border-t border-line-soft py-2">
       <div className="flex min-w-0 items-center gap-2">
-        <span
-          className="flex h-7 w-7 items-center justify-center rounded-full"
-          style={{ background: label.color ?? "#7A7060", color: "#fff" }}
-        >
-          {label.icon ? (
-            <Icon name={label.icon as IconName} size={14} color="#fff" />
-          ) : (
-            <span className="font-mono text-[10px]">
-              {label.displayName.slice(0, 2).toUpperCase()}
-            </span>
-          )}
-        </span>
+        {isPhoto ? (
+          // Direct <img> — we want the colour-tinted swatch to
+          // disappear when there's a real photo (the photo is the
+          // visual itself, not a glyph on top of a colour chip).
+          <img
+            src={`/api/avatars/${resolvedAvatar}`}
+            alt=""
+            className="h-7 w-7 rounded-full object-cover"
+          />
+        ) : (
+          <span
+            className="flex h-7 w-7 items-center justify-center rounded-full"
+            style={{ background: label.color ?? "#7A7060", color: "#fff" }}
+          >
+            {iconName ? (
+              <Icon name={iconName} size={14} color="#fff" />
+            ) : (
+              <span className="font-mono text-[10px]">
+                {label.displayName.slice(0, 2).toUpperCase()}
+              </span>
+            )}
+          </span>
+        )}
         <span className="truncate text-sm">{label.displayName}</span>
         {label.system && <span className="cap">default</span>}
       </div>
@@ -2002,24 +2027,29 @@ const LabelEditor = ({
   onCancel,
   onSave,
 }: {
-  initial: { displayName: string; color: string; icon: string | null };
+  initial: { displayName: string; color: string; avatarId: string | null };
   isNew: boolean;
   onCancel: () => void;
-  onSave: (patch: { displayName: string; color: string; icon: string | null }) => Promise<void>;
+  onSave: (patch: {
+    displayName: string;
+    color: string;
+    avatarId: string | null;
+  }) => Promise<void>;
 }) => {
   const [name, setName] = useState(initial.displayName);
   const [color, setColor] = useState(initial.color);
-  const [icon, setIcon] = useState<string | null>(initial.icon);
+  const [avatarId, setAvatarId] = useState<string | null>(initial.avatarId);
   const [busy, setBusy] = useState(false);
   const submit = async () => {
     if (!name.trim()) return;
     setBusy(true);
     try {
-      await onSave({ displayName: name.trim(), color, icon });
+      await onSave({ displayName: name.trim(), color, avatarId });
     } finally {
       setBusy(false);
     }
   };
+  const isPhoto = avatarId !== null && !avatarId.startsWith("icon:");
   return (
     <div className="border-t border-line-soft py-3">
       <div className="flex flex-wrap items-center gap-2 text-xs">
@@ -2038,8 +2068,60 @@ const LabelEditor = ({
         />
       </div>
       <div className="mt-2">
-        <span className="cap mb-1 block">Icon</span>
-        <IconPicker value={icon} onChange={setIcon} />
+        <span className="cap mb-1 block">Avatar</span>
+        {/* Same icon-grid + photo-upload pattern UserRowEditor uses,
+            so labels feel like first-class avatar citizens alongside
+            users / tasks / homes. The reset (↺) tile clears back to
+            display-name initials. */}
+        <div className="grid grid-cols-10 gap-1">
+          <button
+            type="button"
+            title="Initials only"
+            onClick={() => setAvatarId(null)}
+            className={`flex h-7 w-7 items-center justify-center rounded-md border text-[10px] ${
+              avatarId === null
+                ? "border-ink bg-paper-3 text-ink"
+                : "border-line text-ink-3 hover:border-ink"
+            }`}
+          >
+            ↺
+          </button>
+          {LABEL_ICON_CHOICES.map((iconName) => {
+            const id = `icon:${iconName}`;
+            const active = avatarId === id;
+            return (
+              <button
+                key={iconName}
+                type="button"
+                title={iconName}
+                onClick={() => setAvatarId(id)}
+                className={`flex h-7 w-7 items-center justify-center rounded-md border ${
+                  active
+                    ? "border-ink bg-paper-3 text-ink"
+                    : "border-line text-ink-3 hover:border-ink hover:text-ink"
+                }`}
+              >
+                <Icon name={iconName} size={16} />
+              </button>
+            );
+          })}
+          <AvatarUploadButton
+            variant="tile"
+            onUploaded={(id) => setAvatarId(id)}
+          />
+        </div>
+        {isPhoto && (
+          <p className="cap mt-1">
+            Photo uploaded.{" "}
+            <button
+              type="button"
+              onClick={() => setAvatarId(null)}
+              className="underline hover:text-ink"
+            >
+              Remove
+            </button>
+          </p>
+        )}
       </div>
       <div className="mt-2 flex justify-end gap-2">
         <Btn variant="ghost" size="pillSm" onClick={onCancel} disabled={busy}>

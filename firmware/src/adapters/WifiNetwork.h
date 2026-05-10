@@ -47,6 +47,8 @@ public:
     NetResult checkFirmwareUpdate(
         const std::string& currentVersion,
         howler::domain::UpdateAdvisory& outAdvisory) override;
+    NetResult fetchHomeIdentity(
+        howler::domain::HomeIdentity& outIdentity) override;
 
 private:
     const char* backendUrl_;

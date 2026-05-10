@@ -6,6 +6,7 @@
 // test/test_*).
 
 #include "../domain/DashboardItem.h"
+#include "../domain/HomeIdentity.h"
 #include "../domain/MarkDoneDraft.h"
 #include "../domain/Occurrence.h"
 #include "../domain/PairState.h"
@@ -125,6 +126,18 @@ public:
     virtual NetResult checkFirmwareUpdate(
         const std::string& /*currentVersion*/,
         howler::domain::UpdateAdvisory& /*outAdvisory*/) {
+        return NetResult::transient(0);
+    }
+
+    /// Avatar sweep — fetch the home's identity (display name +
+    /// avatar id + tz). Surfaced on the Settings → About card so the
+    /// device renders the household name + avatar instead of just a
+    /// hex device-id tail. Backed by GET /api/homes/me on the
+    /// server. Default returns transient so host stubs that don't
+    /// override see "no identity" and the screen renders fallback
+    /// text (matches the pre-avatar look on legacy Worker deploys).
+    virtual NetResult fetchHomeIdentity(
+        howler::domain::HomeIdentity& /*outIdentity*/) {
         return NetResult::transient(0);
     }
 };

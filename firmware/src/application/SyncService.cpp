@@ -154,6 +154,21 @@ void SyncService::runRound() {
         }
     }
 
+    // 5. Home identity (display_name + avatarId + tz). Tiny payload,
+    //    rarely changes — we still refresh on every full round so a
+    //    rename / avatar swap from the webapp shows up on the device
+    //    within one sync cycle. Failure is non-fatal: we keep the
+    //    cached identity if any (the screen falls back to deviceId
+    //    tail when displayName is empty).
+    {
+        howler::domain::HomeIdentity next;
+        const auto r = net_.fetchHomeIdentity(next);
+        if (r.isOk()) {
+            homeIdentity_ = std::move(next);
+            anyOk = true;
+        }
+    }
+
     if (anyOk) {
         watermark_.lastFullSync = clock_.nowEpochSeconds();
     }

@@ -339,4 +339,22 @@ howler::application::NetResult WifiNetwork::peekHomeCounter(int64_t& outCounter)
     return r;
 }
 
+howler::application::NetResult WifiNetwork::fetchHomeIdentity(
+    howler::domain::HomeIdentity& outIdentity) {
+    // Reset to defaults so a partial parse fails closed (the screen
+    // layer renders a fallback when displayName is empty).
+    outIdentity = {};
+    String body;
+    auto r = doGet("/api/homes/me", body);
+    if (!r.isOk()) return r;
+    JsonDocument doc;
+    if (deserializeJson(doc, body))
+        return howler::application::NetResult::transient();
+    outIdentity.id          = doc["id"]          | "";
+    outIdentity.displayName = doc["displayName"] | "";
+    outIdentity.avatarId    = doc["avatarId"]    | "";
+    outIdentity.tz          = doc["tz"]          | "";
+    return r;
+}
+
 }  // namespace howler::adapters

@@ -43,6 +43,36 @@ export const homesRouter = new Hono<{
 }>()
   .route("/peek", peekRouter)
 
+  // GET /api/homes/me — device-or-user readable home identity.
+  // Mounted BEFORE the requireUser wall below so a device token
+  // can fetch home_display_name + avatarId for its Settings →
+  // About header. The PATCH /me handler on the same path is
+  // user-only (requireUser) — Hono dispatches by HTTP method, so
+  // GET hits this handler, PATCH hits the user-gated one below.
+  .get("/me", requireAuth(), markDeviceAlive(), async (c) => {
+    const homeId = c.get("auth").homeId;
+    const row = await c.env.DB
+      .prepare(
+        `SELECT id, display_name, avatar_id, tz
+         FROM homes
+         WHERE id = ? AND is_deleted = 0`,
+      )
+      .bind(homeId)
+      .first<{
+        id: string;
+        display_name: string;
+        avatar_id: string | null;
+        tz: string;
+      }>();
+    if (!row) return c.json({ error: "not-found" }, 404);
+    return c.json({
+      id: row.id,
+      displayName: row.display_name,
+      avatarId: row.avatar_id,
+      tz: row.tz,
+    });
+  })
+
   .use("*", requireAuth(), requireUser())
 
   .patch("/me", zValidator("json", UpdateHome), async (c) => {

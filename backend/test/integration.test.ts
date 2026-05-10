@@ -16,6 +16,7 @@ import init0010 from "../migrations/0010_icons.sql?raw";
 import init0012 from "../migrations/0012_update_counter.sql?raw";
 import init0013 from "../migrations/0013_firmware_releases.sql?raw";
 import init0014 from "../migrations/0014_user_admin.sql?raw";
+import init0015 from "../migrations/0015_label_avatars.sql?raw";
 
 import { applyMigrationSql } from "./helpers/migrations.ts";
 
@@ -28,7 +29,7 @@ const applyMigrations = async () => {
   await applyMigrationSql(env.DB, [
     init0000, init0001, init0002, init0003, init0004, init0005,
     init0006, init0007, init0008, init0009, init0010, init0012,
-    init0013, init0014,
+    init0013, init0014, init0015,
   ]);
 };
 
@@ -2429,5 +2430,275 @@ describe("icons (24×24 1-bit bitmaps)", () => {
       headers: { authorization: `Bearer ${token}` },
     });
     expect(r.status).toBe(404);
+  });
+});
+
+// ── Labels avatar — unified avatar_id format (migration 0015) ─────
+//
+// Pre-migration, labels held a bare icon name in `icon` (e.g. "paw").
+// Tasks inherited by prefixing "icon:" at insert time. After 0015,
+// labels store the unified format directly in `avatar_id`. Tests
+// cover:
+//   1. Manual seed of a legacy label with `icon='paw'` is read back
+//      as `avatarId='icon:paw'` (backfill works for older homes that
+//      didn't get touched by the migration's UPDATE pass).
+//   2. POST /api/labels with avatarId stores it verbatim.
+//   3. POST /api/labels with legacy `icon` field still works
+//      (backwards compat for old SPA bundles in the wild).
+//   4. PATCH that touches displayName only DOESN'T blow away the
+//      avatar_id (regression guard against the COALESCE form that
+//      was wrong in the pre-0015 patch path).
+//   5. Task creation inherits the unified label avatarId, including
+//      uploaded-photo UUID avatars.
+describe("labels — avatar_id unification (migration 0015)", () => {
+  let nextIp = 800;
+  const newHome = async () => {
+    const ip = `10.0.20.${nextIp++}`;
+    const r = await SELF.fetch("https://t/api/auth/quick-setup", {
+      method: "POST",
+      headers: { "content-type": "application/json", "cf-connecting-ip": ip },
+      body: "{}",
+    });
+    const body = (await json(r)) as {
+      token: string;
+      homeId: string;
+      userId: string;
+    };
+    return body;
+  };
+
+  it("legacy 'paw' rows are surfaced as avatarId='icon:paw'", async () => {
+    const { token, homeId } = await newHome();
+    // Insert a label with the legacy `icon` column populated — mimics
+    // a row that existed before migration 0015 ran (the migration's
+    // UPDATE pass would have set avatar_id, but homes created later
+    // can also hit this path if a route writes only `icon`).
+    const labelId = "abcd1234abcd1234abcd1234abcd1234";
+    const nowSec = Math.floor(Date.now() / 1000);
+    await env.DB
+      .prepare(
+        `INSERT INTO labels (id, home_id, display_name, color, icon, avatar_id,
+                             system, sort_order, created_at, updated_at, is_deleted)
+         VALUES (?, ?, 'Pets', '#7A7060', 'paw', NULL, 0, 100, ?, ?, 0)`,
+      )
+      .bind(labelId, homeId, nowSec, nowSec)
+      .run();
+
+    const r = await SELF.fetch("https://t/api/labels", {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    const body = (await json(r)) as {
+      labels: Array<{ id: string; avatarId: string | null; icon: string | null }>;
+    };
+    const lbl = body.labels.find((l) => l.id === labelId);
+    expect(lbl).toBeDefined();
+    expect(lbl!.avatarId).toBe("icon:paw");
+    // Legacy `icon` field still surfaced for backwards compat.
+    expect(lbl!.icon).toBe("paw");
+  });
+
+  it("POST with avatarId stores it verbatim and returns it on the DTO", async () => {
+    const { token } = await newHome();
+    const r = await SELF.fetch("https://t/api/labels", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        displayName: "Garden",
+        color: "#6E8A5C",
+        avatarId: "icon:plant",
+      }),
+    });
+    expect(r.status).toBe(201);
+    const body = (await json(r)) as { id: string; avatarId: string; icon: string };
+    expect(body.avatarId).toBe("icon:plant");
+    // The legacy `icon` field is also populated for old-client compat.
+    expect(body.icon).toBe("plant");
+  });
+
+  it("POST with a UUID avatarId (uploaded photo) is preserved through GET", async () => {
+    const { token } = await newHome();
+    const photoId = "ff".repeat(16); // 32 hex
+    const create = await SELF.fetch("https://t/api/labels", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        displayName: "Family",
+        color: "#B25A55",
+        avatarId: photoId,
+      }),
+    });
+    expect(create.status).toBe(201);
+
+    const list = await SELF.fetch("https://t/api/labels", {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    const body = (await json(list)) as {
+      labels: Array<{ displayName: string; avatarId: string | null; icon: string | null }>;
+    };
+    const family = body.labels.find((l) => l.displayName === "Family");
+    expect(family!.avatarId).toBe(photoId);
+    // No `icon:` prefix → legacy field stays null. Old clients fall
+    // back to displayName initials, matching the photo-on-newer-
+    // surfaces vs. text-on-old-surfaces split.
+    expect(family!.icon).toBeNull();
+  });
+
+  it("PATCH touching only displayName preserves the existing avatar", async () => {
+    const { token } = await newHome();
+    const create = await SELF.fetch("https://t/api/labels", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        displayName: "Garden",
+        avatarId: "icon:plant",
+      }),
+    });
+    const { id } = (await json(create)) as { id: string };
+
+    // Rename only — the avatar should survive.
+    const patch = await SELF.fetch(`https://t/api/labels/${id}`, {
+      method: "PATCH",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ displayName: "Outdoor" }),
+    });
+    expect(patch.status).toBe(204);
+
+    const list = await SELF.fetch("https://t/api/labels", {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    const body = (await json(list)) as {
+      labels: Array<{ id: string; displayName: string; avatarId: string | null }>;
+    };
+    const lbl = body.labels.find((l) => l.id === id)!;
+    expect(lbl.displayName).toBe("Outdoor");
+    expect(lbl.avatarId).toBe("icon:plant");
+  });
+
+  it("task inheritance copies the label's UUID avatar verbatim (no icon: prefix)", async () => {
+    const { token } = await newHome();
+    const photoId = "11".repeat(16);
+    const labelRes = await SELF.fetch("https://t/api/labels", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ displayName: "Family", avatarId: photoId }),
+    });
+    const { id: labelId } = (await json(labelRes)) as { id: string };
+
+    const taskRes = await SELF.fetch("https://t/api/tasks", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+      },
+      // Don't pass avatarId — exercise the inheritance path.
+      body: JSON.stringify({
+        title: "Family dinner",
+        kind: "DAILY",
+        times: ["18:00"],
+        labelId,
+      }),
+    });
+    expect(taskRes.status).toBe(201);
+    const task = (await json(taskRes)) as { avatarId: string };
+    // Inherited verbatim — no spurious icon: prefix on a UUID.
+    expect(task.avatarId).toBe(photoId);
+  });
+});
+
+// ── Home identity — GET /api/homes/me for both user + device ──────
+describe("GET /api/homes/me — device-readable home identity", () => {
+  let nextIp = 850;
+  const newHome = async () => {
+    const ip = `10.0.30.${nextIp++}`;
+    const r = await SELF.fetch("https://t/api/auth/quick-setup", {
+      method: "POST",
+      headers: { "content-type": "application/json", "cf-connecting-ip": ip },
+      body: "{}",
+    });
+    return (await json(r)) as { token: string; homeId: string };
+  };
+
+  it("returns home identity for a user token", async () => {
+    const { token, homeId } = await newHome();
+    const r = await SELF.fetch("https://t/api/homes/me", {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(r.status).toBe(200);
+    const body = (await json(r)) as {
+      id: string;
+      displayName: string;
+      avatarId: string | null;
+      tz: string;
+    };
+    expect(body.id).toBe(homeId);
+    expect(typeof body.displayName).toBe("string");
+    expect(body.tz).toBe("UTC");
+  });
+
+  it("returns home identity for a device token (paired devices read this for the About card)", async () => {
+    // Mint a device token for an existing home. The pairing flow
+    // is covered elsewhere; here we shortcut via the auth helper to
+    // exercise the requireAuth-but-not-requireUser path on /homes/me.
+    const { homeId } = await newHome();
+    const nowSec = Math.floor(Date.now() / 1000);
+    const deviceId = "dd".repeat(16);
+    await env.DB
+      .prepare(
+        `INSERT INTO devices (id, home_id, serial, fw_version, hw_model,
+                              last_seen_at, created_at, updated_at, is_deleted)
+         VALUES (?, ?, 'serial-test', '0.4.0', 'crowpanel', ?, ?, ?, 0)`,
+      )
+      .bind(deviceId, homeId, nowSec, nowSec, nowSec)
+      .run();
+
+    const { issueDeviceToken } = await import("../src/auth.ts");
+    const secret = (env as unknown as { AUTH_SECRET: string }).AUTH_SECRET;
+    const deviceToken = await issueDeviceToken(homeId, deviceId, secret);
+
+    const r = await SELF.fetch("https://t/api/homes/me", {
+      headers: { authorization: `Bearer ${deviceToken}` },
+    });
+    expect(r.status).toBe(200);
+    const body = (await json(r)) as { id: string };
+    expect(body.id).toBe(homeId);
+  });
+
+  it("surfaces avatarId after the home avatar is set", async () => {
+    const { token, homeId } = await newHome();
+    // Stamp avatar_id directly — the upload + PATCH /homes/me path
+    // is covered in the avatars suite. Here we just verify the GET
+    // surfaces it.
+    const avatarId = "ee".repeat(16);
+    await env.DB
+      .prepare("UPDATE homes SET avatar_id = ? WHERE id = ?")
+      .bind(avatarId, homeId)
+      .run();
+
+    const r = await SELF.fetch("https://t/api/homes/me", {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(r.status).toBe(200);
+    const body = (await json(r)) as { avatarId: string | null };
+    expect(body.avatarId).toBe(avatarId);
+  });
+
+  it("requires authentication", async () => {
+    const r = await SELF.fetch("https://t/api/homes/me");
+    expect(r.status).toBe(401);
   });
 });

@@ -2,6 +2,7 @@
 
 #include "../../src/application/SyncService.h"
 #include "../../src/domain/DashboardModel.h"
+#include "../../src/domain/HomeIdentity.h"
 #include "../../src/domain/OccurrenceList.h"
 #include "../../src/domain/SyncWatermark.h"
 #include "stubs.h"
@@ -9,12 +10,90 @@
 using howler::application::SyncService;
 using howler::domain::DashboardItem;
 using howler::domain::DashboardModel;
+using howler::domain::HomeIdentity;
 using howler::domain::OccurrenceList;
 using howler::domain::ResultType;
 using howler::domain::SyncWatermark;
 using howler::domain::User;
 using howler::testing::StubClock;
 using howler::testing::StubNetwork;
+
+void test_sync_populates_home_identity_on_full_round() {
+    // Avatar sweep: every full sync round refreshes the cached
+    // HomeIdentity so the device's Settings → About card reflects
+    // server-side renames / avatar swaps within one sync cycle.
+    StubClock clock;
+    clock.setMs(1'000'000);
+    StubNetwork net;
+    net.setOnline(true);
+
+    HomeIdentity hi;          // reference passed into SyncService
+    DashboardModel dash;
+    DashboardModel allTasks;
+    OccurrenceList occ;
+    std::vector<User> users;
+    std::vector<ResultType> types;
+    SyncWatermark wm;
+
+    // Seed the stub network's "next identity" — the round's
+    // fetchHomeIdentity() will copy this into the reference.
+    net.nextHomeIdentity_.id = "home-32-hex-id";
+    net.nextHomeIdentity_.displayName = "The Smiths";
+    net.nextHomeIdentity_.avatarId = "icon:home";
+    net.nextHomeIdentity_.tz = "America/Los_Angeles";
+    net.dashboardResults_  = { howler::application::NetResult::ok() };
+    net.userResults_       = { howler::application::NetResult::ok() };
+    net.resultTypeResults_ = { howler::application::NetResult::ok() };
+    net.pendingResults_    = { howler::application::NetResult::ok() };
+
+    SyncService s(net, clock, occ, dash, allTasks, users, types, wm, hi);
+    s.requestSync();
+    s.tick();
+
+    TEST_ASSERT_EQUAL(1, net.homeIdentityCalls_);
+    TEST_ASSERT_EQUAL_STRING("The Smiths", hi.displayName.c_str());
+    TEST_ASSERT_EQUAL_STRING("icon:home",  hi.avatarId.c_str());
+    TEST_ASSERT_EQUAL_STRING("America/Los_Angeles", hi.tz.c_str());
+}
+
+void test_sync_keeps_cached_identity_on_fetch_failure() {
+    // Failure path: the dashboard / users / types / pending fetches
+    // succeed but fetchHomeIdentity returns transient. The cached
+    // HomeIdentity from a previous successful round (or the empty
+    // default) MUST stay intact — we never want a network blip to
+    // erase the home name from the About screen.
+    StubClock clock;
+    clock.setMs(1'000'000);
+    StubNetwork net;
+    net.setOnline(true);
+
+    HomeIdentity hi;
+    hi.displayName = "The Smiths";    // pre-populated cache
+    hi.avatarId    = "icon:home";
+
+    DashboardModel dash;
+    DashboardModel allTasks;
+    OccurrenceList occ;
+    std::vector<User> users;
+    std::vector<ResultType> types;
+    SyncWatermark wm;
+
+    net.dashboardResults_     = { howler::application::NetResult::ok() };
+    net.userResults_          = { howler::application::NetResult::ok() };
+    net.resultTypeResults_    = { howler::application::NetResult::ok() };
+    net.pendingResults_       = { howler::application::NetResult::ok() };
+    net.homeIdentityResults_  = { howler::application::NetResult::transient(503) };
+
+    SyncService s(net, clock, occ, dash, allTasks, users, types, wm, hi);
+    s.requestSync();
+    s.tick();
+
+    TEST_ASSERT_EQUAL(1, net.homeIdentityCalls_);
+    // Cache survived — the screen will keep rendering "The Smiths"
+    // through the next round's retry.
+    TEST_ASSERT_EQUAL_STRING("The Smiths", hi.displayName.c_str());
+    TEST_ASSERT_EQUAL_STRING("icon:home",  hi.avatarId.c_str());
+}
 
 void test_sync_no_op_when_offline() {
     StubClock clock;
@@ -26,7 +105,8 @@ void test_sync_no_op_when_offline() {
     std::vector<ResultType> types;
     SyncWatermark wm;
     DashboardModel allTasks;
-    SyncService s(net, clock, occ, dash, allTasks, users, types, wm);
+    HomeIdentity hi;
+    SyncService s(net, clock, occ, dash, allTasks, users, types, wm, hi);
     s.tick();
     TEST_ASSERT_EQUAL_size_t(0, dash.size());
     TEST_ASSERT_FALSE(s.lastSyncOk());
@@ -73,7 +153,8 @@ void test_sync_replaces_dashboard_users_result_types() {
     std::vector<ResultType> types;
     SyncWatermark wm;
     DashboardModel allTasks;
-    SyncService s(net, clock, occ, dash, allTasks, users, types, wm);
+    HomeIdentity hi;
+    SyncService s(net, clock, occ, dash, allTasks, users, types, wm, hi);
     s.requestSync();
     s.tick();
 
@@ -101,7 +182,8 @@ void test_sync_respects_interval() {
     std::vector<ResultType> types;
     SyncWatermark wm;
     DashboardModel allTasks;
-    SyncService s(net, clock, occ, dash, allTasks, users, types, wm);
+    HomeIdentity hi;
+    SyncService s(net, clock, occ, dash, allTasks, users, types, wm, hi);
     s.setIntervalMs(1000);
     s.requestSync();  // unblocks the first tick
     s.tick();
@@ -130,8 +212,9 @@ struct SyncFixture {
     std::vector<ResultType> types;
     SyncWatermark wm;
     DashboardModel allTasks;
+    HomeIdentity hi;
     SyncService s = SyncService(
-        net, clock, occ, dash, allTasks, users, types, wm);
+        net, clock, occ, dash, allTasks, users, types, wm, hi);
 
     void queueFullRound() {
         net.dashboardResults_.push_back(
