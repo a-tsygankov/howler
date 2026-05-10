@@ -21,13 +21,27 @@
 
 const CSP = [
   "default-src 'self'",
-  "script-src 'self'",
+  // 'wasm-unsafe-eval' lets the browser instantiate WebAssembly
+  // modules (onnxruntime-web inside @imgly/background-removal). The
+  // flag is not equivalent to 'unsafe-eval' — it allows ONLY
+  // `WebAssembly.instantiate()` / `compile()` calls, not arbitrary
+  // JS eval. Required for client-side ML; without it the avatar
+  // editor's "remove background" toggle fails on first run.
+  "script-src 'self' 'wasm-unsafe-eval'",
   "style-src 'self' 'unsafe-inline'",
   "font-src 'self' https://fonts.gstatic.com",
+  // data:/blob: covers Worker-spawned model fetches that load via
+  // ObjectURL. The avatar editor's bg-removal Web Worker also
+  // creates blob: URLs for OffscreenCanvas → ImageBitmap handoffs.
   "img-src 'self' data: blob:",
-  "connect-src 'self'",
+  // staticimgly.com hosts the @imgly/background-removal model +
+  // WASM runtime files. They're cached aggressively in the
+  // browser HTTP cache after first download, so the third-party
+  // hop is one-time per browser. If we self-host the models in
+  // R2 later, this entry can drop back to 'self'.
+  "connect-src 'self' https://staticimgly.com",
   "manifest-src 'self'",
-  "worker-src 'self'",
+  "worker-src 'self' blob:",
   "frame-ancestors 'none'",
   "base-uri 'self'",
   "form-action 'self'",

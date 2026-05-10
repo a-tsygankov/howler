@@ -17,6 +17,32 @@ export default defineConfig({
         "icons/favicon-32.png",
         "icons/favicon-48.png",
       ],
+      workbox: {
+        // The avatar editor lazy-imports @imgly/background-removal,
+        // which pulls in onnxruntime-web's ~400 KB JS shim + a
+        // 24 MB WASM binary. None of it should be in the offline
+        // precache — bg removal is opt-in, and the bytes are
+        // already streamed lazily on first toggle. Excluding them
+        // from precache keeps the PWA install footprint at the
+        // ~380 KB baseline instead of bloating to multi-MB.
+        globIgnores: [
+          // The 24 MB WASM model runtime — unconditionally too big
+          "**/ort-wasm*.wasm",
+          "**/ort-wasm*.mjs",
+          "**/onnxruntime-web*.wasm",
+          // The onnxruntime-web JS shim (CPU + WebGPU variants,
+          // ~400 KB each). Vite emits these as separate chunks the
+          // dynamic import already code-splits — no point shipping
+          // them in the precache when they're only fetched by the
+          // editor's bg-removal toggle.
+          "**/ort.bundle.min-*",
+          "**/ort.webgpu.bundle.min-*",
+        ],
+        // Keep the precache cap at 2 MiB (Workbox default) so a
+        // future heavy-asset slip-up trips this same error and we
+        // get to make a deliberate decision instead of bloating
+        // the install footprint.
+      },
       manifest: {
         name: "Howler",
         short_name: "Howler",

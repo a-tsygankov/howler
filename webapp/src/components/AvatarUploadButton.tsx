@@ -1,28 +1,34 @@
-// Shared photo-upload trigger for the home / user / task avatar
-// editors. Renders as a labelled file picker (the <input type="file">
-// is hidden; the surrounding <label> is the click target so the
-// styling matches the icon-preset buttons next to it).
+// Shared photo-upload trigger for the home / user / task / label
+// avatar editors. Renders as a labelled file picker (the
+// <input type="file"> is hidden; the surrounding <label> is the
+// click target so the styling matches the icon-preset buttons next
+// to it).
 //
-// Why a dedicated component, not inline JSX in each editor: the three
-// call sites (HomeAvatarTile, UserRowEditor, TaskAvatarPicker) had
-// drifting copies of the same upload + busy + error logic — extracting
-// it locks down the rejection-message UX and makes it trivial to add
-// shared niceties (size validation pre-upload, drag-and-drop later).
+// On file pick we DON'T upload immediately. Instead we open
+// AvatarEditor — a client-side processing sheet that:
 //
-// The caller hands us `onUploaded(avatarId)` and decides what to do
-// with the new id (commit to the home, stage on a draft, etc).
-// Errors are surfaced inline as a tiny red caption — the upload
-// endpoint returns 413 / 415 / 400 with self-descriptive messages
-// (see backend/src/routes/avatars.ts), so we relay verbatim.
+//   1. decodes the image
+//   2. optionally removes the background (lazy-loaded ML)
+//   3. resizes to 512×512 + encodes WebP
+//   4. shows a preview before commit
+//
+// Only the FINAL processed Blob round-trips to the Worker; the
+// 2-5 MB phone-camera original never touches the network. EXIF is
+// stripped as a side-effect of the canvas re-encode (privacy).
+//
+// The caller hands us `onUploaded(avatarId)` and decides what to
+// do with the new id (commit to the home, stage on a draft, etc).
 
 import { type ReactNode, useId, useState } from "react";
 import { uploadAvatar } from "../lib/api";
+import { AvatarEditor } from "./AvatarEditor";
 
-// Mirrors backend/src/routes/avatars.ts: 2 MB cap, JPEG / PNG / WebP
-// only. Validating client-side avoids a 2-MB upload + 413 round-trip
-// when the user picks a phone-camera-sized image.
-const MAX_AVATAR_BYTES = 2 * 1024 * 1024;
-const ALLOWED_AVATAR_MIME = new Set([
+// Source-side cap before the editor downscales. 8 MB covers a
+// typical phone-camera HEIC/JPEG; the editor's WebP output is
+// ~30-100 KB regardless. Hard cap exists so a runaway 50 MB drag-
+// and-drop doesn't OOM the in-memory decode step.
+const MAX_SOURCE_BYTES = 8 * 1024 * 1024;
+const ALLOWED_SOURCE_MIME = new Set([
   "image/jpeg",
   "image/png",
   "image/webp",
@@ -52,80 +58,79 @@ export const AvatarUploadButton = ({
   label,
   disabled = false,
 }: AvatarUploadButtonProps) => {
-  const [busy, setBusy] = useState(false);
+  const [editorFile, setEditorFile] = useState<File | null>(null);
   const [error, setError] = useState<string | null>(null);
   const id = useId();
-  const onPick = async (e: React.ChangeEvent<HTMLInputElement>) => {
+
+  const onPick = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
+    // Always reset the input so re-picking the same file fires
+    // onChange again. Without this, pick → close-editor → re-pick-
+    // same is a silent no-op.
+    e.target.value = "";
     if (!file) return;
-    // Pre-upload validation — fail fast instead of round-tripping the
-    // bytes only to be told 413 / 415 by the server. The error
-    // strings match what the backend would return, just delivered
-    // before the bandwidth hit.
-    if (!ALLOWED_AVATAR_MIME.has(file.type)) {
+    if (!ALLOWED_SOURCE_MIME.has(file.type)) {
       setError("only jpeg/png/webp");
-      e.target.value = "";
       return;
     }
-    if (file.size > MAX_AVATAR_BYTES) {
+    if (file.size > MAX_SOURCE_BYTES) {
       setError(
-        `max ${fmtBytes(MAX_AVATAR_BYTES)} (got ${fmtBytes(file.size)})`,
+        `max ${fmtBytes(MAX_SOURCE_BYTES)} (got ${fmtBytes(file.size)})`,
       );
-      e.target.value = "";
       return;
     }
-    setBusy(true);
     setError(null);
+    setEditorFile(file);
+  };
+
+  const handleSave = async (processedFile: File) => {
     try {
-      const { id: avatarId } = await uploadAvatar(file);
+      const { id: avatarId } = await uploadAvatar(processedFile);
       onUploaded(avatarId);
+      setEditorFile(null);
     } catch (err) {
-      // The api helper throws Error objects whose `message` carries
-      // the server's JSON `error` field. 413 → "max 2097152 bytes",
-      // 415 → "only jpeg/png/webp", 400 → "file field required".
       const msg = err instanceof Error ? err.message : String(err);
       setError(msg);
       console.warn("avatar upload failed", err);
-    } finally {
-      setBusy(false);
-      // Clear the input so re-picking the same file fires onChange
-      // again. Without this, picking → cancelling → re-picking the
-      // same file is a silent no-op.
-      e.target.value = "";
+      // Keep the editor open so the user can retry without
+      // re-running the pipeline.
     }
   };
 
   const buttonClass =
     variant === "tile"
-      ? `flex h-7 w-7 items-center justify-center rounded-md border text-[12px] ${
-          busy
-            ? "border-line-soft text-ink-3"
-            : "border-line text-ink-3 hover:border-ink hover:text-ink"
-        }`
-      : `inline-flex items-center gap-2 rounded-md border border-line-soft bg-paper-2 px-2.5 py-1 text-xs text-ink transition-colors ${
-          busy ? "opacity-60" : "hover:border-line"
-        }`;
+      ? `flex h-7 w-7 items-center justify-center rounded-md border text-[12px] border-line text-ink-3 hover:border-ink hover:text-ink`
+      : `inline-flex items-center gap-2 rounded-md border border-line-soft bg-paper-2 px-2.5 py-1 text-xs text-ink transition-colors hover:border-line`;
 
   return (
-    <div className={variant === "tile" ? "" : "flex flex-col gap-1"}>
-      <label
-        htmlFor={id}
-        className={`${buttonClass} ${disabled || busy ? "cursor-wait" : "cursor-pointer"}`}
-        title="Upload a photo (JPEG, PNG, or WebP, up to 2 MB)"
-      >
-        <input
-          id={id}
-          type="file"
-          accept="image/jpeg,image/png,image/webp"
-          onChange={onPick}
-          disabled={disabled || busy}
-          className="hidden"
+    <>
+      <div className={variant === "tile" ? "" : "flex flex-col gap-1"}>
+        <label
+          htmlFor={id}
+          className={`${buttonClass} ${disabled ? "cursor-wait" : "cursor-pointer"}`}
+          title="Upload a photo (JPEG, PNG, or WebP)"
+        >
+          <input
+            id={id}
+            type="file"
+            accept="image/jpeg,image/png,image/webp"
+            onChange={onPick}
+            disabled={disabled}
+            className="hidden"
+          />
+          {label ?? (variant === "tile" ? "📷" : "Upload photo")}
+        </label>
+        {error && variant !== "tile" && (
+          <p className="text-[11px] text-accent-rose">{error}</p>
+        )}
+      </div>
+      {editorFile && (
+        <AvatarEditor
+          file={editorFile}
+          onSave={handleSave}
+          onCancel={() => setEditorFile(null)}
         />
-        {busy ? "…" : (label ?? (variant === "tile" ? "📷" : "Upload photo"))}
-      </label>
-      {error && variant !== "tile" && (
-        <p className="text-[11px] text-accent-rose">{error}</p>
       )}
-    </div>
+    </>
   );
 };
