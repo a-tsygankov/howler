@@ -219,7 +219,9 @@ export const Dashboard = ({ session, onLogout, view }: Props) => {
       <Header
         homeName={me.data?.homeDisplayName ?? "Howler"}
         homeAvatarId={me.data?.homeAvatarId ?? null}
+        userId={session.userId}
         userName={me.data?.userDisplayName}
+        userAvatarId={me.data?.userAvatarId ?? null}
         userIdSlug={session.userId.slice(0, 8)}
         onAvatarChanged={() => qc.invalidateQueries({ queryKey: ["me"] })}
         onHomeRenamed={() => qc.invalidateQueries({ queryKey: ["me"] })}
@@ -482,7 +484,9 @@ export const Dashboard = ({ session, onLogout, view }: Props) => {
 const Header = ({
   homeName,
   homeAvatarId,
+  userId,
   userName,
+  userAvatarId,
   userIdSlug,
   onAvatarChanged,
   onHomeRenamed,
@@ -491,7 +495,9 @@ const Header = ({
 }: {
   homeName: string;
   homeAvatarId: string | null;
+  userId: string;
   userName: string | undefined;
+  userAvatarId: string | null;
   userIdSlug: string;
   onAvatarChanged: () => void;
   onHomeRenamed: () => void;
@@ -514,14 +520,24 @@ const Header = ({
           onChanged={onAvatarChanged}
           seed={homeName}
         />
+        {/* Logged-in user avatar — clicks log out, hover shows the
+            user's display name as a tooltip. Replaces the previous
+            text-only ⏻ glyph; the avatar is recognisable at a glance
+            and the logout intent stays implicit (matches the
+            convention every webapp's profile-corner uses). */}
         <button
           type="button"
           onClick={onLogout}
-          className="ml-1 rounded-full border border-line px-2 py-1 text-[11px] text-ink-3 hover:bg-paper-2"
+          className="ml-1 rounded-full ring-1 ring-line-soft transition-shadow hover:ring-line"
           title={`Log out ${userName ?? userIdSlug}`}
-          aria-label="Log out"
+          aria-label={`Log out ${userName ?? userIdSlug}`}
         >
-          ⏻
+          <HowlerAvatar
+            avatarId={userAvatarId}
+            seed={userId}
+            initials={(userName ?? userIdSlug).slice(0, 2).toUpperCase()}
+            size={32}
+          />
         </button>
       </div>
     </header>
@@ -940,21 +956,46 @@ const CompleteTaskSheet = ({
       )}
 
       {multiUser && (
-        <label className="mt-4 block">
-          <div className="cap mb-1">Completed by</div>
-          <select
-            value={actorId}
-            onChange={(e) => setActorId(e.target.value)}
-            className="w-full rounded-md border border-line bg-paper-2 px-3 py-2 text-sm focus:border-ink focus:outline-none"
-          >
-            {users.map((u) => (
-              <option key={u.id} value={u.id}>
-                {u.displayName}
-                {u.id === sessionUserId ? " (you)" : ""}
-              </option>
-            ))}
-          </select>
-        </label>
+        <div className="mt-4">
+          <div className="cap mb-1.5">Completed by</div>
+          {/* Visual picker over the previous text-only <select>:
+              each user is a tappable chip showing their avatar +
+              name. Better for shared-device flows where the actor
+              changes frequently — recognising "the kid's avatar"
+              is faster than reading display names down a dropdown.
+              flex-wrap handles wide rosters (rare; most homes are
+              2–4 members). */}
+          <div className="flex flex-wrap gap-1.5">
+            {users.map((u) => {
+              const active = u.id === actorId;
+              return (
+                <button
+                  key={u.id}
+                  type="button"
+                  onClick={() => setActorId(u.id)}
+                  aria-pressed={active}
+                  className={`flex items-center gap-2 rounded-full border px-2 py-1 text-xs transition-colors ${
+                    active
+                      ? "border-ink bg-paper-3 text-ink"
+                      : "border-line-soft bg-paper-2 text-ink-2 hover:border-line"
+                  }`}
+                >
+                  <HowlerAvatar
+                    avatarId={u.avatarId}
+                    seed={u.id}
+                    initials={u.displayName.slice(0, 2).toUpperCase()}
+                    size={20}
+                    backgroundColor={u.bgColor ?? undefined}
+                  />
+                  <span className="max-w-[8rem] truncate">
+                    {u.displayName}
+                    {u.id === sessionUserId ? " · you" : ""}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
       )}
 
       <label className="mt-4 block">

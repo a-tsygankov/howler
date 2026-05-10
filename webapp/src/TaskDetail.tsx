@@ -174,10 +174,20 @@ export const TaskDetail = () => {
               key={e.id}
               className="flex items-start gap-3 border-t border-line-soft py-2.5"
             >
+              {/* Pass avatarId + bgColor so an execution attributed
+                  to a user with a custom avatar (icon preset OR
+                  uploaded photo) renders that avatar instead of the
+                  generic seed-derived swatch. The legacy
+                  initials+seed fallback still kicks in for the
+                  unattributed-execution case (`e.userId` null —
+                  e.g. device acks before pairing the actor) and
+                  for users who never picked an avatar. */}
               <HowlerAvatar
+                avatarId={u?.avatarId ?? null}
                 seed={u?.id ?? e.id}
                 initials={initials}
                 size={28}
+                backgroundColor={u?.bgColor ?? undefined}
               />
               <div className="min-w-0 flex-1">
                 <div className="flex items-baseline justify-between gap-2">
@@ -188,6 +198,13 @@ export const TaskDetail = () => {
                   </span>
                   <span className="cap shrink-0">{fmtTs(e.ts)}</span>
                 </div>
+                {/* User attribution line — small caption naming who
+                    completed the task. Suppressed when the row has
+                    no userId (anonymous device ack) so the column
+                    doesn't show "Unknown" entries. */}
+                {u?.displayName && (
+                  <p className="cap mt-0.5">{u.displayName}</p>
+                )}
                 {e.notes && (
                   <p className="mt-0.5 text-xs italic text-ink-3">{e.notes}</p>
                 )}
