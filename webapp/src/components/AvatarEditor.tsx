@@ -20,6 +20,7 @@ import { Sheet } from "./Sheet";
 import {
   blobToAvatarFile,
   decodeImage,
+  generate1bitBitmap,
   removeBackground,
   resizeAndEncode,
 } from "../lib/imageProcessing";
@@ -27,8 +28,12 @@ import {
 export interface AvatarEditorProps {
   /** The file the user picked. Closed in onCancel / onSave. */
   file: File;
-  /** Called with the final processed File ready for upload. */
-  onSave: (processedFile: File) => Promise<void>;
+  /** Called with the final processed File + the 1-bit device
+   *  variant (72 bytes, Floyd-Steinberg dither) ready for upload. */
+  onSave: (
+    processedFile: File,
+    bitmap1bit: Uint8Array,
+  ) => Promise<void>;
   /** User backed out without saving. */
   onCancel: () => void;
 }
@@ -55,6 +60,9 @@ export const AvatarEditor = ({ file, onSave, onCancel }: AvatarEditorProps) => {
   // uploaded on Save. Both come from the same canvas pass.
   const [processedBlob, setProcessedBlob] = useState<Blob | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  // Phase 7 device variant: 24×24 Floyd-Steinberg dither produced
+  // alongside the WebP. Cached so Save doesn't re-run the pipeline.
+  const [bitmap1bit, setBitmap1bit] = useState<Uint8Array | null>(null);
 
   // UI state.
   const [busy, setBusy] = useState(false);
@@ -156,7 +164,14 @@ export const AvatarEditor = ({ file, onSave, onCancel }: AvatarEditorProps) => {
         setStatusLabel("Encoding…");
         const blob = await resizeAndEncode(workingBitmap);
         if (cancelled) return;
+        // Phase 7: produce the device variant in the same pass.
+        // Pure JS, no WASM — runs in <5 ms regardless of source.
+        // Bg-removed sources dither cleanly (silhouettes); raw
+        // photos still produce a recognisable shape, better than
+        // the text-initials fallback the device used to show.
+        const onebit = generate1bitBitmap(workingBitmap);
         setProcessedBlob(blob);
+        setBitmap1bit(onebit);
         // Replace the previous preview URL on each pass; revoke the
         // old one so the browser can free the underlying Blob.
         setPreviewUrl((old) => {
@@ -190,11 +205,11 @@ export const AvatarEditor = ({ file, onSave, onCancel }: AvatarEditorProps) => {
   // trip) must not double-submit. Guarded via `saving` flag.
   const savingRef = useRef(false);
   const handleSave = async () => {
-    if (savingRef.current || !processedBlob) return;
+    if (savingRef.current || !processedBlob || !bitmap1bit) return;
     savingRef.current = true;
     setSaving(true);
     try {
-      await onSave(blobToAvatarFile(processedBlob));
+      await onSave(blobToAvatarFile(processedBlob), bitmap1bit);
     } finally {
       savingRef.current = false;
       setSaving(false);

@@ -626,10 +626,13 @@ const HomeAvatarTile = ({
     setEditorFile(file);
   };
 
-  const onEditorSave = async (processedFile: File) => {
+  const onEditorSave = async (
+    processedFile: File,
+    bitmap1bit: Uint8Array,
+  ) => {
     setBusy(true);
     try {
-      const { id } = await uploadAvatar(processedFile);
+      const { id } = await uploadAvatar(processedFile, bitmap1bit);
       await updateHome({ avatarId: id });
       onChanged();
       setEditorFile(null);

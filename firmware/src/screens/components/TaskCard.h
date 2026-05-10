@@ -22,6 +22,7 @@
 
 #include "MarqueeLabel.h"
 #include "RoundCard.h"
+#include "../../domain/AvatarKey.h"
 #include "../../domain/DashboardItem.h"
 
 #include <Arduino.h>
@@ -139,16 +140,12 @@ inline const char* taskDueChip(int64_t dueAt, int64_t serverNowSec,
 // of the form "icon:name" carry the icon-set choice (mirroring the
 // webapp's `LABEL_ICON_CHOICES`); for explicit uploaded avatars
 // (regular UUIDs) we fall back to the title's initials. Returns
-// nullptr when no usable icon name can be derived.
-inline const char* iconKeyFromAvatar(const std::string& avatarId) {
-    constexpr const char* kPrefix = "icon:";
-    if (avatarId.size() <= 5) return nullptr;
-    if (avatarId.compare(0, 5, kPrefix) != 0) return nullptr;
-    static char name[32];
-    const auto rest = avatarId.substr(5);
-    snprintf(name, sizeof(name), "%s", rest.c_str());
-    return name;
-}
+// nullptr when no usable icon name can be derived. Pure helper
+// extracted to domain/AvatarKey.h so the native test build (which
+// excludes LVGL + Arduino headers) can reach it. The screens layer
+// re-exports under `components::iconKeyFromAvatar` for backwards
+// compat with the existing call sites in this file + RoundMenu.h.
+using howler::domain::iconKeyFromAvatar;
 
 /// Render the badge content for a given icon name. LVGL's built-in
 /// font carries a small FontAwesome subset (LV_SYMBOL_*); names that

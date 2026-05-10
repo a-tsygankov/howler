@@ -118,3 +118,96 @@ export const blobToAvatarFile = (
   blob: Blob,
   name = "avatar.webp",
 ): File => new File([blob], name, { type: blob.type || "image/webp" });
+
+/// Phase 7: produce a 24×24 1-bit dithered bitmap for the device.
+/// Returns a Uint8Array of exactly 72 bytes (24×24 / 8) in the
+/// same layout as the `icons` table (see backend migration 0010):
+///
+///   - 24 rows of 3 bytes each
+///   - MSB-first per byte
+///   - 1 = foreground (painted in the device's ink colour)
+///   - 0 = transparent (disc background shines through)
+///
+/// Pipeline:
+///   1. Resize source to 24×24 on a canvas with high-quality scaling
+///   2. Convert RGBA → grayscale luminance (rec. 601 weights)
+///   3. Floyd-Steinberg error diffusion to a 1-bit threshold
+///   4. Pack 576 bits → 72 bytes
+///
+/// The dither runs purely in-process (no WASM, no model). ~5 ms
+/// even on slow phones — runs alongside the WebP encode without
+/// noticeable pipeline overhead.
+export const generate1bitBitmap = (source: ImageBitmap): Uint8Array => {
+  const W = 24;
+  const H = 24;
+
+  const canvas = new OffscreenCanvas(W, H);
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("OffscreenCanvas 2D context not available");
+
+  // Square-crop centre + downscale to 24×24. Same crop strategy as
+  // resizeAndEncode so the WebP avatar and the 1-bit bitmap show
+  // the same framing.
+  const srcSide = Math.min(source.width, source.height);
+  const srcX = Math.round((source.width - srcSide) / 2);
+  const srcY = Math.round((source.height - srcSide) / 2);
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(source, srcX, srcY, srcSide, srcSide, 0, 0, W, H);
+
+  const { data: rgba } = ctx.getImageData(0, 0, W, H);
+
+  // Grayscale luminance buffer (one float per pixel) so we can
+  // diffuse the quantisation error to neighbours without thrashing
+  // the RGBA buffer's typed integer math.
+  const gray = new Float32Array(W * H);
+  for (let i = 0; i < W * H; i++) {
+    const r = rgba[i * 4 + 0]!;
+    const g = rgba[i * 4 + 1]!;
+    const b = rgba[i * 4 + 2]!;
+    const a = rgba[i * 4 + 3]!;
+    // Premultiply by alpha so transparent regions in the source
+    // (e.g. post-bg-removal) collapse to "background" (0) rather
+    // than carrying their RGB through. Rec.601 luminance weights.
+    const lum = (0.299 * r + 0.587 * g + 0.114 * b) * (a / 255);
+    gray[i] = lum;
+  }
+
+  // Floyd-Steinberg error diffusion. Walk left-to-right, top-to-
+  // bottom; for each pixel, threshold at 128, push the quantisation
+  // error to the four canonical neighbours with weights 7/16, 3/16,
+  // 5/16, 1/16. Edges clamp the diffusion (no wrap-around).
+  const out = new Uint8Array(W * H);
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const idx = y * W + x;
+      const old = gray[idx]!;
+      const newVal = old < 128 ? 0 : 255;
+      out[idx] = newVal === 255 ? 1 : 0;
+      const err = old - newVal;
+      if (x + 1 < W) gray[idx + 1] = (gray[idx + 1] ?? 0) + (err * 7) / 16;
+      if (y + 1 < H) {
+        if (x > 0) gray[idx + W - 1] = (gray[idx + W - 1] ?? 0) + (err * 3) / 16;
+        gray[idx + W] = (gray[idx + W] ?? 0) + (err * 5) / 16;
+        if (x + 1 < W) gray[idx + W + 1] = (gray[idx + W + 1] ?? 0) + (err * 1) / 16;
+      }
+    }
+  }
+
+  // Pack the 576 1-bit pixels into 72 bytes, MSB-first per byte.
+  // Same layout the icons table uses; the device unpacks 1bpp → A8
+  // exactly the same way regardless of source. The `??= 0` guard
+  // makes TS's noUncheckedIndexedAccess happy without a runtime
+  // check — `packed` was just `new Uint8Array(72)`'d, so every
+  // index ≤71 is definitely a number, but the compiler can't prove
+  // that statically.
+  const packed = new Uint8Array(72);
+  for (let i = 0; i < W * H; i++) {
+    if (out[i]) {
+      const byteIdx = i >> 3;
+      const bitIdx = 7 - (i & 7);
+      packed[byteIdx] = (packed[byteIdx] ?? 0) | (1 << bitIdx);
+    }
+  }
+  return packed;
+};

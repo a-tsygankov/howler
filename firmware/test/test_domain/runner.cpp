@@ -111,6 +111,20 @@ void test_user_picker_stamps_avatar_id_onto_iconKey();
 void test_user_picker_falls_back_to_id_when_displayName_missing();
 void test_user_picker_omits_subtitle_when_login_missing();
 
+// test_avatar_key.cpp — Phase 7. iconKeyFromAvatar maps avatarId
+// strings ("icon:foo" preset OR 32-hex UUID photo) onto the
+// IconCache lookup key.
+void test_avatar_key_icon_prefix_returns_suffix();
+void test_avatar_key_icon_prefix_with_long_suffix();
+void test_avatar_key_uuid_returns_verbatim();
+void test_avatar_key_empty_returns_null();
+void test_avatar_key_too_short_returns_null();
+void test_avatar_key_icon_prefix_with_no_suffix_returns_null();
+void test_avatar_key_uuid_with_uppercase_hex_returns_null();
+void test_avatar_key_uuid_with_non_hex_char_returns_null();
+void test_avatar_key_uuid_wrong_length_returns_null();
+void test_avatar_key_unknown_format_returns_null();
+
 extern "C" void setUp(void) {}
 extern "C" void tearDown(void) {}
 
@@ -207,6 +221,17 @@ int main(int, char**) {
     RUN_TEST(test_user_picker_stamps_avatar_id_onto_iconKey);
     RUN_TEST(test_user_picker_falls_back_to_id_when_displayName_missing);
     RUN_TEST(test_user_picker_omits_subtitle_when_login_missing);
+
+    RUN_TEST(test_avatar_key_icon_prefix_returns_suffix);
+    RUN_TEST(test_avatar_key_icon_prefix_with_long_suffix);
+    RUN_TEST(test_avatar_key_uuid_returns_verbatim);
+    RUN_TEST(test_avatar_key_empty_returns_null);
+    RUN_TEST(test_avatar_key_too_short_returns_null);
+    RUN_TEST(test_avatar_key_icon_prefix_with_no_suffix_returns_null);
+    RUN_TEST(test_avatar_key_uuid_with_uppercase_hex_returns_null);
+    RUN_TEST(test_avatar_key_uuid_with_non_hex_char_returns_null);
+    RUN_TEST(test_avatar_key_uuid_wrong_length_returns_null);
+    RUN_TEST(test_avatar_key_unknown_format_returns_null);
 
     return UNITY_END();
 }
