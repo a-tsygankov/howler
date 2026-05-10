@@ -11,7 +11,7 @@ backend read path; everything below it is still to do.
 
 ---
 
-## Status — slices F0 + F1 + F3 (foundation + admin + presigning)
+## Status — slices F0 + F1 + F2 + F3 (foundation + admin + signed-build CI + presigning)
 
 | | |
 | --- | --- |
@@ -26,7 +26,8 @@ backend read path; everything below it is still to do.
 | `PATCH /api/firmware/:version` | ✅ F1 |
 | `GET /api/firmware` (admin listing) | ✅ F1 |
 | SigV4 R2 presigner (`backend/src/services/r2-presign.ts`) | ✅ F3 — manual `crypto.subtle`, no AWS SDK in the Worker bundle |
-| Tests | ✅ — backend 104/104 (across F0 + F1 + F3) |
+| `firmware-release.yml` workflow + signing scripts | ✅ F2 — RSA-3072 detached signature, R2 upload, manifest register on `release/v*` push |
+| Tests | ✅ — backend 104/104 (across F0 + F1 + F3); firmware 91/91 |
 
 The shape is intentionally additive — old clients ignore the new
 endpoints; `firmware_releases` is empty until something INSERTs a
@@ -120,18 +121,87 @@ on every admin request. Migration 0014 backfilled the
 earliest-created user of each home; promote others explicitly
 via SQL UPDATE (Phase 7 will add a UI).
 
-### F2 — CI signed-build pipeline (medium, ~3 days)
+### F2 — CI signed-build pipeline ✅ (landed in dev-35-ota-f2-signed-build)
 
-- New GitHub Actions job that runs on `release/*` branches:
-  1. `pio run -e crowpanel` produces `firmware-merged.bin`.
-  2. RSA-3072 sign step using a private key from CI secrets
-     (`OTA_SIGNING_KEY`). Public key checked into firmware as a
-     C array via `scripts/embed_pubkey.py`.
-  3. `wrangler r2 object put howler-firmware/firmware-X.Y.Z.bin`.
-  4. `curl POST /api/firmware` to register the manifest.
-- Public-key generation: `openssl genpkey -algorithm RSA -pkeyopt
-  rsa_keygen_bits:3072 -out signing.pem`. Store private in CI;
-  commit public to firmware repo.
+[`.github/workflows/firmware-release.yml`](../.github/workflows/firmware-release.yml)
+runs on push to `release/v*` or via manual `workflow_dispatch`.
+Six steps in one job:
+
+1. Resolve version from branch name (`release/v0.4.0` → `0.4.0`)
+   or workflow_dispatch input. Validates against the same regex
+   `POST /api/firmware` enforces.
+2. Materialise `OTA_SIGNING_KEY` secret into a temp PEM.
+3. Embed the public key into the firmware build via
+   [`firmware/scripts/embed-pubkey.py`](../firmware/scripts/embed-pubkey.py).
+4. `pio run -e crowpanel` → `firmware-merged.bin`.
+5. Sign with RSA-3072 / SHA-256 / PKCS#1 v1.5 via
+   [`firmware/scripts/sign-firmware.sh`](../firmware/scripts/sign-firmware.sh) —
+   produces `<bin>.sha256` + `<bin>.sig`.
+6. Upload `.bin` + `.sig` + `.sha256` to R2 via wrangler.
+7. Register the manifest via
+   [`firmware/scripts/register-firmware.sh`](../firmware/scripts/register-firmware.sh) →
+   `POST /api/firmware` with `OTA_ADMIN_USER_TOKEN`. Lands as
+   `active = 0`.
+
+Promotion is **not** part of the workflow — a half-baked build
+that survives CI tests can still be yanked before any device sees
+it. The release-engineer manually:
+
+```bash
+curl -X PATCH https://howler-api.atsyg-feedme.workers.dev/api/firmware/$VERSION \
+  -H "Authorization: Bearer $OTA_ADMIN_USER_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"active":true}'
+```
+
+#### Bootstrap — operator one-shot setup
+
+```bash
+# 1. Generate the RSA-3072 keypair (locally, NOT in CI)
+bash firmware/scripts/generate-signing-key.sh
+
+# 2. Push the private key to GitHub Actions secrets
+gh secret set OTA_SIGNING_KEY < firmware/scripts/secrets/signing-key.pem
+
+# 3. Mint an admin UserToken (any user with users.is_admin = 1
+#    after migration 0014). Easiest path: call
+#    /api/auth/me from the webapp, copy the JWT.
+gh secret set OTA_ADMIN_USER_TOKEN
+
+# 4. (CLOUDFLARE_API_KEY + CLOUDFLARE_ACCOUNT_ID already exist
+#    from the regular deploy.yml — reused here for R2 uploads.)
+```
+
+Required GitHub secrets summary:
+
+| Secret | Source | Used in |
+| --- | --- | --- |
+| `OTA_SIGNING_KEY` | local `generate-signing-key.sh` | sign step |
+| `OTA_ADMIN_USER_TOKEN` | webapp `/api/auth/me` | register step |
+| `CLOUDFLARE_API_KEY` | already exists | R2 upload |
+| `CLOUDFLARE_ACCOUNT_ID` | already exists | R2 upload |
+
+#### Releasing v0.4.0 (typical flow)
+
+```bash
+git checkout -b release/v0.4.0
+# bump kFirmwareVersion in firmware/src/application/Version.h
+# write release notes if applicable
+git push origin release/v0.4.0
+# CI builds + signs + uploads + registers as active=0
+# Inspect via GET /api/firmware (admin token), then PATCH active=true
+```
+
+#### Why detached signature, not full Secure Boot v2?
+
+ESP-IDF's `CONFIG_SECURE_SIGNED_APPS_RSA_SCHEME` (plan §14) is the
+end-state target — bootloader-level signature verification with
+hardware fuse-locked public keys. F2 ships the simpler shape:
+detached `.sig` file alongside the bin, app-level verification on
+download in F4. Same RSA-3072 keypair works for both; tightening
+to bootloader-level verification later doesn't require a key
+rotation. The transition path is documented in
+[`firmware/scripts/sign-firmware.sh`](../firmware/scripts/sign-firmware.sh).
 
 ### F3 — Pre-signed URL minting ✅ (landed in dev-34-ota-f3-presigned)
 

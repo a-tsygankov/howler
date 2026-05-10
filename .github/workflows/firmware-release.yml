@@ -1,0 +1,175 @@
+# Phase 6 OTA F2 — signed firmware release pipeline.
+#
+# Triggers on push to a `release/v*` branch (e.g. `release/v0.4.0`)
+# or via manual workflow_dispatch with the version as input. Builds
+# the crowpanel firmware, signs it with the OTA_SIGNING_KEY GitHub
+# secret, uploads the bin + .sig + .sha256 to R2, and registers
+# the manifest with the Worker as `active = 0`.
+#
+# Promotion (`PATCH active=true`) is intentionally NOT part of this
+# workflow — a half-baked build that survives the test suite can
+# still be yanked before any device sees it. The release-engineer
+# checks the artifact + tests in CI, then manually:
+#
+#   curl -X PATCH https://howler-api.atsyg-feedme.workers.dev/api/firmware/$VERSION \
+#     -H "Authorization: Bearer $TOKEN" \
+#     -H "Content-Type: application/json" \
+#     -d '{"active":true}'
+#
+# Required GitHub Actions secrets (set once, project-wide):
+#   OTA_SIGNING_KEY        — full PEM contents of the RSA-3072
+#                            private key from
+#                            firmware/scripts/generate-signing-key.sh.
+#   OTA_ADMIN_USER_TOKEN   — UserToken from an admin user
+#                            (users.is_admin = 1) used to POST
+#                            /api/firmware. Rotate when the user
+#                            rotates their password.
+#   CLOUDFLARE_API_KEY     — already used by deploy.yml; reused
+#                            here to upload to R2 via wrangler.
+#   CLOUDFLARE_ACCOUNT_ID  — same.
+
+name: Firmware release
+
+on:
+  push:
+    branches:
+      - 'release/v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Semver string (e.g. 0.4.0). Must match VERSION in firmware/src/application/Version.h'
+        required: true
+        type: string
+
+jobs:
+  release:
+    name: Build, sign, upload, register
+    runs-on: ubuntu-latest
+    defaults: { run: { working-directory: firmware } }
+    steps:
+      - uses: actions/checkout@v4
+
+      # Derive the version. On push to release/vX.Y.Z, parse the
+      # branch name. On workflow_dispatch, take the input.
+      - name: Resolve version
+        id: version
+        working-directory: .
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            BRANCH="${{ github.ref_name }}"
+            VERSION="${BRANCH#release/v}"
+          fi
+          # Validate against the regex POST /api/firmware enforces —
+          # better to fail here than after building a 1.4 MB image.
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?(-[A-Za-z0-9.]+)?$ ]]; then
+            echo "ERROR: version '$VERSION' fails the server-side regex" >&2
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Resolved version: $VERSION"
+
+      - name: Setup Python (PlatformIO needs it for some toolchains)
+        uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+
+      - name: Install PlatformIO
+        run: pip install --upgrade platformio
+
+      # Cache the PlatformIO toolchain + frameworks. Without this
+      # the espressif32 platform downloads ~1 GB on every run; the
+      # cache cuts a clean build from ~12 min to ~2 min.
+      - name: Cache PlatformIO state
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            firmware/.pio
+          key: ${{ runner.os }}-pio-release-${{ hashFiles('firmware/platformio.ini') }}
+          restore-keys: ${{ runner.os }}-pio-release-
+
+      - name: Materialise the OTA signing key into a temp file
+        env:
+          OTA_SIGNING_KEY: ${{ secrets.OTA_SIGNING_KEY }}
+        working-directory: .
+        shell: bash
+        run: |
+          if [[ -z "$OTA_SIGNING_KEY" ]]; then
+            echo "ERROR: OTA_SIGNING_KEY secret is not set" >&2
+            exit 1
+          fi
+          mkdir -p firmware/scripts/secrets
+          # Trim leading/trailing whitespace; preserve embedded
+          # newlines (the secret store collapses them faithfully).
+          printf '%s' "$OTA_SIGNING_KEY" > firmware/scripts/secrets/signing-key.pem
+          chmod 600 firmware/scripts/secrets/signing-key.pem
+          # Sanity check — openssl rejects malformed PEMs.
+          openssl rsa -check -noout -in firmware/scripts/secrets/signing-key.pem
+
+      - name: Embed the public key into the firmware build
+        working-directory: .
+        run: |
+          # Derive the public key from the private (no need to keep
+          # both in CI secrets — private alone is enough).
+          openssl rsa -in firmware/scripts/secrets/signing-key.pem \
+            -pubout \
+            -out firmware/scripts/secrets/signing-key.pub.pem
+          python firmware/scripts/embed-pubkey.py
+
+      - name: Build firmware (crowpanel target)
+        run: pio run -e crowpanel
+
+      - name: Sign the merged binary
+        working-directory: .
+        run: |
+          bash firmware/scripts/sign-firmware.sh \
+            firmware/.pio/build/crowpanel/firmware-merged.bin
+
+      # Upload the bin + .sig + .sha256 to R2. Three separate
+      # files — keeping them parallel makes manual curl-debugging
+      # straightforward + lets the dial fetch only what it needs
+      # (F4 will pull the .sig alongside the .bin via two
+      # presigned URLs from /api/firmware/check).
+      - name: Upload artifacts to R2
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken:  ${{ secrets.CLOUDFLARE_API_KEY }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: backend
+          command: |
+            r2 object put howler-firmware/firmware/firmware-${{ steps.version.outputs.version }}.bin --file ../firmware/.pio/build/crowpanel/firmware-merged.bin
+            r2 object put howler-firmware/firmware/firmware-${{ steps.version.outputs.version }}.bin.sig --file ../firmware/.pio/build/crowpanel/firmware-merged.bin.sig
+            r2 object put howler-firmware/firmware/firmware-${{ steps.version.outputs.version }}.bin.sha256 --file ../firmware/.pio/build/crowpanel/firmware-merged.bin.sha256
+
+      - name: Register manifest with the Worker
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          ADMIN_TOKEN: ${{ secrets.OTA_ADMIN_USER_TOKEN }}
+        working-directory: .
+        run: |
+          if [[ -z "$ADMIN_TOKEN" ]]; then
+            echo "ERROR: OTA_ADMIN_USER_TOKEN secret is not set" >&2
+            exit 1
+          fi
+          BIN="firmware/.pio/build/crowpanel/firmware-merged.bin"
+          BIN="$BIN" \
+          SHA256_FILE="$BIN.sha256" \
+          R2_KEY="firmware/firmware-${VERSION}.bin" \
+          bash firmware/scripts/register-firmware.sh
+
+      - name: Upload artifacts to GitHub for archival
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-${{ steps.version.outputs.version }}
+          path: |
+            firmware/.pio/build/crowpanel/firmware-merged.bin
+            firmware/.pio/build/crowpanel/firmware-merged.bin.sig
+            firmware/.pio/build/crowpanel/firmware-merged.bin.sha256
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Summary
+        run: |
+          echo "::notice::Firmware ${{ steps.version.outputs.version }} built, signed, uploaded, and registered as active=0. Promote via PATCH when ready."
