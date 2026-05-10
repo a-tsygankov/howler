@@ -11,21 +11,22 @@ backend read path; everything below it is still to do.
 
 ---
 
-## Status — slices F0 + F1 (foundation + admin write path)
+## Status — slices F0 + F1 + F3 (foundation + admin + presigning)
 
 | | |
 | --- | --- |
 | Migration `0013_firmware_releases.sql` | ✅ F0 |
 | Drizzle schema (`firmwareReleases`) | ✅ F0 |
-| `GET /api/firmware/check?fwVersion=X` | ✅ F0 |
+| `GET /api/firmware/check?fwVersion=X` | ✅ F0 + F3 (now returns `downloadUrl`) |
 | `POST /api/devices/heartbeat {fwVersion}` | ✅ F0 |
 | Semver-aware version compare | ✅ F0 |
 | Rollout rules (`deviceIds` + `canaryPercent`) | ✅ F0 |
 | `requireAdmin()` middleware + `ADMIN_HOMES` env | ✅ F1 |
-| `POST /api/firmware` (admin upload-manifest) | ✅ F1 — zod-validated, version regex, idempotent on duplicate (409), lands `active=0` |
-| `PATCH /api/firmware/:version` | ✅ F1 — promote (sets `promoted_at`), yank (sets `yanked_at`), update `rolloutRules` |
+| `POST /api/firmware` (admin upload-manifest) | ✅ F1 |
+| `PATCH /api/firmware/:version` | ✅ F1 |
 | `GET /api/firmware` (admin listing) | ✅ F1 |
-| Integration tests | ✅ — 14 cases ("OTA — firmware release advisory" + "OTA — admin write path") |
+| SigV4 R2 presigner (`backend/src/services/r2-presign.ts`) | ✅ F3 — manual `crypto.subtle`, no AWS SDK in the Worker bundle |
+| Tests | ✅ — backend 104/104 (across F0 + F1 + F3) |
 
 The shape is intentionally additive — old clients ignore the new
 endpoints; `firmware_releases` is empty until something INSERTs a
@@ -120,17 +121,34 @@ IDs, env var). Empty list = nobody is admin (fail-closed).
   rsa_keygen_bits:3072 -out signing.pem`. Store private in CI;
   commit public to firmware repo.
 
-### F3 — Pre-signed URL minting (small-medium, ~1 day)
+### F3 — Pre-signed URL minting ✅ (landed in dev-34-ota-f3-presigned)
 
-- Wire `aws-sdk-js-v3 @aws-sdk/s3-request-presigner` (or the
-  Cloudflare equivalent) into `/api/firmware/check`. Replace the
-  current `r2Key` field on the response with `downloadUrl` (a 5-min
-  TTL signed GET URL).
-- Add `accessKeyId` + `secretAccessKey` Cloudflare R2 secrets to
-  the Worker. **Don't** check creds into the repo.
-- Test: response carries a `downloadUrl` matching
-  `https://<account>.r2.cloudflarestorage.com/howler-firmware/...`
-  with `X-Amz-Signature=...`.
+Manual SigV4 implementation in
+[`backend/src/services/r2-presign.ts`](../backend/src/services/r2-presign.ts) —
+`crypto.subtle` HMAC-SHA256 chain, ~150 lines, no AWS SDK
+dependency. Same pattern `services/push.ts` uses for VAPID JWT
+signing — keeps the Worker bundle small.
+
+`/api/firmware/check` now returns a 5-min `downloadUrl`
+alongside the existing `r2Key`. URL shape:
+`https://<account>.r2.cloudflarestorage.com/howler-firmware/<key>?X-Amz-…`.
+The dial follows the URL directly — no Cloudflare auth at the R2
+edge, the V4 signature carries read-permission for the duration.
+
+Falls back to `downloadUrl: null` (with `r2Key` still present) when
+any of the three R2 secrets are missing — staging without R2 API
+creds keeps working, just no direct download.
+
+Operator setup:
+
+```bash
+wrangler secret put R2_ACCOUNT_ID
+wrangler secret put R2_ACCESS_KEY_ID
+wrangler secret put R2_SECRET_ACCESS_KEY
+```
+
+Generate the access key in the Cloudflare dashboard under
+R2 → Manage R2 API Tokens, scoped read-only on `howler-firmware`.
 
 ### F4 — Firmware self-update (large, ~1 week, hardware required)
 

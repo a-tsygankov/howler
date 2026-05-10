@@ -16,6 +16,15 @@ export default defineWorkersConfig({
             // runtime doesn't propagate into the worker (the
             // request gets the binding object as-of-boot).
             ADMIN_HOMES: "a".repeat(32),
+            // F3 R2 presigning — synthetic creds so the test
+            // suite exercises the full SigV4 code path without
+            // talking to a real R2 endpoint. The signature is
+            // deterministic for fixed inputs; tests assert URL
+            // shape + signature length rather than going to net.
+            R2_ACCOUNT_ID: "test-account",
+            R2_ACCESS_KEY_ID: "AKIAIOSFODNN7EXAMPLE",
+            R2_SECRET_ACCESS_KEY:
+              "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
           },
         },
       },

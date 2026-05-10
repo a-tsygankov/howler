@@ -1165,6 +1165,39 @@ describe("OTA — firmware release advisory (Phase 6 foundation)", () => {
     expect((await json(res))["updateAvailable"]).toBe(false);
   });
 
+  it("/firmware/check mints a presigned downloadUrl when R2 creds are configured (slice F3)", async () => {
+    const { homeId } = await auth();
+    const deviceToken = await mintDeviceToken(homeId);
+    await insertRelease({ version: "1.5.0" });
+
+    const res = await SELF.fetch(
+      "https://t/api/firmware/check?fwVersion=1.0.0",
+      { headers: { authorization: `Bearer ${deviceToken}` } },
+    );
+    expect(res.status).toBe(200);
+    const body = (await json(res)) as {
+      updateAvailable: boolean;
+      version: string;
+      r2Key: string;
+      downloadUrl: string | null;
+      downloadUrlExpiresInSec: number | null;
+    };
+    expect(body.updateAvailable).toBe(true);
+    expect(body.r2Key).toBe("firmware/firmware-1.5.0.bin");
+    // miniflare bindings (vitest.config.ts) supply synthetic
+    // R2_* creds → endpoint should return a real V4-signed URL.
+    expect(body.downloadUrl).not.toBeNull();
+    const u = new URL(body.downloadUrl!);
+    expect(u.host).toBe("test-account.r2.cloudflarestorage.com");
+    expect(u.pathname).toBe(
+      "/howler-firmware/firmware/firmware-1.5.0.bin",
+    );
+    expect(u.searchParams.get("X-Amz-Algorithm")).toBe("AWS4-HMAC-SHA256");
+    expect(u.searchParams.get("X-Amz-Expires")).toBe("300");
+    expect(u.searchParams.get("X-Amz-Signature")).toMatch(/^[0-9a-f]{64}$/);
+    expect(body.downloadUrlExpiresInSec).toBe(300);
+  });
+
   it("/firmware/check returns the highest active release > current (and a SQL ORDER BY would mis-rank '1.10.0' vs '1.2.0')", async () => {
     const { homeId } = await auth();
     const deviceToken = await mintDeviceToken(homeId);

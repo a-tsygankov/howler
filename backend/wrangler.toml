@@ -80,6 +80,15 @@ VAPID_CONTACT = "mailto:noreply@howler.local"
 # (using a secret rather than a plain var keeps the list out of
 # version control even though it's not strictly secret data).
 ADMIN_HOMES = ""
+# Phase 6 OTA slice F3 — R2 presigned-URL credentials. All three
+# MUST be set as secrets in production for /api/firmware/check to
+# return downloadUrl. Generate the access key in the Cloudflare
+# dashboard under R2 → Manage R2 API Tokens (scope: read-only on
+# howler-firmware). When any are missing, /check falls back to
+# surfacing the raw r2Key so staging without R2 creds still works.
+#   wrangler secret put R2_ACCOUNT_ID
+#   wrangler secret put R2_ACCESS_KEY_ID
+#   wrangler secret put R2_SECRET_ACCESS_KEY
 
 [observability]
 enabled = true

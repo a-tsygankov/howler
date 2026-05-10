@@ -5,6 +5,19 @@ import { clock } from "../clock.ts";
 import type { Bindings } from "../env.ts";
 import { markDeviceAlive, requireAdmin, requireAuth, type AuthVars } from "../middleware/auth.ts";
 import { compareVersions } from "../services/version.ts";
+import { presignR2GetUrl, r2CredentialsFromEnv } from "../services/r2-presign.ts";
+
+// Bucket the firmware-bytes live in. Mirror of wrangler.toml's
+// [[r2_buckets]] binding name; keeping the literal centralised so
+// rotating the bucket is a one-line change rather than a hunt
+// through routes.
+const FIRMWARE_BUCKET = "howler-firmware";
+
+// 5 minutes — long enough for the dial to actually download a
+// 1.5 MB image over a marginal Wi-Fi link, short enough that a
+// leaked URL goes stale before it can be useful. AWS V4 query
+// auth caps at 7 days; we stay well under.
+const PRESIGN_TTL_SEC = 5 * 60;
 
 // Phase 6 OTA — read + admin paths.
 //
@@ -140,16 +153,32 @@ export const firmwareRouter = new Hono<{
       if (auth.type === "device") {
         if (!ruleAllowsDevice(r.rollout_rules, auth.deviceId)) continue;
       }
+      // Slice F3: mint a pre-signed R2 URL when credentials are
+      // configured. Falls back to surfacing the raw r2_key when
+      // any of the three R2_* secrets are missing — matches
+      // staging-without-creds behaviour from F0 so a
+      // half-configured deploy stays useful for inspection.
+      const creds = r2CredentialsFromEnv(c.env);
+      let downloadUrl: string | null = null;
+      if (creds) {
+        downloadUrl = await presignR2GetUrl(
+          creds,
+          FIRMWARE_BUCKET,
+          r.r2_key,
+          PRESIGN_TTL_SEC,
+        );
+      }
       return c.json({
         updateAvailable: true,
         version: r.version,
         sha256: r.sha256,
         sizeBytes: r.size_bytes,
-        // Pre-signed-URL minting lands in the next OTA PR. Until
-        // then we surface the r2_key — devices in production
-        // can't act on it (the bucket isn't public), so this is
-        // safe to return; staging / tests can use it directly.
+        // r2Key kept on the wire for backwards compat / debug.
+        // Devices use downloadUrl in production; the raw key is
+        // useful for staging (no R2 API creds) + ops UI logs.
         r2Key: r.r2_key,
+        downloadUrl,
+        downloadUrlExpiresInSec: downloadUrl ? PRESIGN_TTL_SEC : null,
       });
     }
     return c.json({ updateAvailable: false });
