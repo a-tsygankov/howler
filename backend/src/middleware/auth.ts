@@ -58,6 +58,35 @@ export const requireDevice = (): MiddlewareHandler<{
   };
 };
 
+/// Phase 6 OTA admin gate. Requires a user token whose home_id
+/// appears in the comma-separated `ADMIN_HOMES` env var. There's
+/// no first-class admin concept yet — this is the F1 placeholder
+/// per docs/ota.md. When a real role / permission system lands,
+/// swap the body to consult that instead; the call sites stay the
+/// same. Returns 403 for missing or non-matching auth (deliberately
+/// indistinguishable so a hostile caller can't probe the list).
+export const requireAdmin = (): MiddlewareHandler<{
+  Bindings: Bindings;
+  Variables: AuthVars;
+}> => {
+  return async (c, next) => {
+    const info = c.get("auth");
+    if (!info || info.type !== "user") {
+      return c.json({ error: "admin-only" }, 403);
+    }
+    const list = (c.env.ADMIN_HOMES ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+    if (list.length === 0 || !list.includes(info.homeId)) {
+      return c.json({ error: "admin-only" }, 403);
+    }
+    c.set("user", { homeId: info.homeId, userId: info.userId });
+    await next();
+    return undefined;
+  };
+};
+
 /// Tiny middleware that bumps `devices.last_seen_at = now()` for any
 /// authenticated request bearing a device token. Fire-and-forget via
 /// executionCtx.waitUntil so we don't block the response — a one-row

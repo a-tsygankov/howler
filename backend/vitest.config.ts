@@ -10,6 +10,12 @@ export default defineWorkersConfig({
           compatibilityFlags: ["nodejs_compat"],
           bindings: {
             AUTH_SECRET: "integration-test-secret",
+            // Phase 6 OTA — admin allow-list is a static binding;
+            // tests that exercise the F1 write path mint a home
+            // whose id matches this constant. Mutating env at
+            // runtime doesn't propagate into the worker (the
+            // request gets the binding object as-of-boot).
+            ADMIN_HOMES: "a".repeat(32),
           },
         },
       },

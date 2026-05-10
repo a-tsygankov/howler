@@ -72,6 +72,14 @@ ENVIRONMENT = "development"
 # generate a fresh keypair with `node scripts/gen-vapid.mjs`.
 PUSH_VAPID_PUBLIC_KEY = "BOlOdaqrQjvihqh-4O5x76dov01ospCtCUpop4imLLYx5IjWFWuVXlaX9Ixd5No_Qdw5Vg9nQhThLKbyCZAcrPo"
 VAPID_CONTACT = "mailto:noreply@howler.local"
+# Phase 6 OTA — comma-separated home IDs allowed to admin-mutate
+# /api/firmware (upload, promote, yank). Empty by default so a
+# fresh / misconfigured deploy can't accidentally let anyone push
+# firmware. Set in production via:
+#   wrangler secret put ADMIN_HOMES
+# (using a secret rather than a plain var keeps the list out of
+# version control even though it's not strictly secret data).
+ADMIN_HOMES = ""
 
 [observability]
 enabled = true
