@@ -1165,6 +1165,39 @@ describe("OTA — firmware release advisory (Phase 6 foundation)", () => {
     expect((await json(res))["updateAvailable"]).toBe(false);
   });
 
+  it("/firmware/check mints a presigned downloadUrl when R2 creds are configured (slice F3)", async () => {
+    const { homeId } = await auth();
+    const deviceToken = await mintDeviceToken(homeId);
+    await insertRelease({ version: "1.5.0" });
+
+    const res = await SELF.fetch(
+      "https://t/api/firmware/check?fwVersion=1.0.0",
+      { headers: { authorization: `Bearer ${deviceToken}` } },
+    );
+    expect(res.status).toBe(200);
+    const body = (await json(res)) as {
+      updateAvailable: boolean;
+      version: string;
+      r2Key: string;
+      downloadUrl: string | null;
+      downloadUrlExpiresInSec: number | null;
+    };
+    expect(body.updateAvailable).toBe(true);
+    expect(body.r2Key).toBe("firmware/firmware-1.5.0.bin");
+    // miniflare bindings (vitest.config.ts) supply synthetic
+    // R2_* creds → endpoint should return a real V4-signed URL.
+    expect(body.downloadUrl).not.toBeNull();
+    const u = new URL(body.downloadUrl!);
+    expect(u.host).toBe("test-account.r2.cloudflarestorage.com");
+    expect(u.pathname).toBe(
+      "/howler-firmware/firmware/firmware-1.5.0.bin",
+    );
+    expect(u.searchParams.get("X-Amz-Algorithm")).toBe("AWS4-HMAC-SHA256");
+    expect(u.searchParams.get("X-Amz-Expires")).toBe("300");
+    expect(u.searchParams.get("X-Amz-Signature")).toMatch(/^[0-9a-f]{64}$/);
+    expect(body.downloadUrlExpiresInSec).toBe(300);
+  });
+
   it("/firmware/check returns the highest active release > current (and a SQL ORDER BY would mis-rank '1.10.0' vs '1.2.0')", async () => {
     const { homeId } = await auth();
     const deviceToken = await mintDeviceToken(homeId);
@@ -1336,6 +1369,76 @@ describe("OTA — admin write path (Phase 6 slice F1)", () => {
     const token = await issueUserToken(ADMIN_HOME_ID, userId, secret);
     return { token, homeId: ADMIN_HOME_ID, userId };
   };
+
+  it("admin gating is per-home, not per-user — every member of an admin home passes", async () => {
+    // The F1 endpoints are gated on home_id ∈ ADMIN_HOMES, not
+    // on a per-user flag. A household / shared-dial home is a
+    // single trust boundary; granting OTA-admin to a home grants
+    // it to every user in that home. This test pins the
+    // contract: insert two distinct users under the admin home,
+    // mint a token for each, both should pass POST /api/firmware.
+    //
+    // Future regression this catches: someone narrows
+    // requireAdmin() to also check userId against an allow-list
+    // (or hard-codes a single userId), accidentally locking out
+    // every user except the original "primary" one.
+    const userA = "1".repeat(32);
+    const userB = "2".repeat(32);
+    const nowSec = Math.floor(Date.now() / 1000);
+
+    await env.DB
+      .prepare(
+        `INSERT OR IGNORE INTO homes (id, display_name, tz, created_at, updated_at, is_deleted)
+         VALUES (?, 'admin-test', 'UTC', ?, ?, 0)`,
+      )
+      .bind(ADMIN_HOME_ID, nowSec, nowSec)
+      .run();
+    for (const uid of [userA, userB]) {
+      await env.DB
+        .prepare(
+          `INSERT OR IGNORE INTO users (id, home_id, display_name, created_at, updated_at, is_deleted)
+           VALUES (?, ?, ?, ?, ?, 0)`,
+        )
+        .bind(uid, ADMIN_HOME_ID, `member-${uid.slice(0, 4)}`, nowSec, nowSec)
+        .run();
+    }
+
+    const { issueUserToken } = await import("../src/auth.ts");
+    const secret = (env as unknown as { AUTH_SECRET: string }).AUTH_SECRET;
+    const tokenA = await issueUserToken(ADMIN_HOME_ID, userA, secret);
+    const tokenB = await issueUserToken(ADMIN_HOME_ID, userB, secret);
+
+    // Both members can register a build.
+    const r1 = await SELF.fetch("https://t/api/firmware", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${tokenA}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        version: "10.0.0-userA",
+        sha256: "a".repeat(64),
+        r2Key: "firmware/userA.bin",
+        sizeBytes: 1,
+      }),
+    });
+    expect(r1.status).toBe(201);
+
+    const r2 = await SELF.fetch("https://t/api/firmware", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${tokenB}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        version: "10.0.0-userB",
+        sha256: "b".repeat(64),
+        r2Key: "firmware/userB.bin",
+        sizeBytes: 1,
+      }),
+    });
+    expect(r2.status).toBe(201);
+  });
 
   it("POST /api/firmware admits an admin home; the row lands inactive (active=0, no promoted_at)", async () => {
     const { token } = await mintAdminToken();
