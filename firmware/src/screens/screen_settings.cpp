@@ -71,6 +71,10 @@ void ScreenManager::buildSettings() {
         mk("wifi",      "Wi-Fi",       "scan + connect"),
         mk("login-qr",  "Login by QR", "phone link"),
         mk("brightness","Brightness",  "screen level"),
+        // Phase 6 OTA F4 — Check for updates. Surfaces fwVersion
+        // as the subtitle so the user can confirm at a glance which
+        // build is running before tapping in.
+        mk("updates",   "Updates",     application::kFirmwareVersion),
         mk("about",     "About",       "device info"),
         mk("unpair",    "Unpair",      "hold to confirm", /*dest=*/true),
     });
@@ -101,6 +105,13 @@ void ScreenManager::buildSettings() {
         else if (id == "wifi")       app.router().push(domain::ScreenId::Wifi);
         else if (id == "login-qr")   app.router().push(domain::ScreenId::LoginQr);
         else if (id == "brightness") app.router().push(domain::ScreenId::SettingsBrightness);
+        else if (id == "updates") {
+            // Reset the OtaService so a re-entry after a previous
+            // "UpToDate" or "Failed" doesn't show the stale banner;
+            // the build path schedules a fresh check.
+            app.ota().reset();
+            app.router().push(domain::ScreenId::SettingsUpdates);
+        }
         else if (id == "about")      app.router().push(domain::ScreenId::SettingsAbout);
         // 'unpair' is destructive — must be reached via long-press,
         // handled in ScreenManager::onEvent. A bare tap is a no-op
@@ -496,6 +507,156 @@ void ScreenManager::refreshSettingsAbout() {
     char body[256];
     formatAboutBody(body, sizeof(body), app_);
     lv_label_set_text(aboutBodyLabel_, body);
+}
+
+// Phase 6 OTA F4 — Settings → Updates. Surfaces the OtaService
+// state machine. Single big label + action button; tap-to-advance
+// drives the next legal transition (check → apply → finish). Knob
+// click also activates the button so the encoder stays useful.
+void ScreenManager::buildSettingsUpdates() {
+    using application::OtaService;
+    root_ = buildRoundBackground();
+
+    {
+        auto* h = lv_label_create(root_);
+        lv_label_set_text(h, "Updates");
+        lv_obj_set_style_text_color(h, Palette::ink2(), 0);
+        lv_obj_set_style_text_font(h, &lv_font_montserrat_14, 0);
+        lv_obj_align(h, LV_ALIGN_TOP_MID, 0, 14);
+    }
+
+    auto& svc = app_.ota();
+    const auto state = svc.state();
+
+    // On first entry land in Idle — kick off a check immediately so
+    // the user doesn't have to tap twice. The activate handler below
+    // also runs requestCheck for re-checks from a finished state.
+    if (state == OtaService::State::Idle) {
+        svc.requestCheck();
+    }
+
+    // Status line — first line: top-level state. Second line:
+    // version transition or error detail when relevant.
+    char top[64];
+    char sub[80];
+    sub[0] = '\0';
+
+    switch (state) {
+        case OtaService::State::Idle:
+            snprintf(top, sizeof(top), "Checking...");
+            snprintf(sub, sizeof(sub), "now: %s",
+                     application::kFirmwareVersion);
+            break;
+        case OtaService::State::Checking:
+            snprintf(top, sizeof(top), "Checking...");
+            snprintf(sub, sizeof(sub), "now: %s",
+                     application::kFirmwareVersion);
+            break;
+        case OtaService::State::UpToDate:
+            snprintf(top, sizeof(top), "Up to date");
+            snprintf(sub, sizeof(sub), "%s",
+                     application::kFirmwareVersion);
+            break;
+        case OtaService::State::UpdateAvailable:
+            snprintf(top, sizeof(top), "Update available");
+            snprintf(sub, sizeof(sub), "%s -> %s",
+                     application::kFirmwareVersion,
+                     svc.advisory().version.c_str());
+            break;
+        case OtaService::State::Downloading: {
+            const int pct = svc.progressPercent();
+            if (pct >= 0) {
+                snprintf(top, sizeof(top), "Downloading %d%%", pct);
+            } else {
+                snprintf(top, sizeof(top), "Downloading...");
+            }
+            snprintf(sub, sizeof(sub), "%s",
+                     svc.advisory().version.c_str());
+            break;
+        }
+        case OtaService::State::Flashed:
+            snprintf(top, sizeof(top), "Rebooting...");
+            snprintf(sub, sizeof(sub), "do not power off");
+            break;
+        case OtaService::State::Failed:
+            snprintf(top, sizeof(top), "Update failed");
+            snprintf(sub, sizeof(sub), "%s",
+                     svc.errorMessage().c_str());
+            break;
+    }
+
+    {
+        auto* l = lv_label_create(root_);
+        lv_label_set_text(l, top);
+        lv_obj_set_style_text_color(l, Palette::ink(), 0);
+        lv_obj_set_style_text_font(l, &lv_font_montserrat_18, 0);
+        lv_obj_align(l, LV_ALIGN_CENTER, 0, -16);
+    }
+    if (sub[0]) {
+        auto* l = lv_label_create(root_);
+        lv_label_set_text(l, sub);
+        lv_obj_set_style_text_color(l, Palette::ink2(), 0);
+        lv_obj_set_style_text_font(l, &lv_font_montserrat_12, 0);
+        lv_obj_align(l, LV_ALIGN_CENTER, 0, 14);
+    }
+
+    // Action button — text mirrors the legal next transition. We
+    // only render it for states that have a next action; the
+    // download / flash / reboot states show the spinner-like top
+    // label and explicitly DON'T show a button (the user can't
+    // safely intervene mid-flash anyway). A long-press at root
+    // pops back to Settings — same convention as Brightness.
+    const char* btnText = nullptr;
+    if (state == OtaService::State::UpdateAvailable) {
+        btnText = "Update now";
+    } else if (state == OtaService::State::UpToDate ||
+               state == OtaService::State::Failed) {
+        btnText = "Check again";
+    }
+
+    if (btnText) {
+        auto* btn = lv_btn_create(root_);
+        lv_obj_set_size(btn, 132, 36);
+        lv_obj_align(btn, LV_ALIGN_BOTTOM_MID, 0, -34);
+        lv_obj_set_style_radius(btn, 16, 0);
+        lv_obj_set_style_shadow_width(btn, 0, 0);
+        lv_obj_set_style_bg_color(btn, Palette::accent(), 0);
+        auto* l = lv_label_create(btn);
+        lv_label_set_text(l, btnText);
+        lv_obj_set_style_text_color(l, Palette::paper(), 0);
+        lv_obj_set_style_text_font(l, &lv_font_montserrat_14, 0);
+        lv_obj_center(l);
+
+        // Stash the current state on user_data so the handler picks
+        // the right transition without re-reading via the manager.
+        lv_obj_set_user_data(btn, (void*)(intptr_t)
+            static_cast<uint8_t>(state));
+        lv_obj_add_event_cb(btn, [](lv_event_t* e) {
+            if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
+            auto* mgr = static_cast<ScreenManager*>(lv_event_get_user_data(e));
+            auto* btn = lv_event_get_target_obj(e);
+            const auto s = static_cast<OtaService::State>(
+                (intptr_t)lv_obj_get_user_data(btn));
+            auto& svc = mgr->app().ota();
+            if (s == OtaService::State::UpdateAvailable) {
+                svc.requestApply();
+            } else {
+                // UpToDate / Failed → re-run a check.
+                svc.requestCheck();
+            }
+        }, LV_EVENT_CLICKED, this);
+
+        if (group_) {
+            lv_group_add_obj(group_, btn);
+            lv_group_focus_obj(btn);
+        }
+    }
+
+    auto* hint = lv_label_create(root_);
+    lv_label_set_text(hint, "2x back");
+    lv_obj_set_style_text_color(hint, Palette::ink3(), 0);
+    lv_obj_set_style_text_font(hint, &lv_font_montserrat_10, 0);
+    lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -8);
 }
 
 }  // namespace howler::screens

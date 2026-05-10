@@ -44,6 +44,9 @@ public:
                         std::string& outHash) override;
     NetResult fetchIconManifest(std::vector<std::string>& outNames) override;
     NetResult peekHomeCounter(int64_t& outCounter) override;
+    NetResult checkFirmwareUpdate(
+        const std::string& currentVersion,
+        howler::domain::UpdateAdvisory& outAdvisory) override;
 
 private:
     const char* backendUrl_;

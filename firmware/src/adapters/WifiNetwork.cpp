@@ -297,6 +297,32 @@ howler::application::NetResult WifiNetwork::fetchIconManifest(
     return r;
 }
 
+howler::application::NetResult WifiNetwork::checkFirmwareUpdate(
+    const std::string& currentVersion,
+    howler::domain::UpdateAdvisory& outAdvisory) {
+    // Reset to a clean "no update" answer so a partial parse fails
+    // closed: the caller will see updateAvailable=false even if we
+    // bail mid-deserialize.
+    outAdvisory = {};
+    String body;
+    String path = "/api/firmware/check?fwVersion=";
+    path += currentVersion.c_str();
+    auto r = doGet(path, body);
+    if (!r.isOk()) return r;
+    JsonDocument doc;
+    if (deserializeJson(doc, body))
+        return howler::application::NetResult::transient();
+    outAdvisory.updateAvailable = doc["updateAvailable"] | false;
+    if (!outAdvisory.updateAvailable) return r;
+    outAdvisory.version     = doc["version"] | "";
+    outAdvisory.sha256      = doc["sha256"]  | "";
+    outAdvisory.sizeBytes   = doc["sizeBytes"] | static_cast<long long>(0);
+    outAdvisory.downloadUrl = doc["downloadUrl"] | "";
+    outAdvisory.downloadUrlExpiresInSec =
+        doc["downloadUrlExpiresInSec"] | 0;
+    return r;
+}
+
 howler::application::NetResult WifiNetwork::peekHomeCounter(int64_t& outCounter) {
     String body;
     auto r = doGet("/api/homes/peek", body);

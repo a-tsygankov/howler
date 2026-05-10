@@ -56,7 +56,8 @@ void test_app_first_boot_lands_on_pair_screen() {
 
     StubWifi wifi;
     howler::application::NoopLedRing led;
-    App app(net, pairApi, clock, rng, storage, input, wifi, led, "deviceA");
+    howler::application::NoopOtaPort ota;
+    App app(net, pairApi, clock, rng, storage, input, wifi, led, ota, "deviceA");
     app.begin();
     TEST_ASSERT_EQUAL(static_cast<int>(ScreenId::Pair),
                       static_cast<int>(app.router().current()));
@@ -75,7 +76,8 @@ void test_app_paired_token_lands_on_dashboard() {
 
     StubWifi wifi;
     howler::application::NoopLedRing led;
-    App app(net, pairApi, clock, rng, storage, input, wifi, led, "deviceA");
+    howler::application::NoopOtaPort ota;
+    App app(net, pairApi, clock, rng, storage, input, wifi, led, ota, "deviceA");
     app.begin();
     TEST_ASSERT_EQUAL(static_cast<int>(ScreenId::Dashboard),
                       static_cast<int>(app.router().current()));
@@ -93,7 +95,8 @@ void test_app_pair_confirm_swaps_to_dashboard() {
 
     StubWifi wifi;
     howler::application::NoopLedRing led;
-    App app(net, pairApi, clock, rng, storage, input, wifi, led, "deviceA");
+    howler::application::NoopOtaPort ota;
+    App app(net, pairApi, clock, rng, storage, input, wifi, led, ota, "deviceA");
     app.begin();
     TEST_ASSERT_EQUAL(static_cast<int>(ScreenId::Pair),
                       static_cast<int>(app.router().current()));
@@ -114,7 +117,8 @@ void test_app_commit_pending_done_drops_dashboard_row() {
 
     StubWifi wifi;
     howler::application::NoopLedRing led;
-    App app(net, pairApi, clock, rng, storage, input, wifi, led, "deviceA");
+    howler::application::NoopOtaPort ota;
+    App app(net, pairApi, clock, rng, storage, input, wifi, led, ota, "deviceA");
     app.begin();
     // Seed the dashboard with one item, then commit a done.
     howler::domain::DashboardItem d;
@@ -148,7 +152,8 @@ void test_app_wifi_scan_populates_list() {
     wifi.scanResult_ = { w };
 
     howler::application::NoopLedRing led;
-    App app(net, pairApi, clock, rng, storage, input, wifi, led, "deviceA");
+    howler::application::NoopOtaPort ota;
+    App app(net, pairApi, clock, rng, storage, input, wifi, led, ota, "deviceA");
     app.begin();
     TEST_ASSERT_TRUE(app.refreshWifiScan());
     TEST_ASSERT_EQUAL_size_t(1, app.wifiScan().size());
@@ -165,7 +170,8 @@ void test_app_wifi_save_persists_and_connects() {
     StubWifi wifi;
 
     howler::application::NoopLedRing led;
-    App app(net, pairApi, clock, rng, storage, input, wifi, led, "deviceA");
+    howler::application::NoopOtaPort ota;
+    App app(net, pairApi, clock, rng, storage, input, wifi, led, ota, "deviceA");
     app.begin();
     howler::domain::WifiConfig cfg;
     cfg.ssid = "home";

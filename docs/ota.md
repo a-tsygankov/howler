@@ -11,7 +11,7 @@ backend read path; everything below it is still to do.
 
 ---
 
-## Status — slices F0 + F1 + F2 + F3 (foundation + admin + signed-build CI + presigning)
+## Status — slices F0 + F1 + F2 + F3 + F4 (foundation through device-side self-update)
 
 | | |
 | --- | --- |
@@ -19,7 +19,8 @@ backend read path; everything below it is still to do.
 | Drizzle schema (`firmwareReleases`) | ✅ F0 |
 | `GET /api/firmware/check?fwVersion=X` | ✅ F0 + F3 (now returns `downloadUrl`) |
 | `POST /api/devices/heartbeat {fwVersion}` | ✅ F0 |
-| Semver-aware version compare | ✅ F0 |
+| Semver-aware version compare (server) | ✅ F0 |
+| Semver-aware version compare (firmware port — `domain/Version.h`) | ✅ F4 |
 | Rollout rules (`deviceIds` + `canaryPercent`) | ✅ F0 |
 | `requireAdmin()` middleware (per-user, `users.is_admin`) | ✅ F1 + migration 0014 |
 | `POST /api/firmware` (admin upload-manifest) | ✅ F1 |
@@ -27,7 +28,13 @@ backend read path; everything below it is still to do.
 | `GET /api/firmware` (admin listing) | ✅ F1 |
 | SigV4 R2 presigner (`backend/src/services/r2-presign.ts`) | ✅ F3 — manual `crypto.subtle`, no AWS SDK in the Worker bundle |
 | `firmware-release.yml` workflow + signing scripts | ✅ F2 — RSA-3072 detached signature, R2 upload, manifest register on `release/v*` push |
-| Tests | ✅ — backend 104/104 (across F0 + F1 + F3); firmware 91/91 |
+| `IOtaPort` + `OtaService` state machine | ✅ F4 |
+| `EspOtaAdapter` — esp_https_ota + streamed sha256 verify | ✅ F4 |
+| `INetwork::checkFirmwareUpdate` (firmware → backend) | ✅ F4 |
+| `partitions/default_16MB.csv` — dual-app `ota_0` / `ota_1` | ✅ F4 |
+| Settings → Updates screen (state-machine driven flow) | ✅ F4 |
+| Pending-verify cancel-rollback hook (`markRunningBuildValid`) | ✅ F4 (F5 surface; fires on first successful sync) |
+| Tests | ✅ — backend 104/104 (F0–F3) + firmware 107/107 (incl. F4 OtaService + Version compare) |
 
 The shape is intentionally additive — old clients ignore the new
 endpoints; `firmware_releases` is empty until something INSERTs a
@@ -232,37 +239,88 @@ wrangler secret put R2_SECRET_ACCESS_KEY
 Generate the access key in the Cloudflare dashboard under
 R2 → Manage R2 API Tokens, scoped read-only on `howler-firmware`.
 
-### F4 — Firmware self-update (large, ~1 week, hardware required)
+### F4 — Firmware self-update ✅ (landed in dev-35-ota-f4-self-update)
 
-- New PlatformIO env or build flag for `esp_https_ota`-based update
-  flow. ESP-IDF component already vendored as part of Arduino-ESP32.
-- Partition table: `factory + ota_0 + ota_1 + otadata` (8 MB flash
-  has room — current `partitions/default_16MB.csv` already specs
-  this; no migration needed).
-- New `IOtaPort` / `EspOtaAdapter` pair in
-  `firmware/src/{application,adapters}/`. Exposed methods:
-  - `checkForUpdate(currentVersion) → optional<UpdateAdvisory>`
-  - `downloadAndFlash(advisory) → bool` (verifies signature + sha256
-    before swapping boot partition).
-- Driven from the heartbeat callback when `updateAvailable: true`
-  lands. Settings → "Check for updates" tile triggers the same path
-  on demand.
-- Hardware-only test: HIL-3 on a real CrowPanel — flash a v0.3.x,
-  promote v0.3.x+1, observe the swap + first-boot heartbeat.
+End-to-end opt-in OTA flow shipped — dial polls `/api/firmware/check`
+on demand from Settings → Updates, follows the 5-min pre-signed R2
+URL with `esp_https_ota`, streams a SHA-256 over the inactive slot,
+and swaps the boot partition only after the digest matches the
+advisory. No reboots happen out from under the user.
 
-### F5 — Pending-verify + auto-rollback (small once F4 lands)
+Implementation map:
 
-- After flash, mark new image `pending_verify`
-  (`esp_ota_mark_app_valid_cancel_rollback` deferred).
-- On first successful sync round (or heartbeat 200 — whichever the
-  device sees first), call `cancel_rollback`.
-- If the dial reboots before that lands, the bootloader auto-falls-
-  back to the previous slot.
-- Server-side observability: log heartbeat events with their
+- **Domain types** — `firmware/src/domain/UpdateAdvisory.h`
+  (server-shape value type) and `firmware/src/domain/Version.h`
+  (port of `services/version.ts`, used for the local downlevel-
+  rejection guard). Native tests cover the compare semantics
+  including the prerelease-sorts-before-release rule.
+- **Application layer** — `application/OtaService` runs the
+  state machine: `Idle → Checking → UpdateAvailable → Downloading
+  → Flashed → (reboot)` with `Failed` and `UpToDate` terminal
+  states and a `requestCheck()/requestApply()/reset()` API the
+  screen layer drives. Defense-in-depth: rejects advisories
+  whose `compareVersions(adv.version, fwVersion) <= 0` even if
+  the server volunteers them.
+- **Network port** — `INetwork::checkFirmwareUpdate(currentVersion,
+  outAdvisory)` plus its `WifiNetwork` implementation. Default
+  impl returns `transient` so host stubs that don't override
+  see "no advisory available" rather than crashing.
+- **Hardware adapter** — `adapters/EspOtaAdapter` wraps
+  `esp_https_ota_*` for the chunked flash, drives a streaming
+  `mbedtls_sha256` over the freshly-written partition before
+  calling `esp_https_ota_finish`, exposes `isPendingVerify()` /
+  `markValid()` for the slice-F5 cancel-rollback hook.
+- **Partition table** — `partitions/default_16MB.csv` switched
+  from single-app + 11 MB SPIFFS to dual-app (4 MB each) +
+  ~7.94 MB SPIFFS. *Note:* this is a clean-flash event for any
+  device already in the wild; the first OTA-capable build lands
+  via USB and from then on `esp_https_ota` self-updates work.
+- **Settings flow** — new `ScreenId::SettingsUpdates`. Auto-runs
+  a check on entry; renders Idle/Checking/UpToDate/UpdateAvailable
+  /Downloading/Flashed/Failed; tap on the action button advances
+  the state machine; long-press / 2x back returns to Settings.
+  Screen rebuilds whenever `OtaService::state()` changes so
+  transitions appear within one frame.
+- **F5 hook** — `App::tick` calls `otaSvc_.markRunningBuildValid()`
+  on the first sync round that lands `lastSyncOk()` after a
+  pending-verify boot. Idempotent.
+
+Hardware verification (HIL-3) still pending — needs a real CrowPanel
+to flash v0.3.x, promote v0.3.x+1, and observe the slot swap +
+pending-verify cancel. Native tests (107/107) cover the state
+machine, downlevel rejection, error mapping, and reboot grace
+timing without touching real flash.
+
+### F5 — Pending-verify + auto-rollback (in flight)
+
+The cancel-rollback wiring landed alongside F4 — `App::tick` calls
+`OtaService::markRunningBuildValid()` on the first sync round that
+sets `lastSyncOk()`, which forwards to
+`esp_ota_mark_app_valid_cancel_rollback()`. If the dial reboots
+before that lands the bootloader auto-falls-back to the previous
+slot.
+
+Remaining for a fully-fledged F5 ship:
+
+- **Server-side observability**. Log heartbeat events with their
   `fwVersion` and dashboard the per-version success rate. If a
   release shows <90 % success across the first 100 devices, an
   on-call human flips `active = 0` (the F1 endpoint already
-  supports this).
+  supports this). Workers Analytics Engine is wired in
+  `wrangler.toml` as a commented binding — uncomment + redeploy
+  once the CF account has Analytics Engine enabled.
+- **HIL-3 verification on real hardware**. Promote a known-bad
+  build, confirm the dial flashes it, panics on first boot, and
+  comes up on the previous slot after the bootloader's auto-
+  rollback. Then promote a known-good build and confirm
+  `markValid` clears the `PENDING_VERIFY` state on the next
+  sync round.
+- **Yank-vs-rollback distinction in the docs**. A yanked build
+  on a happy device stays put (the dial can't see "the server
+  yanked this"); only the bootloader's auto-rollback covers the
+  unhealthy case. Operators ship a higher-numbered re-release of
+  the old code to force a downgrade — covered in the
+  Operational notes section below.
 
 ---
 

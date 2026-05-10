@@ -17,6 +17,7 @@
 #include "adapters/ArduinoClock.h"
 #include "adapters/CompositeInput.h"
 #include "adapters/Cst816Touch.h"
+#include "adapters/EspOtaAdapter.h"
 #include "adapters/EspRandom.h"
 #include "adapters/LedRing.h"
 #include "adapters/NoopNetwork.h"
@@ -52,6 +53,7 @@ howler::adapters::CompositeInput<
 howler::adapters::WifiStation         wifiStation;
 howler::adapters::LedRing             ledRing;
 howler::adapters::WifiCaptivePortal   captivePortal;
+howler::adapters::EspOtaAdapter       espOta;
 
 howler::adapters::NoopNetwork  noopNet;
 howler::adapters::WifiPairApi  pairApi(HOWLER_BACKEND_URL);
@@ -196,7 +198,7 @@ void setup() {
     auto* net = pickNetwork();
     static howler::application::App app(
         *net, pairApi, arduinoClock, espRandom, nvsStorage, compositeInput,
-        wifiStation, ledRing, deviceIdFromMac());
+        wifiStation, ledRing, espOta, deviceIdFromMac());
     static howler::screens::ScreenManager screens(app, compositeInput);
     g_app = &app;
     g_screens = &screens;
