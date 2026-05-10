@@ -65,9 +65,15 @@ const toDto = (r: LabelRow) => ({
 // avatar_id value. Accepts either format from the client; stores the
 // unified form in `avatar_id`. Returns the resolved avatarId for
 // inclusion in the response DTO.
+//
+// Param shape allows `undefined` because zod's `.nullish()` produces
+// `string | null | undefined` and tsconfig's exactOptionalPropertyTypes
+// distinguishes "field absent" from "field set to undefined" — we
+// just want all three (absent / null / present) to be treated as
+// "no value" by the helper.
 const normaliseAvatar = (input: {
-  avatarId?: string | null;
-  icon?: string | null;
+  avatarId?: string | null | undefined;
+  icon?: string | null | undefined;
 }): string | null => {
   if (input.avatarId) return input.avatarId;
   if (input.icon) return `icon:${input.icon}`;
