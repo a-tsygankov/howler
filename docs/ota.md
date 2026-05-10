@@ -291,36 +291,75 @@ pending-verify cancel. Native tests (107/107) cover the state
 machine, downlevel rejection, error mapping, and reboot grace
 timing without touching real flash.
 
-### F5 — Pending-verify + auto-rollback (in flight)
+### F5 — Pending-verify + auto-rollback + observability (mostly landed)
 
-The cancel-rollback wiring landed alongside F4 — `App::tick` calls
-`OtaService::markRunningBuildValid()` on the first sync round that
-sets `lastSyncOk()`, which forwards to
+Three pieces, two now shipped:
+
+#### Cancel-rollback (✅ landed in F4)
+
+`App::tick` calls `OtaService::markRunningBuildValid()` on the first
+sync round that sets `lastSyncOk()`, which forwards to
 `esp_ota_mark_app_valid_cancel_rollback()`. If the dial reboots
 before that lands the bootloader auto-falls-back to the previous
 slot.
 
-Remaining for a fully-fledged F5 ship:
+#### Server-side observability (✅ landed in dev-38-ota-admin-ui)
 
-- **Server-side observability**. Log heartbeat events with their
-  `fwVersion` and dashboard the per-version success rate. If a
-  release shows <90 % success across the first 100 devices, an
-  on-call human flips `active = 0` (the F1 endpoint already
-  supports this). Workers Analytics Engine is wired in
-  `wrangler.toml` as a commented binding — uncomment + redeploy
-  once the CF account has Analytics Engine enabled.
+`GET /api/firmware/health` joins `firmware_releases ⨝ devices` on
+`fw_version` and returns per-version aggregates:
+
+```json
+{
+  "generatedAt": 1747845600,
+  "windowAliveSec": 86400,
+  "windowRecentSec": 3600,
+  "versions": [
+    { "version": "1.4.2", "active": true, "knownRelease": true,
+      "deviceCount": 14, "aliveCount": 12, "recentCount": 7,
+      "promotedAt": 1747840000, "yankedAt": null,
+      "sha256": "f00…", "sizeBytes": 1410893,
+      "lastSeenAt": 1747845440 },
+    …
+  ]
+}
+```
+
+Three windows give ops the right altitude for any decision:
+
+| Field | What it answers |
+| --- | --- |
+| `deviceCount` | "How many devices are on this version, ever?" |
+| `aliveCount` (last 24 h) | "How many actually came back online recently?" |
+| `recentCount` (last 1 h) | "Watch a fresh promotion roll out in real time." |
+
+Devices reporting a version that's not in `firmware_releases` (a
+hand-flashed dev build, or a release that was hard-deleted from the
+manifest) appear as `knownRelease: false` rows so drift is visible.
+
+The webapp surfaces this at **Settings → Firmware (admin)**
+(`/settings/firmware`) — gated by `users.is_admin = 1`. Admins can
+promote / yank releases without `curl`. Server enforces the same
+gate via `requireAdmin()` middleware, so a hand-typed URL on a
+non-admin account returns 403.
+
+Pure D1 — no Workers Analytics Engine binding required, so the
+endpoint works today even before AE is enabled on the account.
+When AE lands (the binding is already commented in `wrangler.toml`),
+a richer time-series view can plug in alongside this snapshot view.
+
+#### Still pending
+
 - **HIL-3 verification on real hardware**. Promote a known-bad
   build, confirm the dial flashes it, panics on first boot, and
   comes up on the previous slot after the bootloader's auto-
   rollback. Then promote a known-good build and confirm
   `markValid` clears the `PENDING_VERIFY` state on the next
   sync round.
-- **Yank-vs-rollback distinction in the docs**. A yanked build
-  on a happy device stays put (the dial can't see "the server
-  yanked this"); only the bootloader's auto-rollback covers the
-  unhealthy case. Operators ship a higher-numbered re-release of
-  the old code to force a downgrade — covered in the
-  Operational notes section below.
+- **Yank-vs-rollback distinction**. A yanked build on a happy
+  device stays put (the dial can't see "the server yanked this");
+  only the bootloader's auto-rollback covers the unhealthy case.
+  Operators ship a higher-numbered re-release of the old code to
+  force a downgrade — covered in the Operational notes below.
 
 ---
 

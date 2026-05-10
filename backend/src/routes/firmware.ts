@@ -313,6 +313,148 @@ export const firmwareRouter = new Hono<{
     return c.body(null, 204);
   })
 
+  // GET /api/firmware/health — per-version device fleet aggregates
+  // for the admin UI. Each row in `firmware_releases` is union'd
+  // with the live device population (devices.fw_version) so admins
+  // can see "what's actually deployed" alongside "what's promoted",
+  // catching drift like a yanked build still running on N devices.
+  //
+  // The query is a self-join on devices grouped by fw_version; the
+  // outer LEFT JOIN brings in the release metadata (active flag,
+  // promotion timestamps) when one exists. A device running a
+  // version that's NOT in the manifest table — e.g. a hand-flashed
+  // dev build, or a release that was hard-deleted — still appears
+  // as an "unknown release" row so it's visible to ops.
+  //
+  // Counts:
+  //   deviceCount     = total non-deleted devices on this version
+  //   aliveCount      = subset whose last_seen_at is within 24 h
+  //   recentSeenCount = subset whose last_seen_at is within 1 h
+  //                    (tighter window for spotting fresh failures
+  //                    on a just-promoted release)
+  //
+  // The endpoint is the foundation for slice F5 observability.
+  // Pure D1 — no Analytics Engine binding required, so it works
+  // today even before Workers Analytics Engine is enabled on the
+  // account. When/if AE lands, a richer time-series view can plug
+  // in alongside this snapshot view.
+  .get("/health", requireAdmin(), async (c) => {
+    const nowSec = clock().nowSec();
+    const aliveThreshold  = nowSec - 24 * 60 * 60;
+    const recentThreshold = nowSec - 60 * 60;
+
+    // Step 1: device-side aggregation — every fw_version currently
+    // running on some device, with its active-population stats.
+    const deviceRows = await c.env.DB
+      .prepare(
+        `SELECT
+            fw_version AS version,
+            COUNT(*) AS device_count,
+            SUM(CASE WHEN last_seen_at >= ? THEN 1 ELSE 0 END) AS alive_count,
+            SUM(CASE WHEN last_seen_at >= ? THEN 1 ELSE 0 END) AS recent_count,
+            MAX(last_seen_at) AS last_seen_at
+         FROM devices
+         WHERE is_deleted = 0
+           AND fw_version IS NOT NULL
+           AND fw_version != ''
+         GROUP BY fw_version`,
+      )
+      .bind(aliveThreshold, recentThreshold)
+      .all<{
+        version: string;
+        device_count: number;
+        alive_count: number;
+        recent_count: number;
+        last_seen_at: number | null;
+      }>();
+
+    // Step 2: release manifest — every row from firmware_releases.
+    // We left-join into the device aggregation so a promoted-but-
+    // unflashed version still appears with zero counts, AND a
+    // device-only version (no manifest row) still appears below.
+    const releaseRows = await c.env.DB
+      .prepare(
+        `SELECT version, sha256, size_bytes, active, created_at,
+                promoted_at, yanked_at
+         FROM firmware_releases
+         ORDER BY created_at DESC`,
+      )
+      .all<{
+        version: string;
+        sha256: string;
+        size_bytes: number;
+        active: number;
+        created_at: number;
+        promoted_at: number | null;
+        yanked_at: number | null;
+      }>();
+
+    const deviceByVersion = new Map(
+      deviceRows.results.map((r) => [r.version, r]),
+    );
+    const seenVersions = new Set<string>();
+    const out: Array<{
+      version: string;
+      knownRelease: boolean;
+      active: boolean;
+      promotedAt: number | null;
+      yankedAt: number | null;
+      sha256: string | null;
+      sizeBytes: number | null;
+      deviceCount: number;
+      aliveCount: number;
+      recentCount: number;
+      lastSeenAt: number | null;
+    }> = [];
+
+    // Releases first (preserve created_at desc so the newest is on
+    // top of the admin table). Then any device-only versions
+    // (orphans / dev builds) trail at the bottom — alphabetical so
+    // the row order is stable across calls.
+    for (const r of releaseRows.results) {
+      const d = deviceByVersion.get(r.version);
+      seenVersions.add(r.version);
+      out.push({
+        version: r.version,
+        knownRelease: true,
+        active: r.active === 1,
+        promotedAt: r.promoted_at,
+        yankedAt: r.yanked_at,
+        sha256: r.sha256,
+        sizeBytes: r.size_bytes,
+        deviceCount: d?.device_count ?? 0,
+        aliveCount: d?.alive_count ?? 0,
+        recentCount: d?.recent_count ?? 0,
+        lastSeenAt: d?.last_seen_at ?? null,
+      });
+    }
+    const orphans = deviceRows.results
+      .filter((d) => !seenVersions.has(d.version))
+      .sort((a, b) => a.version.localeCompare(b.version));
+    for (const d of orphans) {
+      out.push({
+        version: d.version,
+        knownRelease: false,
+        active: false,
+        promotedAt: null,
+        yankedAt: null,
+        sha256: null,
+        sizeBytes: null,
+        deviceCount: d.device_count,
+        aliveCount: d.alive_count,
+        recentCount: d.recent_count,
+        lastSeenAt: d.last_seen_at,
+      });
+    }
+
+    return c.json({
+      generatedAt: nowSec,
+      windowAliveSec: 24 * 60 * 60,
+      windowRecentSec: 60 * 60,
+      versions: out,
+    });
+  })
+
   // GET /api/firmware — admin-only listing for the ops UI. Sorted
   // by created_at desc so the most-recent build is at the top.
   .get("/", requireAdmin(), async (c) => {

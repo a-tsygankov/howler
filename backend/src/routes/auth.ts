@@ -321,11 +321,11 @@ export const authRouter = new Hono<{ Bindings: Bindings; Variables: AuthVars }>(
       .bind(u.homeId)
       .first<HomeRow & { avatar_id: string | null }>();
     const user = await c.env.DB.prepare(
-      `SELECT id, home_id, display_name, login, avatar_id FROM users
+      `SELECT id, home_id, display_name, login, avatar_id, is_admin FROM users
        WHERE id = ? AND is_deleted = 0`,
     )
       .bind(u.userId)
-      .first<UserRow & { avatar_id: string | null }>();
+      .first<UserRow & { avatar_id: string | null; is_admin: number }>();
     if (!home || !user) return c.json({ error: "session orphan" }, 404);
     return c.json({
       homeId: home.id,
@@ -337,6 +337,12 @@ export const authRouter = new Hono<{ Bindings: Bindings; Variables: AuthVars }>(
       userId: user.id,
       userDisplayName: user.display_name,
       userAvatarId: user.avatar_id,
+      // Phase 6 OTA admin gate (migration 0014). The webapp reads
+      // this to decide whether to surface the `/settings/firmware`
+      // admin tile + the promote/yank controls. Server-side
+      // enforcement is unchanged — `requireAdmin()` re-checks
+      // `users.is_admin` on every admin request.
+      isAdmin: user.is_admin === 1,
     });
   })
 
