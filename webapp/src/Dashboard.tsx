@@ -53,6 +53,7 @@ import {
   subscribePush,
   unsubscribePush,
 } from "./lib/push.ts";
+import { AvatarUploadButton } from "./components/AvatarUploadButton.tsx";
 import { HowlerAvatar } from "./components/HowlerAvatar.tsx";
 import { InstallAppBlock } from "./components/InstallAppBlock.tsx";
 import { Icon, type IconName } from "./components/Icon.tsx";
@@ -590,10 +591,34 @@ const HomeAvatarTile = ({
       e.target.value = "";
     }
   };
+  // Right-click / two-finger-tap on the avatar reverts to the
+  // seed-derived initials. Without a "remove photo" affordance the
+  // user has no path back from a misplaced upload short of opening
+  // dev tools or asking an admin. The label is kept as the click
+  // target for the file picker; the contextmenu binding adds a
+  // separate clear path that doesn't compete with the upload UX.
+  const onClear = async (e: React.MouseEvent) => {
+    e.preventDefault();
+    if (avatarId === null || busy) return;
+    setBusy(true);
+    try {
+      await updateHome({ avatarId: null });
+      onChanged();
+    } catch (err) {
+      console.warn(err);
+    } finally {
+      setBusy(false);
+    }
+  };
   return (
     <label
       className={`cursor-pointer ${busy ? "opacity-60" : ""}`}
-      title="Change home avatar"
+      title={
+        avatarId
+          ? "Change home avatar (right-click to clear)"
+          : "Upload a home avatar"
+      }
+      onContextMenu={onClear}
     >
       <input
         type="file"
@@ -1763,10 +1788,12 @@ const IconPicker = ({
 );
 
 // Task-side avatar picker. Same icon-set surface as labels, plus a
-// "use label's icon" reset button. Photo upload + AI conversion is
-// stubbed: clicking the upload button surfaces a clear "coming soon"
-// message rather than silently uploading something we don't yet
-// know how to convert into an icon.
+// "use label's icon" reset button and a photo-upload tile. The
+// uploaded photo renders edge-to-edge on the webapp; the device
+// firmware falls back to the task title's initials (TaskCard.h
+// `iconKeyFromAvatar` returns nullptr for UUID avatars) so the
+// dial stays consistent without us round-tripping the photo
+// through 24×24 1-bit-bitmap conversion.
 const TaskAvatarPicker = ({
   value,
   inheritedFromLabel,
@@ -1776,6 +1803,7 @@ const TaskAvatarPicker = ({
   inheritedFromLabel: boolean;
   onPick: (next: string | null) => void;
 }) => {
+  const isPhoto = value !== null && !value.startsWith("icon:");
   return (
     <div className="space-y-2">
       <div className="grid grid-cols-10 gap-1">
@@ -1810,13 +1838,20 @@ const TaskAvatarPicker = ({
             </button>
           );
         })}
+        <AvatarUploadButton variant="tile" onUploaded={(id) => onPick(id)} />
       </div>
-      <p className="text-[11px] text-ink-3">
-        Upload a photo →{" "}
-        <span className="italic">
-          AI conversion to icon coming soon (Phase 7).
-        </span>
-      </p>
+      {isPhoto && (
+        <p className="cap">
+          Photo uploaded.{" "}
+          <button
+            type="button"
+            onClick={() => onPick(null)}
+            className="underline hover:text-ink"
+          >
+            Remove
+          </button>
+        </p>
+      )}
     </div>
   );
 };
@@ -2175,7 +2210,28 @@ const UserRow = ({
               </button>
             );
           })}
+          {/* Photo upload as the last tile in the grid — keeps the
+              row geometry uniform and signals "this is just another
+              avatar choice". On success the editor flips to the
+              UUID-avatar state; the surrounding HowlerAvatar at the
+              top of the editor previews the photo immediately. */}
+          <AvatarUploadButton
+            variant="tile"
+            onUploaded={(id) => setAvatarId(id)}
+          />
         </div>
+        {avatarId && !avatarId.startsWith("icon:") && (
+          <p className="cap mt-1">
+            Photo uploaded.{" "}
+            <button
+              type="button"
+              onClick={() => setAvatarId(null)}
+              className="underline hover:text-ink"
+            >
+              Remove
+            </button>
+          </p>
+        )}
 
         <div className="cap mt-3 mb-1">Background colour</div>
         <div className="flex flex-wrap gap-1.5">
