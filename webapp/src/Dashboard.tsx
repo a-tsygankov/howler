@@ -612,14 +612,16 @@ const HomeAvatarTile = ({
       e.target.value = "";
     }
   };
-  // Right-click / two-finger-tap on the avatar reverts to the
-  // seed-derived initials. Without a "remove photo" affordance the
-  // user has no path back from a misplaced upload short of opening
-  // dev tools or asking an admin. The label is kept as the click
-  // target for the file picker; the contextmenu binding adds a
-  // separate clear path that doesn't compete with the upload UX.
+  // Reset the home avatar back to seed-derived initials. The clear
+  // affordance used to be a contextmenu (right-click) handler — fine
+  // on desktop but unreachable on mobile / touchscreens, where
+  // long-press already triggers the system's contextual UI. Now it's
+  // a small visible × button overlaid on the bottom-right of the
+  // disc, only when an avatar is set. Click stops propagation so the
+  // surrounding <label>'s file-picker click handler doesn't fire.
   const onClear = async (e: React.MouseEvent) => {
     e.preventDefault();
+    e.stopPropagation();
     if (avatarId === null || busy) return;
     setBusy(true);
     try {
@@ -632,29 +634,38 @@ const HomeAvatarTile = ({
     }
   };
   return (
-    <label
-      className={`cursor-pointer ${busy ? "opacity-60" : ""}`}
-      title={
-        avatarId
-          ? "Change home avatar (right-click to clear)"
-          : "Upload a home avatar"
-      }
-      onContextMenu={onClear}
-    >
-      <input
-        type="file"
-        accept="image/jpeg,image/png,image/webp"
-        onChange={onPick}
-        disabled={busy}
-        className="hidden"
-      />
-      <HowlerAvatar
-        avatarId={avatarId}
-        seed={seed}
-        initials={seed.slice(0, 2).toUpperCase()}
-        size={42}
-      />
-    </label>
+    <div className={`group relative ${busy ? "opacity-60" : ""}`}>
+      <label
+        className="block cursor-pointer"
+        title={avatarId ? "Change home avatar" : "Upload a home avatar"}
+      >
+        <input
+          type="file"
+          accept="image/jpeg,image/png,image/webp"
+          onChange={onPick}
+          disabled={busy}
+          className="hidden"
+        />
+        <HowlerAvatar
+          avatarId={avatarId}
+          seed={seed}
+          initials={seed.slice(0, 2).toUpperCase()}
+          size={42}
+        />
+      </label>
+      {avatarId !== null && (
+        <button
+          type="button"
+          onClick={onClear}
+          disabled={busy}
+          aria-label="Clear home avatar"
+          title="Clear avatar"
+          className="absolute -bottom-0.5 -right-0.5 flex h-5 w-5 items-center justify-center rounded-full border border-line-soft bg-paper text-xs leading-none text-ink-2 opacity-0 shadow-sm transition-opacity hover:text-ink group-hover:opacity-100 focus:opacity-100"
+        >
+          ×
+        </button>
+      )}
+    </div>
   );
 };
 

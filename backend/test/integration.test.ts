@@ -17,57 +17,7 @@ import init0012 from "../migrations/0012_update_counter.sql?raw";
 import init0013 from "../migrations/0013_firmware_releases.sql?raw";
 import init0014 from "../migrations/0014_user_admin.sql?raw";
 
-// Parse SQL into top-level statements. The naive split-on-';' breaks
-// on trigger bodies (`CREATE TRIGGER … BEGIN … ; … END;`) — every
-// statement inside a BEGIN/END block has its own ';' that the splitter
-// would treat as the trigger's terminator. This walker tokenises on
-// BEGIN/END/; and only ends a statement on a top-level ';'. Everything
-// else is identical to the previous splitter — comment lines stripped,
-// whitespace collapsed.
-const splitStatements = (sql: string): string[] => {
-  // Strip end-of-line `--` comments AND drop fully-commented lines.
-  // Critical for migrations that put trailing comments on column
-  // definitions (e.g. `name TEXT PRIMARY KEY, -- lowercase, kebab`)
-  // — once everything is collapsed onto one line the `--` comments
-  // out the rest of the statement, producing "incomplete input"
-  // errors from D1's parser. We don't try to honour `--` inside
-  // string literals; no migration uses `--` inside a literal today.
-  const stripped = sql
-    .split("\n")
-    .map((line) => {
-      const idx = line.indexOf("--");
-      return idx >= 0 ? line.slice(0, idx) : line;
-    })
-    .filter((line) => line.trim().length > 0)
-    .join("\n");
-  const out: string[] = [];
-  let cur = "";
-  let depth = 0;
-  const tokens = stripped.split(/(\bBEGIN\b|\bEND\b|;)/gi);
-  for (const tok of tokens) {
-    if (!tok) continue;
-    const upper = tok.toUpperCase();
-    if (upper === "BEGIN") {
-      depth++;
-      cur += tok;
-    } else if (upper === "END") {
-      if (depth > 0) depth--;
-      cur += tok;
-    } else if (tok === ";") {
-      cur += tok;
-      if (depth === 0) {
-        const trimmed = cur.trim();
-        if (trimmed) out.push(trimmed);
-        cur = "";
-      }
-    } else {
-      cur += tok;
-    }
-  }
-  const tail = cur.trim();
-  if (tail) out.push(tail);
-  return out;
-};
+import { applyMigrationSql } from "./helpers/migrations.ts";
 
 const applyMigrations = async () => {
   // 0011 (seed_icons.sql) inserts ~20 KB of bitmap data — too heavy
@@ -75,11 +25,11 @@ const applyMigrations = async () => {
   // own minimal rows directly via env.DB.exec. Keeping 0011 out of
   // the bulk migration loop preserves boot speed; 0010 (the table
   // schema) IS applied so the tests can INSERT against `icons`.
-  for (const sql of [init0000, init0001, init0002, init0003, init0004, init0005, init0006, init0007, init0008, init0009, init0010, init0012, init0013, init0014]) {
-    for (const s of splitStatements(sql)) {
-      await env.DB.exec(s.replace(/\s+/g, " "));
-    }
-  }
+  await applyMigrationSql(env.DB, [
+    init0000, init0001, init0002, init0003, init0004, init0005,
+    init0006, init0007, init0008, init0009, init0010, init0012,
+    init0013, init0014,
+  ]);
 };
 
 const reset = async () => {
