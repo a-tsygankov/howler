@@ -14,6 +14,7 @@ import init0008 from "../migrations/0008_rule_modified_at.sql?raw";
 import init0009 from "../migrations/0009_user_bg_color.sql?raw";
 import init0012 from "../migrations/0012_update_counter.sql?raw";
 import init0013 from "../migrations/0013_firmware_releases.sql?raw";
+import init0014 from "../migrations/0014_user_admin.sql?raw";
 
 // Parse SQL into top-level statements. The naive split-on-';' breaks
 // on trigger bodies (`CREATE TRIGGER … BEGIN … ; … END;`) — every
@@ -62,7 +63,7 @@ const applyMigrations = async () => {
   // bitmap data we don't need in the in-memory DB. Leaving them out
   // keeps test boot fast; if a future test exercises the icon
   // pipeline they should be added here.
-  for (const sql of [init0000, init0001, init0002, init0003, init0004, init0005, init0006, init0007, init0008, init0009, init0012, init0013]) {
+  for (const sql of [init0000, init0001, init0002, init0003, init0004, init0005, init0006, init0007, init0008, init0009, init0012, init0013, init0014]) {
     for (const s of splitStatements(sql)) {
       await env.DB.exec(s.replace(/\s+/g, " "));
     }
@@ -1320,12 +1321,10 @@ describe("OTA — firmware release advisory (Phase 6 foundation)", () => {
 describe("OTA — admin write path (Phase 6 slice F1)", () => {
   let nextIp = 500;
 
-  // The admin allow-list is a static binding (vitest.config.ts
-  // sets ADMIN_HOMES = "a"*32). We mint an admin token by
-  // INSERTing a home with that exact id + a user under it, then
-  // hand-issuing a UserToken. Standard quick-setup picks a random
-  // home id which will never match, giving us the "non-admin"
-  // path for free.
+  // Per-user admin gate (migration 0014). Test seeds a home + an
+  // admin user (is_admin=1) + a non-admin user. The admin token
+  // passes the F1 endpoints; the non-admin token (and standard
+  // quick-setup users) get 403.
   const ADMIN_HOME_ID = "a".repeat(32);
 
   const nonAdminAuth = async () => {
@@ -1345,11 +1344,15 @@ describe("OTA — admin write path (Phase 6 slice F1)", () => {
     };
   };
 
-  const mintAdminToken = async (): Promise<{ token: string; homeId: string; userId: string }> => {
-    const userId = "b".repeat(32);
+  // Seed the admin home + admin user. INSERT OR IGNORE on home so
+  // re-runs in the same vitest worker don't collide; users get
+  // INSERTed fresh per call so each test gets a distinct id and
+  // is_admin gets set explicitly.
+  const seedAdminUser = async (
+    userId: string,
+    isAdmin: boolean,
+  ): Promise<void> => {
     const nowSec = Math.floor(Date.now() / 1000);
-    // INSERT OR IGNORE so re-runs in the same test file don't
-    // collide on the unique home id.
     await env.DB
       .prepare(
         `INSERT OR IGNORE INTO homes (id, display_name, tz, created_at, updated_at, is_deleted)
@@ -1359,85 +1362,156 @@ describe("OTA — admin write path (Phase 6 slice F1)", () => {
       .run();
     await env.DB
       .prepare(
-        `INSERT OR IGNORE INTO users (id, home_id, display_name, created_at, updated_at, is_deleted)
-         VALUES (?, ?, 'admin', ?, ?, 0)`,
+        `INSERT OR IGNORE INTO users
+           (id, home_id, display_name, created_at, updated_at, is_deleted, is_admin)
+         VALUES (?, ?, 'member', ?, ?, 0, ?)`,
       )
-      .bind(userId, ADMIN_HOME_ID, nowSec, nowSec)
+      .bind(userId, ADMIN_HOME_ID, nowSec, nowSec, isAdmin ? 1 : 0)
       .run();
+  };
+
+  const mintAdminToken = async (): Promise<{ token: string; homeId: string; userId: string }> => {
+    const userId = "b".repeat(32);
+    await seedAdminUser(userId, /*isAdmin=*/ true);
     const { issueUserToken } = await import("../src/auth.ts");
     const secret = (env as unknown as { AUTH_SECRET: string }).AUTH_SECRET;
     const token = await issueUserToken(ADMIN_HOME_ID, userId, secret);
     return { token, homeId: ADMIN_HOME_ID, userId };
   };
 
-  it("admin gating is per-home, not per-user — every member of an admin home passes", async () => {
-    // The F1 endpoints are gated on home_id ∈ ADMIN_HOMES, not
-    // on a per-user flag. A household / shared-dial home is a
-    // single trust boundary; granting OTA-admin to a home grants
-    // it to every user in that home. This test pins the
-    // contract: insert two distinct users under the admin home,
-    // mint a token for each, both should pass POST /api/firmware.
+  it("admin gating is per-user — only users with is_admin=1 pass; other home members get 403", async () => {
+    // Replaces the earlier per-home model. The household is a
+    // shared trust boundary for tasks / occurrences / etc., but
+    // OTA-admin is a separate per-user privilege after migration
+    // 0014. This test pins the new contract: two users in the
+    // SAME home, only one flagged admin; only that one passes.
     //
-    // Future regression this catches: someone narrows
-    // requireAdmin() to also check userId against an allow-list
-    // (or hard-codes a single userId), accidentally locking out
-    // every user except the original "primary" one.
-    const userA = "1".repeat(32);
-    const userB = "2".repeat(32);
-    const nowSec = Math.floor(Date.now() / 1000);
-
-    await env.DB
-      .prepare(
-        `INSERT OR IGNORE INTO homes (id, display_name, tz, created_at, updated_at, is_deleted)
-         VALUES (?, 'admin-test', 'UTC', ?, ?, 0)`,
-      )
-      .bind(ADMIN_HOME_ID, nowSec, nowSec)
-      .run();
-    for (const uid of [userA, userB]) {
-      await env.DB
-        .prepare(
-          `INSERT OR IGNORE INTO users (id, home_id, display_name, created_at, updated_at, is_deleted)
-           VALUES (?, ?, ?, ?, ?, 0)`,
-        )
-        .bind(uid, ADMIN_HOME_ID, `member-${uid.slice(0, 4)}`, nowSec, nowSec)
-        .run();
-    }
+    // Regression guard: a future change that loosens the gate
+    // back to "any user in admin's home" (e.g. accidentally
+    // checking homeId against the admin's home_id only) would
+    // grant admin to everyone in the household and red-fail this.
+    const adminUser = "1".repeat(32);
+    const nonAdminUser = "2".repeat(32);
+    await seedAdminUser(adminUser, /*isAdmin=*/ true);
+    await seedAdminUser(nonAdminUser, /*isAdmin=*/ false);
 
     const { issueUserToken } = await import("../src/auth.ts");
     const secret = (env as unknown as { AUTH_SECRET: string }).AUTH_SECRET;
-    const tokenA = await issueUserToken(ADMIN_HOME_ID, userA, secret);
-    const tokenB = await issueUserToken(ADMIN_HOME_ID, userB, secret);
+    const adminToken = await issueUserToken(ADMIN_HOME_ID, adminUser, secret);
+    const memberToken = await issueUserToken(ADMIN_HOME_ID, nonAdminUser, secret);
 
-    // Both members can register a build.
+    // Admin can POST.
     const r1 = await SELF.fetch("https://t/api/firmware", {
       method: "POST",
       headers: {
-        authorization: `Bearer ${tokenA}`,
+        authorization: `Bearer ${adminToken}`,
         "content-type": "application/json",
       },
       body: JSON.stringify({
-        version: "10.0.0-userA",
+        version: "10.0.0-admin",
         sha256: "a".repeat(64),
-        r2Key: "firmware/userA.bin",
+        r2Key: "firmware/admin.bin",
         sizeBytes: 1,
       }),
     });
     expect(r1.status).toBe(201);
 
+    // Same-home non-admin gets 403 — the household trust
+    // boundary is shared but admin privilege is not.
     const r2 = await SELF.fetch("https://t/api/firmware", {
       method: "POST",
       headers: {
-        authorization: `Bearer ${tokenB}`,
+        authorization: `Bearer ${memberToken}`,
         "content-type": "application/json",
       },
       body: JSON.stringify({
-        version: "10.0.0-userB",
+        version: "10.0.0-member",
         sha256: "b".repeat(64),
-        r2Key: "firmware/userB.bin",
+        r2Key: "firmware/member.bin",
         sizeBytes: 1,
       }),
     });
-    expect(r2.status).toBe(201);
+    expect(r2.status).toBe(403);
+  });
+
+  it("migration 0014 backfill marks the earliest-created user of each home as admin", async () => {
+    // Pin the backfill SQL: with two homes, three users in each
+    // (created_at strictly ordered), only the earliest user in
+    // each home should land as admin.
+    const home1 = "c".repeat(32);
+    const home2 = "d".repeat(32);
+    const t = (n: number) => 1000 + n;
+
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO homes (id, display_name, tz, created_at, updated_at, is_deleted)
+         VALUES (?, 'h1', 'UTC', ?, ?, 0)`,
+      ).bind(home1, t(0), t(0)),
+      env.DB.prepare(
+        `INSERT INTO homes (id, display_name, tz, created_at, updated_at, is_deleted)
+         VALUES (?, 'h2', 'UTC', ?, ?, 0)`,
+      ).bind(home2, t(0), t(0)),
+      // Home 1 — three users, ts = 100, 200, 300 (insert in
+      // reverse so PK ordering can't accidentally make it work).
+      env.DB.prepare(
+        `INSERT INTO users (id, home_id, display_name, created_at, updated_at, is_deleted, is_admin)
+         VALUES ('h1u3' || ?, ?, 'u3', 300, 300, 0, 0)`,
+      ).bind("0".repeat(28), home1),
+      env.DB.prepare(
+        `INSERT INTO users (id, home_id, display_name, created_at, updated_at, is_deleted, is_admin)
+         VALUES ('h1u2' || ?, ?, 'u2', 200, 200, 0, 0)`,
+      ).bind("0".repeat(28), home1),
+      env.DB.prepare(
+        `INSERT INTO users (id, home_id, display_name, created_at, updated_at, is_deleted, is_admin)
+         VALUES ('h1u1' || ?, ?, 'u1', 100, 100, 0, 0)`,
+      ).bind("0".repeat(28), home1),
+      // Home 2 — two users, ts = 500, 400 (also reverse).
+      env.DB.prepare(
+        `INSERT INTO users (id, home_id, display_name, created_at, updated_at, is_deleted, is_admin)
+         VALUES ('h2u2' || ?, ?, 'u2', 500, 500, 0, 0)`,
+      ).bind("0".repeat(28), home2),
+      env.DB.prepare(
+        `INSERT INTO users (id, home_id, display_name, created_at, updated_at, is_deleted, is_admin)
+         VALUES ('h2u1' || ?, ?, 'u1', 400, 400, 0, 0)`,
+      ).bind("0".repeat(28), home2),
+    ]);
+
+    // Re-run the same UPDATE migration 0014 ships. It's idempotent
+    // (re-running on already-marked admins is a no-op since
+    // is_admin = 1 is already correct).
+    await env.DB
+      .prepare(
+        `UPDATE users
+         SET is_admin = 1
+         WHERE is_deleted = 0
+           AND created_at = (
+             SELECT MIN(created_at)
+             FROM users u2
+             WHERE u2.home_id = users.home_id
+               AND u2.is_deleted = 0
+           )`,
+      )
+      .run();
+
+    // Home 1: u1 (created_at=100) is admin; u2, u3 are not.
+    // Home 2: u1 (created_at=400) is admin; u2 is not.
+    const home1Rows = await env.DB
+      .prepare(
+        "SELECT display_name, is_admin FROM users WHERE home_id = ? ORDER BY created_at",
+      )
+      .bind(home1)
+      .all<{ display_name: string; is_admin: number }>();
+    expect(home1Rows.results.map((r) => `${r.display_name}=${r.is_admin}`))
+      .toEqual(["u1=1", "u2=0", "u3=0"]);
+
+    const home2Rows = await env.DB
+      .prepare(
+        "SELECT display_name, is_admin FROM users WHERE home_id = ? ORDER BY created_at",
+      )
+      .bind(home2)
+      .all<{ display_name: string; is_admin: number }>();
+    expect(home2Rows.results.map((r) => `${r.display_name}=${r.is_admin}`))
+      .toEqual(["u1=1", "u2=0"]);
   });
 
   it("POST /api/firmware admits an admin home; the row lands inactive (active=0, no promoted_at)", async () => {

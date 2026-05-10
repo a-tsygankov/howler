@@ -24,13 +24,14 @@ export interface Bindings {
   PUSH_VAPID_PUBLIC_KEY?: string;
   PUSH_VAPID_PRIVATE_KEY?: string;
   VAPID_CONTACT?: string;
-  // Comma-separated home IDs allowed to admin-mutate
-  // /api/firmware. Phase 6 OTA scaffolding (slice F1) — there's no
-  // first-class admin concept yet, so we gate the upload + promote
-  // endpoints on a hardcoded list. Empty string = nobody is admin
-  // (the safer default for a misconfigured deploy). Read by
-  // requireAdmin() in middleware/auth.ts.
+  // ADMIN_HOMES — deprecated F1 placeholder. Migration 0014's
+  // per-user admin via `users.is_admin` replaced the per-home
+  // env-var gate. The field is kept as optional so a deploy with
+  // the old secret still set doesn't break; requireAdmin()
+  // ignores it. Run `wrangler secret delete ADMIN_HOMES` to
+  // clean up the prod env.
   ADMIN_HOMES?: string;
+
   // Phase 6 OTA slice F3 — R2 presigned-URL credentials. The
   // /api/firmware/check endpoint mints short-lived (5 min) GET
   // URLs for the firmware bytes; the dial follows them via direct
