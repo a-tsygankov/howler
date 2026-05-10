@@ -1493,21 +1493,8 @@ describe("OTA — admin write path (Phase 6 slice F1)", () => {
       )
       .run();
 
-    const { results } = await env.DB
-      .prepare(
-        "SELECT display_name, is_admin FROM users WHERE home_id IN (?, ?) ORDER BY home_id, created_at",
-      )
-      .bind(home1, home2)
-      .all<{ display_name: string; is_admin: number }>();
-
     // Home 1: u1 (created_at=100) is admin; u2, u3 are not.
     // Home 2: u1 (created_at=400) is admin; u2 is not.
-    const byKey = Object.fromEntries(
-      results.map((r) => [r.display_name, r.is_admin]),
-    );
-    // (Both homes use 'u1' / 'u2' display names — the test query
-    // ORDERed BY home_id so we'd actually overwrite. Re-fetch
-    // separately to disambiguate.)
     const home1Rows = await env.DB
       .prepare(
         "SELECT display_name, is_admin FROM users WHERE home_id = ? ORDER BY created_at",
@@ -1525,8 +1512,6 @@ describe("OTA — admin write path (Phase 6 slice F1)", () => {
       .all<{ display_name: string; is_admin: number }>();
     expect(home2Rows.results.map((r) => `${r.display_name}=${r.is_admin}`))
       .toEqual(["u1=1", "u2=0"]);
-
-    void byKey;
   });
 
   it("POST /api/firmware admits an admin home; the row lands inactive (active=0, no promoted_at)", async () => {

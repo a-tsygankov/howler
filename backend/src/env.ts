@@ -24,10 +24,14 @@ export interface Bindings {
   PUSH_VAPID_PUBLIC_KEY?: string;
   PUSH_VAPID_PRIVATE_KEY?: string;
   VAPID_CONTACT?: string;
-  // ADMIN_HOMES retired in migration 0014 — per-user admin via
-  // users.is_admin replaced the per-home env-var gate. Field
-  // kept here as `undefined` so a deploy with the old secret
-  // still booted doesn't crash; requireAdmin() ignores it.
+  // ADMIN_HOMES — deprecated F1 placeholder. Migration 0014's
+  // per-user admin via `users.is_admin` replaced the per-home
+  // env-var gate. The field is kept as optional so a deploy with
+  // the old secret still set doesn't break; requireAdmin()
+  // ignores it. Run `wrangler secret delete ADMIN_HOMES` to
+  // clean up the prod env.
+  ADMIN_HOMES?: string;
+
   // Phase 6 OTA slice F3 — R2 presigned-URL credentials. The
   // /api/firmware/check endpoint mints short-lived (5 min) GET
   // URLs for the firmware bytes; the dial follows them via direct

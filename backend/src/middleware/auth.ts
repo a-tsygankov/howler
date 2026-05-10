@@ -67,9 +67,9 @@ export const requireDevice = (): MiddlewareHandler<{
 /// Replaces the F1 placeholder env-var gate (`ADMIN_HOMES`,
 /// per-home). Per-home gating was a coarse trust boundary that
 /// granted admin to every household member; per-user is the
-/// proper Phase 7 model. The env var is retired but the wrangler
-/// config still allows it as a deprecated dead-letter so a stale
-/// secret doesn't crash the deploy.
+/// proper Phase 7 model. The env var is retired but kept as an
+/// optional field in env.ts so a stale `ADMIN_HOMES` secret in
+/// production doesn't crash the deploy.
 ///
 /// Returns 403 for missing / non-matching / non-admin auth
 /// (deliberately indistinguishable — a hostile caller can't
