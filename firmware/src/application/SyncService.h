@@ -2,6 +2,7 @@
 
 #include "Ports.h"
 #include "../domain/DashboardModel.h"
+#include "../domain/HomeIdentity.h"
 #include "../domain/OccurrenceList.h"
 #include "../domain/ResultType.h"
 #include "../domain/SyncWatermark.h"
@@ -32,11 +33,12 @@ public:
                 howler::domain::DashboardModel& allTasks,
                 std::vector<howler::domain::User>& users,
                 std::vector<howler::domain::ResultType>& resultTypes,
-                howler::domain::SyncWatermark& watermark)
+                howler::domain::SyncWatermark& watermark,
+                howler::domain::HomeIdentity& homeIdentity)
         : net_(net), clock_(clock),
           occList_(occList), dashboard_(dashboard), allTasks_(allTasks),
           users_(users), resultTypes_(resultTypes),
-          watermark_(watermark) {}
+          watermark_(watermark), homeIdentity_(homeIdentity) {}
 
     /// Call from the main loop. No-op when offline or when the
     /// `intervalMs_` cool-down hasn't elapsed.
@@ -81,6 +83,7 @@ private:
     std::vector<howler::domain::User>& users_;
     std::vector<howler::domain::ResultType>& resultTypes_;
     howler::domain::SyncWatermark& watermark_;
+    howler::domain::HomeIdentity& homeIdentity_;
 
     int64_t lastPollMs_ = INT64_MIN / 2;
     /// Wall-clock millis of the last full (four-fetch) round, used

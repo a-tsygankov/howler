@@ -8,6 +8,7 @@
 
 #include "ScreenManager.h"
 #include "components/RoundCard.h"
+#include "components/TaskCard.h"  // iconKeyFromAvatar + badgeTextForIcon
 #include "../application/PairCoordinator.h"
 #include "../application/Version.h"
 #include <Arduino.h>
@@ -447,16 +448,92 @@ void ScreenManager::buildSettingsAbout() {
     lv_obj_set_style_border_width(card, 1, 0);
     lv_obj_set_style_pad_all(card, 10, 0);
 
-    // Title row — firmware name + version. Centred.
+    // Title row — home avatar + name on the left, firmware version
+    // on the right. The avatar uses the same icon-cache lookup the
+    // task drum uses; UUID avatars (uploaded photos) fall back to
+    // initials, matching the device's "we don't render arbitrary
+    // photos" stance. Falls back to "Howler" when home identity
+    // hasn't synced yet (first boot before the four-fetch round
+    // lands).
     {
-        char title[40];
-        snprintf(title, sizeof(title), "Howler · fw %s",
+        const auto& hi = app_.homeIdentity();
+
+        // Home avatar disc — left edge, 22 px round. Same render
+        // chain as RoundMenu's centre badge: icon: prefix → bitmap
+        // via the IconCache, otherwise initials fallback.
+        auto* disc = lv_obj_create(card);
+        constexpr int kDiscSize = 22;
+        lv_obj_set_size(disc, kDiscSize, kDiscSize);
+        lv_obj_align(disc, LV_ALIGN_TOP_LEFT, 0, -2);
+        lv_obj_clear_flag(disc, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_clear_flag(disc, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_style_radius(disc, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_bg_color(disc, Palette::paper3(), 0);
+        lv_obj_set_style_border_width(disc, 0, 0);
+        lv_obj_set_style_pad_all(disc, 0, 0);
+
+        const char* iconKey = components::iconKeyFromAvatar(hi.avatarId);
+        const lv_image_dsc_t* iconDsc = nullptr;
+        if (iconKey && iconLookup_) {
+            iconDsc = iconLookup_(std::string(iconKey));
+        }
+        if (iconDsc) {
+            auto* img = lv_image_create(disc);
+            lv_image_set_src(img, iconDsc);
+            lv_obj_set_style_image_recolor(img, Palette::ink(), 0);
+            lv_obj_set_style_image_recolor_opa(img, LV_OPA_COVER, 0);
+            const int scale = (kDiscSize * 256) / 24;
+            lv_image_set_scale(img, scale);
+            lv_image_set_antialias(img, false);
+            lv_obj_center(img);
+        } else {
+            // Two-letter fallback. Pull from the home name when
+            // available; otherwise use "HM" (Howler home) as a
+            // neutral placeholder so first-boot devices don't show
+            // an empty disc.
+            char fallback[3] = {0, 0, 0};
+            if (iconKey) {
+                const char* glyph = components::badgeTextForIcon(iconKey);
+                snprintf(fallback, sizeof(fallback), "%.2s",
+                         glyph ? glyph : "HM");
+            } else if (!hi.displayName.empty()) {
+                fallback[0] = static_cast<char>(hi.displayName[0]);
+                if (hi.displayName.size() >= 2) {
+                    fallback[1] = static_cast<char>(hi.displayName[1]);
+                }
+            } else {
+                fallback[0] = 'H';
+                fallback[1] = 'M';
+            }
+            auto* lbl = lv_label_create(disc);
+            lv_label_set_text(lbl, fallback);
+            lv_obj_set_style_text_color(lbl, Palette::ink(), 0);
+            lv_obj_set_style_text_font(lbl, &lv_font_montserrat_10, 0);
+            lv_obj_center(lbl);
+        }
+
+        // Home name — line 1, fw version line — line 2. The home
+        // name is left-aligned next to the avatar; firmware version
+        // sits below the name, right-aligned, smaller.
+        const char* homeText = hi.displayName.empty()
+            ? "Howler"
+            : hi.displayName.c_str();
+        auto* nameL = lv_label_create(card);
+        lv_label_set_long_mode(nameL, LV_LABEL_LONG_DOT);
+        lv_obj_set_width(nameL, 130);
+        lv_label_set_text(nameL, homeText);
+        lv_obj_set_style_text_color(nameL, Palette::ink(), 0);
+        lv_obj_set_style_text_font(nameL, &lv_font_montserrat_12, 0);
+        lv_obj_align(nameL, LV_ALIGN_TOP_LEFT, kDiscSize + 4, 0);
+
+        char fwText[20];
+        snprintf(fwText, sizeof(fwText), "fw %s",
                  application::kFirmwareVersion);
-        auto* l = lv_label_create(card);
-        lv_label_set_text(l, title);
-        lv_obj_set_style_text_color(l, Palette::ink(), 0);
-        lv_obj_set_style_text_font(l, &lv_font_montserrat_12, 0);
-        lv_obj_align(l, LV_ALIGN_TOP_MID, 0, 0);
+        auto* fwL = lv_label_create(card);
+        lv_label_set_text(fwL, fwText);
+        lv_obj_set_style_text_color(fwL, Palette::ink3(), 0);
+        lv_obj_set_style_text_font(fwL, &lv_font_montserrat_10, 0);
+        lv_obj_align(fwL, LV_ALIGN_TOP_LEFT, kDiscSize + 4, 12);
     }
 
     // Hairline separator under the title — purely cosmetic, gives

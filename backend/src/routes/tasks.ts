@@ -167,14 +167,18 @@ export const tasksRouter = new Hono<{
     }
 
     // If the caller didn't pick an explicit avatar, inherit it from
-    // the selected label's icon ("icon:<name>") so the dashboard
-    // row gets a visual right away. Spec m-2026-05-06.
+    // the selected label so the dashboard row gets a visual right
+    // away. Migration 0015 unified labels onto avatar_id (preferred
+    // path); fall back to the legacy `icon` column for labels that
+    // haven't been re-saved since the migration. Both formats end
+    // up as the unified `icon:<name>` / UUID shape on the task.
     if (!input.avatarId && input.labelId) {
       const lbl = await c.env.DB
-        .prepare("SELECT icon FROM labels WHERE id = ? AND home_id = ? AND is_deleted = 0")
+        .prepare("SELECT avatar_id, icon FROM labels WHERE id = ? AND home_id = ? AND is_deleted = 0")
         .bind(input.labelId, auth.homeId)
-        .first<{ icon: string | null }>();
-      if (lbl?.icon) input = { ...input, avatarId: `icon:${lbl.icon}` };
+        .first<{ avatar_id: string | null; icon: string | null }>();
+      const inherited = lbl?.avatar_id ?? (lbl?.icon ? `icon:${lbl.icon}` : null);
+      if (inherited) input = { ...input, avatarId: inherited };
     }
 
     const { dto, taskId } = await createTask(

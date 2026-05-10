@@ -321,9 +321,15 @@ const LabelSchema = z.object({
   homeId: Hex32,
   displayName: z.string(),
   color: z.string().nullable(),
-  // Icon name from the Icon barrel — see webapp/src/components/Icon.tsx.
-  // Null falls back to initials in the renderer.
+  // Legacy icon field — bare name (e.g. "paw") from the Icon barrel.
+  // Pre-migration-0015 clients still write this; new clients prefer
+  // avatarId. Both are populated server-side for compat.
   icon: z.string().nullable().optional(),
+  // Unified avatar id post-migration 0015. Either "icon:<name>" for
+  // a preset glyph or a 32-hex UUID pointing at an uploaded photo.
+  // Optional + default null on older Worker deploys; the UI falls
+  // back to deriving "icon:<icon>" from the legacy field.
+  avatarId: z.string().nullable().optional(),
   system: z.boolean(),
   sortOrder: z.number().int(),
   createdAt: z.number().int(),
@@ -335,8 +341,25 @@ export interface UpsertLabelInput {
   displayName?: string;
   color?: string | null;
   icon?: string | null;
+  /** Preferred avatar field. "icon:<name>" or a 32-hex UUID (uploaded
+   *  photo). Server stores it in avatar_id; old `icon` field stays
+   *  populated for backwards compat. */
+  avatarId?: string | null;
   sortOrder?: number;
 }
+
+/** Resolve a label's effective avatar id, regardless of which field
+ *  the server populated. Always prefers `avatarId` over `icon`,
+ *  prepending the `icon:` prefix only when falling back to the
+ *  legacy bare-name field. */
+export const labelAvatarId = (label: {
+  avatarId?: string | null | undefined;
+  icon?: string | null | undefined;
+}): string | null => {
+  if (label.avatarId) return label.avatarId;
+  if (label.icon) return `icon:${label.icon}`;
+  return null;
+};
 
 export const fetchLabels = async (): Promise<Label[]> =>
   z
