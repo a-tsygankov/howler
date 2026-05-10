@@ -58,22 +58,22 @@ export const requireDevice = (): MiddlewareHandler<{
   };
 };
 
-/// Phase 6 OTA admin gate. Requires a user token whose home_id
-/// appears in the comma-separated `ADMIN_HOMES` env var.
+/// Phase 6 OTA admin gate. Per-user — requires a user token
+/// whose `users.is_admin = 1`. Migration 0014 backfilled the
+/// earliest-created user of each home as admin; new users
+/// default to non-admin and have to be promoted explicitly via:
+///   UPDATE users SET is_admin = 1 WHERE id = ?
 ///
-/// Important: gating is **per-home, not per-user**. Listing a
-/// home id in ADMIN_HOMES grants admin to *every* user in that
-/// home — homes are small trust boundaries (a household, a
-/// shared dial), so members already share full read+write access
-/// to tasks / occurrences / etc. The admin endpoints are an
-/// extension of that shared trust, not a separate permission to
-/// be granted to individuals. Per-user privilege is a Phase 7
-/// concern (real roles + a UI to manage them); when that lands,
-/// swap the body of this middleware to consult the new system —
-/// call sites stay the same.
+/// Replaces the F1 placeholder env-var gate (`ADMIN_HOMES`,
+/// per-home). Per-home gating was a coarse trust boundary that
+/// granted admin to every household member; per-user is the
+/// proper Phase 7 model. The env var is retired but the wrangler
+/// config still allows it as a deprecated dead-letter so a stale
+/// secret doesn't crash the deploy.
 ///
-/// Returns 403 for missing or non-matching auth (deliberately
-/// indistinguishable so a hostile caller can't probe the list).
+/// Returns 403 for missing / non-matching / non-admin auth
+/// (deliberately indistinguishable — a hostile caller can't
+/// probe the admin list).
 export const requireAdmin = (): MiddlewareHandler<{
   Bindings: Bindings;
   Variables: AuthVars;
@@ -83,11 +83,13 @@ export const requireAdmin = (): MiddlewareHandler<{
     if (!info || info.type !== "user") {
       return c.json({ error: "admin-only" }, 403);
     }
-    const list = (c.env.ADMIN_HOMES ?? "")
-      .split(",")
-      .map((s) => s.trim())
-      .filter((s) => s.length > 0);
-    if (list.length === 0 || !list.includes(info.homeId)) {
+    const row = await c.env.DB
+      .prepare(
+        "SELECT is_admin FROM users WHERE id = ? AND is_deleted = 0",
+      )
+      .bind(info.userId)
+      .first<{ is_admin: number }>();
+    if (!row || row.is_admin !== 1) {
       return c.json({ error: "admin-only" }, 403);
     }
     c.set("user", { homeId: info.homeId, userId: info.userId });

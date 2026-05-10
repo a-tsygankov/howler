@@ -10,12 +10,6 @@ export default defineWorkersConfig({
           compatibilityFlags: ["nodejs_compat"],
           bindings: {
             AUTH_SECRET: "integration-test-secret",
-            // Phase 6 OTA — admin allow-list is a static binding;
-            // tests that exercise the F1 write path mint a home
-            // whose id matches this constant. Mutating env at
-            // runtime doesn't propagate into the worker (the
-            // request gets the binding object as-of-boot).
-            ADMIN_HOMES: "a".repeat(32),
             // F3 R2 presigning — synthetic creds so the test
             // suite exercises the full SigV4 code path without
             // talking to a real R2 endpoint. The signature is

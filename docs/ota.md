@@ -21,7 +21,7 @@ backend read path; everything below it is still to do.
 | `POST /api/devices/heartbeat {fwVersion}` | ✅ F0 |
 | Semver-aware version compare | ✅ F0 |
 | Rollout rules (`deviceIds` + `canaryPercent`) | ✅ F0 |
-| `requireAdmin()` middleware + `ADMIN_HOMES` env | ✅ F1 |
+| `requireAdmin()` middleware (per-user, `users.is_admin`) | ✅ F1 + migration 0014 |
 | `POST /api/firmware` (admin upload-manifest) | ✅ F1 |
 | `PATCH /api/firmware/:version` | ✅ F1 |
 | `GET /api/firmware` (admin listing) | ✅ F1 |
@@ -33,12 +33,22 @@ endpoints; `firmware_releases` is empty until something INSERTs a
 release row, so deploying these slices has zero behavioural change
 for production until a build is uploaded + promoted.
 
-**Operational gate.** The admin allow-list is the comma-separated
-`ADMIN_HOMES` env var. Empty string = nobody is admin (the safe
-default). Set in production via `wrangler secret put ADMIN_HOMES`
-with the home id of whoever runs the OTA console — there's no
-first-class admin role yet, so this is the F1 placeholder per the
-"slice gates" pattern from earlier in this doc.
+**Operational gate.** Per-user admin via `users.is_admin = 1`
+(migration 0014). The earliest-created user of each home is
+backfilled as admin — typically the original "household owner"
+who quick-set-up the home. New users default to non-admin and
+must be promoted explicitly:
+
+```sql
+UPDATE users SET is_admin = 1 WHERE id = '<32-hex-user-id>';
+```
+
+(or via the forthcoming ops UI, Phase 7).
+
+The earlier `ADMIN_HOMES` env var was an F1 stub — per-home
+gating granted admin to every household member. With migration
+0014 the gate becomes per-user; the env var is retired but
+ignored (a stale `ADMIN_HOMES` secret won't crash the deploy).
 
 ---
 
@@ -105,8 +115,10 @@ Three handlers under one router:
   (sets `yanked_at`), or update `rolloutRules` in place.
 - `GET /api/firmware` — admin-only listing for the ops UI.
 
-`requireAdmin()` consults `ADMIN_HOMES` (comma-separated home
-IDs, env var). Empty list = nobody is admin (fail-closed).
+`requireAdmin()` looks up `users.is_admin` for the calling user
+on every admin request. Migration 0014 backfilled the
+earliest-created user of each home; promote others explicitly
+via SQL UPDATE (Phase 7 will add a UI).
 
 ### F2 — CI signed-build pipeline (medium, ~3 days)
 

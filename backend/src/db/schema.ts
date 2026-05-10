@@ -51,6 +51,12 @@ export const users = sqliteTable(
     createdAt: integer("created_at").notNull(),
     updatedAt: integer("updated_at").notNull(),
     isDeleted: integer("is_deleted").notNull().default(0),
+    /// Phase 6 OTA — per-user admin flag. requireAdmin() looks
+    /// this up on every admin call. Migration 0014 backfills the
+    /// earliest-created user of each home as admin; later users
+    /// stay non-admin until promoted explicitly. Replaces the
+    /// F1 placeholder ADMIN_HOMES env var.
+    isAdmin: integer("is_admin").notNull().default(0),
   },
   (t) => ({
     byHome: index("users_home_idx").on(t.homeId),

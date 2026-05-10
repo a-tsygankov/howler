@@ -24,13 +24,10 @@ export interface Bindings {
   PUSH_VAPID_PUBLIC_KEY?: string;
   PUSH_VAPID_PRIVATE_KEY?: string;
   VAPID_CONTACT?: string;
-  // Comma-separated home IDs allowed to admin-mutate
-  // /api/firmware. Phase 6 OTA scaffolding (slice F1) — there's no
-  // first-class admin concept yet, so we gate the upload + promote
-  // endpoints on a hardcoded list. Empty string = nobody is admin
-  // (the safer default for a misconfigured deploy). Read by
-  // requireAdmin() in middleware/auth.ts.
-  ADMIN_HOMES?: string;
+  // ADMIN_HOMES retired in migration 0014 — per-user admin via
+  // users.is_admin replaced the per-home env-var gate. Field
+  // kept here as `undefined` so a deploy with the old secret
+  // still booted doesn't crash; requireAdmin() ignores it.
   // Phase 6 OTA slice F3 — R2 presigned-URL credentials. The
   // /api/firmware/check endpoint mints short-lived (5 min) GET
   // URLs for the firmware bytes; the dial follows them via direct

@@ -79,7 +79,12 @@ VAPID_CONTACT = "mailto:noreply@howler.local"
 #   wrangler secret put ADMIN_HOMES
 # (using a secret rather than a plain var keeps the list out of
 # version control even though it's not strictly secret data).
-ADMIN_HOMES = ""
+# ADMIN_HOMES retired in migration 0014 — per-user admin via
+# users.is_admin replaces the per-home env-var gate. If the old
+# secret is still set in production, run:
+#   wrangler secret delete ADMIN_HOMES
+# (it's ignored by the new requireAdmin() either way).
+#
 # Phase 6 OTA slice F3 — R2 presigned-URL credentials. All three
 # MUST be set as secrets in production for /api/firmware/check to
 # return downloadUrl. Generate the access key in the Cloudflare
