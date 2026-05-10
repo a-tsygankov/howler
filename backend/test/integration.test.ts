@@ -12,6 +12,7 @@ import init0006 from "../migrations/0006_label_icons.sql?raw";
 import init0007 from "../migrations/0007_task_avatar_backfill.sql?raw";
 import init0008 from "../migrations/0008_rule_modified_at.sql?raw";
 import init0009 from "../migrations/0009_user_bg_color.sql?raw";
+import init0010 from "../migrations/0010_icons.sql?raw";
 import init0012 from "../migrations/0012_update_counter.sql?raw";
 import init0013 from "../migrations/0013_firmware_releases.sql?raw";
 import init0014 from "../migrations/0014_user_admin.sql?raw";
@@ -24,9 +25,20 @@ import init0014 from "../migrations/0014_user_admin.sql?raw";
 // else is identical to the previous splitter — comment lines stripped,
 // whitespace collapsed.
 const splitStatements = (sql: string): string[] => {
+  // Strip end-of-line `--` comments AND drop fully-commented lines.
+  // Critical for migrations that put trailing comments on column
+  // definitions (e.g. `name TEXT PRIMARY KEY, -- lowercase, kebab`)
+  // — once everything is collapsed onto one line the `--` comments
+  // out the rest of the statement, producing "incomplete input"
+  // errors from D1's parser. We don't try to honour `--` inside
+  // string literals; no migration uses `--` inside a literal today.
   const stripped = sql
     .split("\n")
-    .filter((line) => !line.trim().startsWith("--"))
+    .map((line) => {
+      const idx = line.indexOf("--");
+      return idx >= 0 ? line.slice(0, idx) : line;
+    })
+    .filter((line) => line.trim().length > 0)
     .join("\n");
   const out: string[] = [];
   let cur = "";
@@ -58,12 +70,12 @@ const splitStatements = (sql: string): string[] => {
 };
 
 const applyMigrations = async () => {
-  // 0010 + 0011 are icon-storage migrations — they don't affect any
-  // home-scoped table the tests touch, and 0011 inserts ~20 KB of
-  // bitmap data we don't need in the in-memory DB. Leaving them out
-  // keeps test boot fast; if a future test exercises the icon
-  // pipeline they should be added here.
-  for (const sql of [init0000, init0001, init0002, init0003, init0004, init0005, init0006, init0007, init0008, init0009, init0012, init0013, init0014]) {
+  // 0011 (seed_icons.sql) inserts ~20 KB of bitmap data — too heavy
+  // for the in-memory test DB. The icon-route suite below seeds its
+  // own minimal rows directly via env.DB.exec. Keeping 0011 out of
+  // the bulk migration loop preserves boot speed; 0010 (the table
+  // schema) IS applied so the tests can INSERT against `icons`.
+  for (const sql of [init0000, init0001, init0002, init0003, init0004, init0005, init0006, init0007, init0008, init0009, init0010, init0012, init0013, init0014]) {
     for (const s of splitStatements(sql)) {
       await env.DB.exec(s.replace(/\s+/g, " "));
     }
@@ -88,6 +100,7 @@ const reset = async () => {
     "auth_logs",
     "push_subscriptions",
     "avatars",
+    "icons",
     "firmware_releases",
     "users",
     "homes",
@@ -1845,5 +1858,406 @@ describe("OTA — admin write path (Phase 6 slice F1)", () => {
       headers: { authorization: `Bearer ${otherToken}` },
     });
     expect(denied.status).toBe(403);
+  });
+});
+
+// ── Avatars (R2-backed photo uploads) ─────────────────────────────
+//
+// What's covered:
+//   1. POST upload happy path — 201 with id + url, R2 actually
+//      received the bytes, GET fetches them back identical
+//   2. Auth gating — POST/DELETE require a UserToken (device tokens
+//      get 403 because the writes mutate the home's avatar inventory)
+//   3. Validation — oversized (413), wrong mime (415), missing file
+//      field (400)
+//   4. GET is auth-free — the SPA needs <img src=…> renders without
+//      every avatar fetch carrying an Authorization header
+//   5. DELETE is soft + cross-home isolated — Home B can't delete or
+//      see Home A's avatars
+//   6. avatarId column can be referenced from users + tasks + homes
+//      after upload (foreign-key wiring sanity)
+describe("avatars (R2-backed photo uploads)", () => {
+  // Smallest valid JPEG (Stack Overflow #2253404 minimal example) —
+  // 125 bytes, a 1×1 grey pixel. Used as the standard upload payload
+  // because it's tiny, mime-correct, and survives an R2 round-trip
+  // byte-for-byte.
+  const TINY_JPEG = new Uint8Array([
+    0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01,
+    0x01, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0xff, 0xdb, 0x00, 0x43,
+    0x00, 0x08, 0x06, 0x06, 0x07, 0x06, 0x05, 0x08, 0x07, 0x07, 0x07, 0x09,
+    0x09, 0x08, 0x0a, 0x0c, 0x14, 0x0d, 0x0c, 0x0b, 0x0b, 0x0c, 0x19, 0x12,
+    0x13, 0x0f, 0x14, 0x1d, 0x1a, 0x1f, 0x1e, 0x1d, 0x1a, 0x1c, 0x1c, 0x20,
+    0x24, 0x2e, 0x27, 0x20, 0x22, 0x2c, 0x23, 0x1c, 0x1c, 0x28, 0x37, 0x29,
+    0x2c, 0x30, 0x31, 0x34, 0x34, 0x34, 0x1f, 0x27, 0x39, 0x3d, 0x38, 0x32,
+    0x3c, 0x2e, 0x33, 0x34, 0x32, 0xff, 0xc0, 0x00, 0x0b, 0x08, 0x00, 0x01,
+    0x00, 0x01, 0x01, 0x01, 0x11, 0x00, 0xff, 0xc4, 0x00, 0x1f, 0x00, 0x00,
+    0x01, 0x05, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0xff, 0xd9,
+  ]);
+
+  // Quick-setup is rate-limited 10 req/min per cf-connecting-ip.
+  // Stamp a unique IP on every call so back-to-back tests don't
+  // exhaust the shared bucket — same pattern used by the
+  // tasks+occurrences suite above.
+  let nextIp = 1;
+  const newHome = async (): Promise<{
+    token: string;
+    homeId: string;
+    userId: string;
+  }> => {
+    const ip = `10.0.99.${nextIp++}`;
+    const r = await SELF.fetch("https://t/api/auth/quick-setup", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "cf-connecting-ip": ip,
+      },
+      body: "{}",
+    });
+    const body = (await json(r)) as {
+      token: string;
+      homeId: string;
+      userId: string;
+    };
+    return body;
+  };
+
+  const uploadAvatar = async (
+    token: string,
+    bytes: Uint8Array | string,
+    contentType: string,
+    fileName = "a.jpg",
+  ): Promise<Response> => {
+    const fd = new FormData();
+    const blob =
+      typeof bytes === "string"
+        ? new Blob([bytes], { type: contentType })
+        : new Blob([bytes], { type: contentType });
+    fd.append("file", blob, fileName);
+    return SELF.fetch("https://t/api/avatars", {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}` },
+      body: fd,
+    });
+  };
+
+  it("uploads a JPEG, persists in R2 + DB, and round-trips identical bytes", async () => {
+    const { token, homeId } = await newHome();
+    const up = await uploadAvatar(token, TINY_JPEG, "image/jpeg");
+    expect(up.status).toBe(201);
+    const body = (await json(up)) as { id: string; url: string };
+    expect(body.id).toMatch(/^[0-9a-f]{32}$/);
+    expect(body.url).toBe(`/api/avatars/${body.id}`);
+
+    // DB row landed with the right home + content-type.
+    const row = await env.DB
+      .prepare(
+        "SELECT home_id, r2_key, content_type, size_bytes, is_deleted FROM avatars WHERE id = ?",
+      )
+      .bind(body.id)
+      .first<{
+        home_id: string;
+        r2_key: string;
+        content_type: string;
+        size_bytes: number;
+        is_deleted: number;
+      }>();
+    expect(row?.home_id).toBe(homeId);
+    expect(row?.content_type).toBe("image/jpeg");
+    expect(row?.size_bytes).toBe(TINY_JPEG.byteLength);
+    expect(row?.is_deleted).toBe(0);
+
+    // R2 actually received the bytes.
+    const obj = await env.AVATARS.get(row!.r2_key);
+    expect(obj).not.toBeNull();
+    const got = new Uint8Array(await obj!.arrayBuffer());
+    expect(got).toEqual(TINY_JPEG);
+
+    // GET fetches the bytes back via the public route.
+    const fetched = await SELF.fetch(`https://t/api/avatars/${body.id}`);
+    expect(fetched.status).toBe(200);
+    expect(fetched.headers.get("content-type")).toBe("image/jpeg");
+    const fetchedBytes = new Uint8Array(await fetched.arrayBuffer());
+    expect(fetchedBytes).toEqual(TINY_JPEG);
+  });
+
+  it("GET /api/avatars/:id is publicly readable (no auth required)", async () => {
+    const { token } = await newHome();
+    const up = await uploadAvatar(token, TINY_JPEG, "image/jpeg");
+    const { id } = (await json(up)) as { id: string };
+    // No Authorization header — must still 200. The SPA renders
+    // <img src="/api/avatars/:id"> without a session header.
+    const fetched = await SELF.fetch(`https://t/api/avatars/${id}`);
+    expect(fetched.status).toBe(200);
+    // Drain the body — vitest-pool-workers can't pop the per-test
+    // isolated-storage frame while the R2 stream is still open.
+    await fetched.arrayBuffer();
+  });
+
+  it("GET /api/avatars/:unknown returns 404", async () => {
+    const r = await SELF.fetch(`https://t/api/avatars/${"f".repeat(32)}`);
+    expect(r.status).toBe(404);
+    await r.text();
+  });
+
+  it("rejects oversized uploads with 413", async () => {
+    const { token } = await newHome();
+    // 2 MB + 1 byte — just over the limit.
+    const big = new Uint8Array(2 * 1024 * 1024 + 1);
+    big.fill(0xab);
+    const r = await uploadAvatar(token, big, "image/jpeg");
+    expect(r.status).toBe(413);
+  });
+
+  it("rejects non-image content types with 415", async () => {
+    const { token } = await newHome();
+    const r = await uploadAvatar(
+      token,
+      "BMP-shaped bytes that aren't really one",
+      "image/bmp",
+    );
+    expect(r.status).toBe(415);
+  });
+
+  it("rejects missing file field with 400", async () => {
+    const { token } = await newHome();
+    // Empty multipart — no `file` field at all.
+    const fd = new FormData();
+    fd.append("not-the-file", "ignore me");
+    const r = await SELF.fetch("https://t/api/avatars", {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}` },
+      body: fd,
+    });
+    expect(r.status).toBe(400);
+  });
+
+  it("DELETE soft-deletes; subsequent GET 404s and R2 bytes drop from the public surface", async () => {
+    const { token } = await newHome();
+    const up = await uploadAvatar(token, TINY_JPEG, "image/jpeg");
+    const { id } = (await json(up)) as { id: string };
+
+    // GET works pre-delete.
+    const before = await SELF.fetch(`https://t/api/avatars/${id}`);
+    expect(before.status).toBe(200);
+    await before.arrayBuffer();
+
+    const del = await SELF.fetch(`https://t/api/avatars/${id}`, {
+      method: "DELETE",
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(del.status).toBe(204);
+
+    // Soft-delete: the row's is_deleted flag flips, the public GET
+    // (which filters on is_deleted=0) returns 404. We don't assert R2
+    // is purged — the bucket can keep the bytes for a future GC pass.
+    const after = await SELF.fetch(`https://t/api/avatars/${id}`);
+    expect(after.status).toBe(404);
+    await after.text();
+
+    const row = await env.DB
+      .prepare("SELECT is_deleted FROM avatars WHERE id = ?")
+      .bind(id)
+      .first<{ is_deleted: number }>();
+    expect(row?.is_deleted).toBe(1);
+  });
+
+  it("DELETE on another home's avatar returns 404 (cross-home isolation)", async () => {
+    const homeA = await newHome();
+    const homeB = await newHome();
+    const up = await uploadAvatar(homeA.token, TINY_JPEG, "image/jpeg");
+    const { id } = (await json(up)) as { id: string };
+
+    // Home B tries to delete Home A's avatar — opaque 404 (we don't
+    // leak existence through the response code).
+    const del = await SELF.fetch(`https://t/api/avatars/${id}`, {
+      method: "DELETE",
+      headers: { authorization: `Bearer ${homeB.token}` },
+    });
+    expect(del.status).toBe(404);
+
+    // The avatar is still alive for Home A.
+    const fetched = await SELF.fetch(`https://t/api/avatars/${id}`);
+    expect(fetched.status).toBe(200);
+    await fetched.arrayBuffer();
+  });
+
+  it("avatarId can be wired onto users and homes after upload", async () => {
+    const { token, homeId, userId } = await newHome();
+    const up = await uploadAvatar(token, TINY_JPEG, "image/jpeg");
+    const { id: avatarId } = (await json(up)) as { id: string };
+
+    // Wire to user + home through the existing PATCH endpoints.
+    const patchHome = await SELF.fetch("https://t/api/homes/me", {
+      method: "PATCH",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ avatarId }),
+    });
+    expect([200, 204]).toContain(patchHome.status);
+
+    const patchUser = await SELF.fetch(`https://t/api/users/${userId}`, {
+      method: "PATCH",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ avatarId }),
+    });
+    expect([200, 204]).toContain(patchUser.status);
+
+    // Both rows now reference the same avatar id.
+    const home = await env.DB
+      .prepare("SELECT avatar_id FROM homes WHERE id = ?")
+      .bind(homeId)
+      .first<{ avatar_id: string }>();
+    expect(home?.avatar_id).toBe(avatarId);
+    const user = await env.DB
+      .prepare("SELECT avatar_id FROM users WHERE id = ?")
+      .bind(userId)
+      .first<{ avatar_id: string }>();
+    expect(user?.avatar_id).toBe(avatarId);
+  });
+});
+
+// ── Icons (24×24 1-bit bitmaps for the device renderer) ───────────
+//
+// What's covered:
+//   1. Auth gating — no token → 401
+//   2. Manifest endpoint returns the seeded icons with metadata
+//   3. Bitmap fetch returns raw bytes + ETag + custom X-Icon-* headers
+//   4. If-None-Match conditional fetch shorts to 304
+//   5. Invalid icon names (uppercase, special chars, oversized) → 400
+//   6. Unknown but well-formed name → 404
+describe("icons (24×24 1-bit bitmaps)", () => {
+  // Helper: insert one fake icon directly. The seed migration ships
+  // ~20 KB of real bitmap data; for tests we only need a row to exist
+  // — content is opaque to the route handler.
+  const seedIcon = async (
+    name: string,
+    bytes: Uint8Array,
+    contentHash: string,
+  ) => {
+    await env.DB
+      .prepare(
+        `INSERT INTO icons (name, format_version, width, height, bitmap, content_hash, updated_at)
+         VALUES (?, 1, 24, 24, ?, ?, 1700000000)`,
+      )
+      .bind(name, bytes, contentHash)
+      .run();
+  };
+
+  const tinyBitmap = new Uint8Array(72); // 24×24 / 8 = 72 bytes — all zero
+  const HASH_A = "a".repeat(40);
+  const HASH_B = "b".repeat(40);
+
+  let nextIp = 1;
+  const newToken = async (): Promise<string> => {
+    const ip = `10.0.100.${nextIp++}`;
+    const r = await SELF.fetch("https://t/api/auth/quick-setup", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "cf-connecting-ip": ip,
+      },
+      body: "{}",
+    });
+    return ((await json(r)) as { token: string }).token;
+  };
+
+  it("requires authentication", async () => {
+    await seedIcon("paw", tinyBitmap, HASH_A);
+    const r = await SELF.fetch("https://t/api/icons");
+    expect(r.status).toBe(401);
+    const r2 = await SELF.fetch("https://t/api/icons/paw");
+    expect(r2.status).toBe(401);
+  });
+
+  it("manifest lists seeded icons with their metadata", async () => {
+    const token = await newToken();
+    await seedIcon("paw", tinyBitmap, HASH_A);
+    await seedIcon("broom", tinyBitmap, HASH_B);
+
+    const r = await SELF.fetch("https://t/api/icons", {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(r.status).toBe(200);
+    const body = (await json(r)) as {
+      icons: Array<{
+        name: string;
+        contentHash: string;
+        width: number;
+        height: number;
+        formatVersion: number;
+      }>;
+    };
+    // Sorted alphabetically per the route's ORDER BY.
+    expect(body.icons.map((i) => i.name)).toEqual(["broom", "paw"]);
+    const paw = body.icons.find((i) => i.name === "paw")!;
+    expect(paw.contentHash).toBe(HASH_A);
+    expect(paw.width).toBe(24);
+    expect(paw.height).toBe(24);
+    expect(paw.formatVersion).toBe(1);
+  });
+
+  it("bitmap fetch returns raw bytes + ETag + X-Icon-* headers", async () => {
+    const token = await newToken();
+    const bytes = new Uint8Array(72);
+    for (let i = 0; i < 72; i++) bytes[i] = i; // recognisable pattern
+    await seedIcon("paw", bytes, HASH_A);
+
+    const r = await SELF.fetch("https://t/api/icons/paw", {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(r.status).toBe(200);
+    expect(r.headers.get("content-type")).toBe("application/octet-stream");
+    expect(r.headers.get("etag")).toBe(`"${HASH_A}"`);
+    expect(r.headers.get("x-icon-hash")).toBe(HASH_A);
+    expect(r.headers.get("x-icon-width")).toBe("24");
+    expect(r.headers.get("x-icon-height")).toBe("24");
+    expect(r.headers.get("x-icon-format-version")).toBe("1");
+    const got = new Uint8Array(await r.arrayBuffer());
+    expect(got).toEqual(bytes);
+  });
+
+  it("If-None-Match matching cached hash returns 304 with no body", async () => {
+    const token = await newToken();
+    await seedIcon("paw", tinyBitmap, HASH_A);
+
+    const r = await SELF.fetch("https://t/api/icons/paw", {
+      headers: {
+        authorization: `Bearer ${token}`,
+        "if-none-match": `"${HASH_A}"`,
+      },
+    });
+    expect(r.status).toBe(304);
+    // Mismatching hash falls through to a fresh 200.
+    const r2 = await SELF.fetch("https://t/api/icons/paw", {
+      headers: {
+        authorization: `Bearer ${token}`,
+        "if-none-match": `"${HASH_B}"`,
+      },
+    });
+    expect(r2.status).toBe(200);
+  });
+
+  it("rejects malformed icon names with 400", async () => {
+    const token = await newToken();
+    for (const bad of ["UPPER", "with space", "tooooooooooooooooooooooooooooooooooooooolong-x"]) {
+      const r = await SELF.fetch(`https://t/api/icons/${encodeURIComponent(bad)}`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(r.status, `name=${bad}`).toBe(400);
+    }
+  });
+
+  it("returns 404 for unknown but well-formed names", async () => {
+    const token = await newToken();
+    const r = await SELF.fetch("https://t/api/icons/no-such-icon", {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(r.status).toBe(404);
   });
 });

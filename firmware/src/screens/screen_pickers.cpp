@@ -20,6 +20,7 @@
 #include "components/RoundCard.h"
 #include "components/LongPressArcWidget.h"
 #include "components/ValueWidget.h"
+#include "../domain/UserPickerModel.h"
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -126,27 +127,15 @@ void ScreenManager::buildUserPicker() {
     }
 
     // Round-menu carousel: "skip" pinned first (so the most-common
-    // action is one tap from entry), then each home user. The id
-    // "skip" routes to a userId-empty commit; non-skip ids ARE the
-    // userId.
-    std::vector<domain::RoundMenuItem> items;
-    items.reserve(1 + app_.users().size());
-    {
-        domain::RoundMenuItem skip;
-        skip.id = "skip";
-        skip.title = "skip";
-        skip.subtitle = "no attribution";
-        items.push_back(std::move(skip));
-    }
-    for (const auto& u : app_.users()) {
-        domain::RoundMenuItem it;
-        it.id = u.id;
-        it.title = u.displayName.empty() ? u.id : u.displayName;
-        if (!u.login.empty()) it.subtitle = u.login;
-        items.push_back(std::move(it));
-    }
-    menuModel_.replace(std::move(items));
-    menu_.build(root_, menuModel_);
+    // action is one tap from entry), then each home user with their
+    // avatar id stamped onto RoundMenuItem.iconKey so the centre
+    // slot can render the matching badge — same icon set as the
+    // webapp's user list. UUID avatars fall through to initials via
+    // iconKeyFromAvatar's nullptr return path. Pure builder lives in
+    // domain/UserPickerModel.h so the host test suite can lock the
+    // shape of this list.
+    menuModel_.replace(domain::buildUserPickerItems(app_.users()));
+    menu_.build(root_, menuModel_, &iconLookup_);
     menu_.refresh();
     menu_.setOnActivate([this](const domain::RoundMenuItem& it) {
         auto& app = this->app();

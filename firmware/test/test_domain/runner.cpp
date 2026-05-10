@@ -103,6 +103,14 @@ void test_version_minor_and_patch_ordering();
 void test_version_missing_segments_treated_as_zero();
 void test_version_prerelease_sorts_before_release();
 
+// test_user_picker_model.cpp — round-menu builder for the device's
+// UserPicker; locks the skip-first contract + avatarId stamping
+void test_user_picker_pins_skip_first_with_no_avatar();
+void test_user_picker_appends_users_after_skip_in_order();
+void test_user_picker_stamps_avatar_id_onto_iconKey();
+void test_user_picker_falls_back_to_id_when_displayName_missing();
+void test_user_picker_omits_subtitle_when_login_missing();
+
 extern "C" void setUp(void) {}
 extern "C" void tearDown(void) {}
 
@@ -193,6 +201,12 @@ int main(int, char**) {
     RUN_TEST(test_version_minor_and_patch_ordering);
     RUN_TEST(test_version_missing_segments_treated_as_zero);
     RUN_TEST(test_version_prerelease_sorts_before_release);
+
+    RUN_TEST(test_user_picker_pins_skip_first_with_no_avatar);
+    RUN_TEST(test_user_picker_appends_users_after_skip_in_order);
+    RUN_TEST(test_user_picker_stamps_avatar_id_onto_iconKey);
+    RUN_TEST(test_user_picker_falls_back_to_id_when_displayName_missing);
+    RUN_TEST(test_user_picker_omits_subtitle_when_login_missing);
 
     return UNITY_END();
 }
