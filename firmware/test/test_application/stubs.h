@@ -117,6 +117,21 @@ public:
 
     NetResult postHeartbeat(const std::string&) override { return NetResult::ok(); }
 
+    NetResult checkFirmwareUpdate(
+        const std::string& currentVersion,
+        domain::UpdateAdvisory& outAdvisory) override {
+        ++firmwareCheckCalls_;
+        lastCheckedVersion_ = currentVersion;
+        if (!firmwareCheckResults_.empty()) {
+            const auto r = firmwareCheckResults_.front();
+            firmwareCheckResults_.erase(firmwareCheckResults_.begin());
+            if (r.isOk()) outAdvisory = nextAdvisory_;
+            return r;
+        }
+        outAdvisory = nextAdvisory_;
+        return NetResult::ok();
+    }
+
     NetResult peekHomeCounter(int64_t& outCounter) override {
         ++peekCalls_;
         if (!peekResults_.empty()) {
@@ -150,6 +165,41 @@ public:
     int64_t              nextCounter_ = 0;
     std::vector<NetResult> peekResults_;
     int                  peekCalls_ = 0;
+    // checkFirmwareUpdate state — tests stage `firmwareCheckResults_`
+    // (one entry per expected call, drained FIFO) and seed
+    // `nextAdvisory_` for the body. Mirrors the peek pattern above.
+    domain::UpdateAdvisory nextAdvisory_;
+    std::vector<NetResult> firmwareCheckResults_;
+    int                    firmwareCheckCalls_ = 0;
+    std::string            lastCheckedVersion_;
+};
+
+class StubOtaPort : public application::IOtaPort {
+public:
+    Result downloadAndFlash(
+        const domain::UpdateAdvisory& advisory,
+        const ProgressFn& onProgress) override {
+        ++downloadCalls_;
+        lastAdvisory_ = advisory;
+        if (onProgress && progressBytes_ > 0) {
+            // Simulate one progress callback at ~50 % so the screen
+            // layer's pct-rendering path gets exercised.
+            onProgress(progressBytes_ / 2, progressBytes_);
+            onProgress(progressBytes_, progressBytes_);
+        }
+        return nextResult_;
+    }
+    void reboot() override { ++rebootCalls_; }
+    bool isPendingVerify() const override { return pendingVerify_; }
+    void markValid() override { ++markValidCalls_; pendingVerify_ = false; }
+
+    Result   nextResult_ = Result::Ok;
+    int      downloadCalls_ = 0;
+    int      rebootCalls_ = 0;
+    int      markValidCalls_ = 0;
+    bool     pendingVerify_ = false;
+    int64_t  progressBytes_ = 0;
+    domain::UpdateAdvisory lastAdvisory_;
 };
 
 class StubPairApi : public application::IPairApi {

@@ -22,6 +22,11 @@ enum class ScreenId : uint8_t {
     SettingsBrightness,
     SettingsAbout,
     SettingsTheme,
+    /// Phase 6 OTA F4 — "Check for updates" sub-screen of Settings.
+    /// Drives an OtaService::requestCheck on entry, surfaces the
+    /// state machine's progress, and lets the user kick off the
+    /// download + flash with a single tap when an advisory lands.
+    SettingsUpdates,
     Wifi,
     WifiConnect,
     LoginQr,

@@ -1,5 +1,7 @@
 #include "App.h"
 
+#include "Version.h"
+
 namespace howler::application {
 
 namespace {
@@ -46,13 +48,16 @@ App::App(INetwork& net,
          IInputDevice& input,
          IWifi& wifi,
          ILedRing& led,
+         IOtaPort& ota,
          std::string deviceId)
     : net_(net), pairApi_(pairApi), clock_(clock), rng_(rng),
       storage_(storage), input_(input), wifi_(wifi), led_(led),
+      ota_(ota),
       sync_(net_, clock_, occList_, dashboard_, allTasks_,
             users_, resultTypes_, watermark_),
       markDoneSvc_(net_, clock_, rng_, storage_, queue_),
       pairCoord_(pairApi_, storage_, clock_),
+      otaSvc_(net_, ota_, clock_, kFirmwareVersion),
       deviceId_(std::move(deviceId)) {}
 
 void App::begin() {
@@ -127,6 +132,19 @@ void App::tick(uint32_t /*millisNow*/) {
     sync_.tick();
     markDoneSvc_.tick();
     pairCoord_.tick();
+    otaSvc_.tick();
+
+    // Slice F5 — pending-verify dance. The bootloader marks the
+    // freshly flashed image as PENDING_VERIFY on first boot; if
+    // the device crashes / panics before we cancel the rollback,
+    // it'll auto-roll back to the previous slot on the next reset.
+    // We treat "successful sync round" as the trust signal: if the
+    // new build can talk to the server, it's good enough to commit.
+    // markValid() is idempotent so calling it on every successful
+    // round after the first is a no-op.
+    if (otaSvc_.isPendingVerify() && sync_.lastSyncOk()) {
+        otaSvc_.markRunningBuildValid();
+    }
 
     // Mirror the dashboard's worst tier on the LED ring (overridden
     // to a cool tone when we're offline). The adapter drops needless

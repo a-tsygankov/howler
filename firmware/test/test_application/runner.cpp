@@ -31,6 +31,19 @@ void test_app_commit_pending_done_drops_dashboard_row();
 void test_app_wifi_scan_populates_list();
 void test_app_wifi_save_persists_and_connects();
 
+// test_ota_service.cpp — F4 self-update state machine
+void test_ota_idle_until_check_requested();
+void test_ota_check_no_update_lands_in_uptodate();
+void test_ota_check_advisory_lands_in_update_available();
+void test_ota_check_rejects_downlevel_advisory_locally();
+void test_ota_check_offline_lands_in_failed_with_offline_message();
+void test_ota_check_transient_error_is_retryable();
+void test_ota_apply_succeeds_lands_flashed_then_reboots();
+void test_ota_apply_failure_lands_failed_with_mapped_message();
+void test_ota_apply_ignored_when_not_in_update_available_state();
+void test_ota_pending_verify_forwards_to_adapter();
+void test_ota_reset_clears_state_and_advisory();
+
 extern "C" void setUp(void) {}
 extern "C" void tearDown(void) {}
 
@@ -63,6 +76,18 @@ int main(int, char**) {
     RUN_TEST(test_app_commit_pending_done_drops_dashboard_row);
     RUN_TEST(test_app_wifi_scan_populates_list);
     RUN_TEST(test_app_wifi_save_persists_and_connects);
+
+    RUN_TEST(test_ota_idle_until_check_requested);
+    RUN_TEST(test_ota_check_no_update_lands_in_uptodate);
+    RUN_TEST(test_ota_check_advisory_lands_in_update_available);
+    RUN_TEST(test_ota_check_rejects_downlevel_advisory_locally);
+    RUN_TEST(test_ota_check_offline_lands_in_failed_with_offline_message);
+    RUN_TEST(test_ota_check_transient_error_is_retryable);
+    RUN_TEST(test_ota_apply_succeeds_lands_flashed_then_reboots);
+    RUN_TEST(test_ota_apply_failure_lands_failed_with_mapped_message);
+    RUN_TEST(test_ota_apply_ignored_when_not_in_update_available_state);
+    RUN_TEST(test_ota_pending_verify_forwards_to_adapter);
+    RUN_TEST(test_ota_reset_clears_state_and_advisory);
 
     return UNITY_END();
 }

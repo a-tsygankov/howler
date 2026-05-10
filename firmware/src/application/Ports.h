@@ -12,6 +12,7 @@
 #include "../domain/ResultType.h"
 #include "../domain/Settings.h"
 #include "../domain/SyncWatermark.h"
+#include "../domain/UpdateAdvisory.h"
 #include "../domain/User.h"
 #include "../domain/WifiConfig.h"
 
@@ -110,6 +111,20 @@ public:
     /// before this port existed (cheap to keep working — the stub
     /// just sees "peek failed, fetch everything").
     virtual NetResult peekHomeCounter(int64_t& /*outCounter*/) {
+        return NetResult::transient(0);
+    }
+
+    /// Phase 6 OTA slice F4 — query the server's update advisory
+    /// for `currentVersion`. Populates `outAdvisory` with either
+    /// `updateAvailable=false` or the full release manifest +
+    /// pre-signed download URL. Default impl returns transient so
+    /// host stubs that don't override see "no advisory available"
+    /// rather than crashing — and so the OtaService falls through
+    /// into UpToDate without flashing anything when nothing has
+    /// stub'd in an answer.
+    virtual NetResult checkFirmwareUpdate(
+        const std::string& /*currentVersion*/,
+        howler::domain::UpdateAdvisory& /*outAdvisory*/) {
         return NetResult::transient(0);
     }
 };
@@ -256,6 +271,88 @@ public:
     /// host-side test stubs and noop adapters don't have to implement
     /// anything Wi-Fi-specific to compile.
     virtual std::string currentIp() const { return {}; }
+};
+
+/// Phase 6 OTA slice F4. The application layer drives an OTA via:
+///
+///   1. INetwork::checkFirmwareUpdate(...)      → UpdateAdvisory
+///   2. IOtaPort::downloadAndFlash(advisory)    → blocks until done
+///   3. on success — IOtaPort::reboot()         → bootloader swaps slot
+///
+/// `downloadAndFlash` is intentionally synchronous + blocking from
+/// the OtaService's perspective: it runs on the main loop, the LCD
+/// shows a "downloading..." overlay, and esp_https_ota chunks the
+/// transfer through the active slot's flash without yielding to LVGL.
+/// Frame drops during the ~10 s download are acceptable — the user
+/// asked for it explicitly via Settings → Check for updates.
+///
+/// The hardware adapter (EspOtaAdapter) wraps `esp_https_ota_*` and
+/// verifies the bytes against the advisory's sha256 before swapping
+/// the boot partition. Native tests use a `StubOtaPort` that records
+/// calls without touching real flash.
+class IOtaPort {
+public:
+    enum class Result : uint8_t {
+        Ok,            // image flashed successfully, reboot pending
+        NetworkError,  // TLS / HTTP failure mid-download
+        VerifyError,   // sha256 mismatch or signature rejection
+        FlashError,    // partition write failure
+        NotConfigured, // missing downloadUrl, no OTA partitions, etc.
+    };
+
+    /// Optional callback fired periodically during the download so
+    /// the screen can surface a progress percent. `bytesWritten`
+    /// is the count of bytes flashed so far; `totalBytes` is the
+    /// expected size from the advisory (0 when unknown). Adapters
+    /// MAY skip calling this if progress reporting isn't supported;
+    /// the screen layer treats absent callbacks as "indeterminate".
+    using ProgressFn =
+        std::function<void(int64_t bytesWritten, int64_t totalBytes)>;
+
+    virtual ~IOtaPort() = default;
+
+    /// Download the image at `advisory.downloadUrl`, verify against
+    /// `advisory.sha256`, and write to the inactive OTA slot. Sets
+    /// the new image as the boot target on success. Does NOT reboot
+    /// — the caller (OtaService) decides when to reboot so the LCD
+    /// can flash a "rebooting..." beat first.
+    ///
+    /// Blocking. Returns Result::Ok on a fully-verified flash;
+    /// otherwise the call self-cleans (any partial bytes in the
+    /// inactive slot are abandoned, the active slot stays bootable).
+    virtual Result downloadAndFlash(
+        const howler::domain::UpdateAdvisory& advisory,
+        const ProgressFn& onProgress = {}) = 0;
+
+    /// Reboot the device. Hardware adapter calls esp_restart;
+    /// stub no-ops + records the call.
+    virtual void reboot() = 0;
+
+    /// True when the running build was just OTA-flashed and the
+    /// bootloader is waiting on a successful first sync before
+    /// committing the new partition (slice F5 — pending-verify).
+    /// Default impl returns false so adapters that don't use the
+    /// pending-verify dance compile clean.
+    virtual bool isPendingVerify() const { return false; }
+
+    /// Mark the running build as healthy (slice F5). Cancels the
+    /// auto-rollback the bootloader would otherwise perform on the
+    /// next reset. No-op when not in pending-verify state.
+    virtual void markValid() {}
+};
+
+/// Trivial no-op OTA port for host tests + builds without OTA
+/// support. `downloadAndFlash` always returns NotConfigured so
+/// the OtaService's state machine can be exercised end-to-end
+/// without wiring real flash.
+class NoopOtaPort : public IOtaPort {
+public:
+    Result downloadAndFlash(
+        const howler::domain::UpdateAdvisory&,
+        const ProgressFn&) override {
+        return Result::NotConfigured;
+    }
+    void reboot() override {}
 };
 
 }  // namespace howler::application

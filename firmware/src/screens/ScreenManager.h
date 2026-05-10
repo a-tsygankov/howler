@@ -251,6 +251,15 @@ private:
     /// never mismatches the cached value.
     howler::domain::PairPhase lastPairPhase_ =
         howler::domain::PairPhase::Idle;
+    /// Phase 6 OTA F4 — last OtaService::State seen by the
+    /// SettingsUpdates screen path. tick() compares the live state
+    /// each frame and triggers a rebuild on transition so the
+    /// screen reflects the state machine without us threading
+    /// individual label pointers through teardown / build cycles.
+    /// Initialised to Idle (matches OtaService default), so the
+    /// first build never spuriously rebuilds.
+    howler::application::OtaService::State lastOtaState_ =
+        howler::application::OtaService::State::Idle;
     /// One-shot flag — flips true the first time we observe the
     /// network as online AND prewarm the icon cache with the full
     /// LABEL_ICON_CHOICES set. Subsequent online/offline cycles
@@ -300,6 +309,13 @@ private:
     /// rectangle, no LVGL tree teardown required.
     void refreshSettingsAbout();
     void buildSettingsTheme();
+    /// Phase 6 OTA F4 — Settings → Updates. Drives a check on
+    /// entry, surfaces the OtaService state machine via a single
+    /// big label + an action button. Tap = "do the next thing":
+    ///   Idle / UpToDate / Failed → re-run check
+    ///   UpdateAvailable          → start download
+    ///   Downloading / Flashed    → no-op (let it finish)
+    void buildSettingsUpdates();
     void buildWifi();
     void buildWifiConnect();
     void buildLoginQr();

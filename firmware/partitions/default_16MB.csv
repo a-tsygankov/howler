@@ -1,8 +1,18 @@
-# Phase 0 partition table — single-app + LittleFS. Phase 4 swaps to
-# factory + ota_0 + ota_1 + otadata for signed OTA (plan §14). 16 MB
-# flash easily fits all three plus a generous data partition.
-# Name,   Type, SubType, Offset,   Size,    Flags
-nvs,      data, nvs,     0x9000,   0x5000,
-otadata,  data, ota,     0xe000,   0x2000,
-app0,     app,  ota_0,   0x10000,  0x500000,
-spiffs,   data, spiffs,  0x510000, 0xAF0000,
+# Phase 6 OTA partition table — dual-app for esp_https_ota.
+# Slice F4 swapped this from the original single-app + 11 MB SPIFFS
+# layout to dual-app (ota_0 / ota_1) so the bootloader can flip
+# between slots after a successful OTA flash. SPIFFS shrinks from
+# 11 MB to ~7.94 MB; the icon cache + LittleFS state easily fits.
+#
+# Note: changing the partition table is a clean-flash event for
+# already-deployed devices. Howler hasn't shipped to production
+# yet, so the first OTA-capable build will be flashed via USB; from
+# then on `esp_https_ota` self-updates can land in the inactive
+# slot without a USB cable.
+#
+# Name,    Type, SubType, Offset,    Size,     Flags
+nvs,       data, nvs,     0x9000,    0x5000,
+otadata,   data, ota,     0xe000,    0x2000,
+ota_0,     app,  ota_0,   0x10000,   0x400000,
+ota_1,     app,  ota_1,   0x410000,  0x400000,
+spiffs,    data, spiffs,  0x810000,  0x7F0000,

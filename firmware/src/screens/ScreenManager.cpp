@@ -227,6 +227,19 @@ void ScreenManager::tick(uint32_t millisNow) {
         aboutNextRefreshMs_ = millisNow + 1000;
     }
 
+    // Phase 6 OTA F4 — rebuild SettingsUpdates whenever the
+    // OtaService state changes so the user sees Idle → Checking →
+    // UpdateAvailable → Downloading transitions live. We don't
+    // bother with an in-place label update like SettingsAbout uses
+    // because the screen layout actually changes between states
+    // (different button text, progress bar appears/disappears) —
+    // a full rebuild is cleaner than threading every label pointer.
+    if (rendered_ == domain::ScreenId::SettingsUpdates &&
+        app_.ota().state() != lastOtaState_) {
+        lastOtaState_ = app_.ota().state();
+        rebuildPending_ = true;
+    }
+
     // User-initiated Sync-now follow-through. Either the watermark
     // advanced (success) or the deadline elapsed (failure /
     // offline). The result toast replaces the in-flight
@@ -515,6 +528,7 @@ void ScreenManager::rebuildScreen() {
         case ScreenId::SettingsBrightness: buildSettingsBrightness(); break;
         case ScreenId::SettingsAbout:      buildSettingsAbout();     break;
         case ScreenId::SettingsTheme:      buildSettingsTheme();     break;
+        case ScreenId::SettingsUpdates:    buildSettingsUpdates();   break;
         case ScreenId::Wifi:               buildWifi();              break;
         case ScreenId::WifiConnect:        buildWifiConnect();       break;
         case ScreenId::LoginQr:            buildLoginQr();           break;

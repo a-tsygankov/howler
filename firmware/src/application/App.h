@@ -5,6 +5,7 @@
 // native unit-test build doesn't pull in screen headers.
 
 #include "MarkDoneService.h"
+#include "OtaService.h"
 #include "PairCoordinator.h"
 #include "Ports.h"
 #include "SyncService.h"
@@ -36,6 +37,7 @@ public:
         IInputDevice& input,
         IWifi& wifi,
         ILedRing& led,
+        IOtaPort& ota,
         std::string deviceId);
 
     /// Boot-time setup. Restores queue + settings from storage,
@@ -63,6 +65,12 @@ public:
     SyncService& sync() { return sync_; }
     MarkDoneService& markDone() { return markDoneSvc_; }
     PairCoordinator& pair() { return pairCoord_; }
+    /// Phase 6 OTA slice F4 — drives the Settings → Check for
+    /// updates flow. The screen layer pushes a request via
+    /// `requestCheck()` / `requestApply()` and reads `state()` per
+    /// frame to surface the corresponding overlay (checking →
+    /// update available → downloading → flashed → rebooting).
+    OtaService& ota() { return otaSvc_; }
     /// Surface the network + clock ports for components that need
     /// either directly. The IconCache lives on ScreenManager and
     /// composes both — the App is the canonical place to read the
@@ -177,6 +185,7 @@ private:
     IInputDevice& input_;
     IWifi& wifi_;
     ILedRing& led_;
+    IOtaPort& ota_;
     std::vector<howler::domain::WifiNetwork> wifiScan_;
 
     howler::domain::Router router_;
@@ -193,6 +202,7 @@ private:
     SyncService sync_;
     MarkDoneService markDoneSvc_;
     PairCoordinator pairCoord_;
+    OtaService otaSvc_;
 
     howler::domain::ResultEditModel resultEdit_;
 
