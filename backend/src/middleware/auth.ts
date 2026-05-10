@@ -59,11 +59,20 @@ export const requireDevice = (): MiddlewareHandler<{
 };
 
 /// Phase 6 OTA admin gate. Requires a user token whose home_id
-/// appears in the comma-separated `ADMIN_HOMES` env var. There's
-/// no first-class admin concept yet — this is the F1 placeholder
-/// per docs/ota.md. When a real role / permission system lands,
-/// swap the body to consult that instead; the call sites stay the
-/// same. Returns 403 for missing or non-matching auth (deliberately
+/// appears in the comma-separated `ADMIN_HOMES` env var.
+///
+/// Important: gating is **per-home, not per-user**. Listing a
+/// home id in ADMIN_HOMES grants admin to *every* user in that
+/// home — homes are small trust boundaries (a household, a
+/// shared dial), so members already share full read+write access
+/// to tasks / occurrences / etc. The admin endpoints are an
+/// extension of that shared trust, not a separate permission to
+/// be granted to individuals. Per-user privilege is a Phase 7
+/// concern (real roles + a UI to manage them); when that lands,
+/// swap the body of this middleware to consult the new system —
+/// call sites stay the same.
+///
+/// Returns 403 for missing or non-matching auth (deliberately
 /// indistinguishable so a hostile caller can't probe the list).
 export const requireAdmin = (): MiddlewareHandler<{
   Bindings: Bindings;

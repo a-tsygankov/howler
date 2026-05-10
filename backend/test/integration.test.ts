@@ -1370,6 +1370,76 @@ describe("OTA — admin write path (Phase 6 slice F1)", () => {
     return { token, homeId: ADMIN_HOME_ID, userId };
   };
 
+  it("admin gating is per-home, not per-user — every member of an admin home passes", async () => {
+    // The F1 endpoints are gated on home_id ∈ ADMIN_HOMES, not
+    // on a per-user flag. A household / shared-dial home is a
+    // single trust boundary; granting OTA-admin to a home grants
+    // it to every user in that home. This test pins the
+    // contract: insert two distinct users under the admin home,
+    // mint a token for each, both should pass POST /api/firmware.
+    //
+    // Future regression this catches: someone narrows
+    // requireAdmin() to also check userId against an allow-list
+    // (or hard-codes a single userId), accidentally locking out
+    // every user except the original "primary" one.
+    const userA = "1".repeat(32);
+    const userB = "2".repeat(32);
+    const nowSec = Math.floor(Date.now() / 1000);
+
+    await env.DB
+      .prepare(
+        `INSERT OR IGNORE INTO homes (id, display_name, tz, created_at, updated_at, is_deleted)
+         VALUES (?, 'admin-test', 'UTC', ?, ?, 0)`,
+      )
+      .bind(ADMIN_HOME_ID, nowSec, nowSec)
+      .run();
+    for (const uid of [userA, userB]) {
+      await env.DB
+        .prepare(
+          `INSERT OR IGNORE INTO users (id, home_id, display_name, created_at, updated_at, is_deleted)
+           VALUES (?, ?, ?, ?, ?, 0)`,
+        )
+        .bind(uid, ADMIN_HOME_ID, `member-${uid.slice(0, 4)}`, nowSec, nowSec)
+        .run();
+    }
+
+    const { issueUserToken } = await import("../src/auth.ts");
+    const secret = (env as unknown as { AUTH_SECRET: string }).AUTH_SECRET;
+    const tokenA = await issueUserToken(ADMIN_HOME_ID, userA, secret);
+    const tokenB = await issueUserToken(ADMIN_HOME_ID, userB, secret);
+
+    // Both members can register a build.
+    const r1 = await SELF.fetch("https://t/api/firmware", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${tokenA}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        version: "10.0.0-userA",
+        sha256: "a".repeat(64),
+        r2Key: "firmware/userA.bin",
+        sizeBytes: 1,
+      }),
+    });
+    expect(r1.status).toBe(201);
+
+    const r2 = await SELF.fetch("https://t/api/firmware", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${tokenB}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        version: "10.0.0-userB",
+        sha256: "b".repeat(64),
+        r2Key: "firmware/userB.bin",
+        sizeBytes: 1,
+      }),
+    });
+    expect(r2.status).toBe(201);
+  });
+
   it("POST /api/firmware admits an admin home; the row lands inactive (active=0, no promoted_at)", async () => {
     const { token } = await mintAdminToken();
 
