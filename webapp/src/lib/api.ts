@@ -608,9 +608,31 @@ export const deleteScheduleTemplate = async (id: string): Promise<void> => {
 
 export const uploadAvatar = async (
   file: File,
+  bitmap1bit?: Uint8Array,
 ): Promise<{ id: string; url: string }> => {
   const fd = new FormData();
   fd.append("file", file);
+  if (bitmap1bit) {
+    // Phase 7: optional 1-bit device variant. The browser's avatar
+    // editor (PR #46) produces a 72-byte Floyd-Steinberg dither
+    // alongside the WebP. Server stores it on the row and serves
+    // via /api/avatars/:id?format=1bit; the device's IconCache
+    // routes UUID-shaped keys there. Old SPA bundles that don't
+    // pass this argument keep working — the column is nullable,
+    // the GET path 404s for missing variants.
+    // BlobPart wants ArrayBuffer-backed Uint8Array; the input
+    // could in principle be SharedArrayBuffer-backed under TS
+    // strict mode. Cast to BlobPart — the runtime always works
+    // (Uint8Array IS a BlobPart at runtime per the spec), it's
+    // strict-mode static typing that's tripping here.
+    fd.append(
+      "bitmap1bit",
+      new Blob([bitmap1bit as BlobPart], {
+        type: "application/octet-stream",
+      }),
+      "avatar-1bit.bin",
+    );
+  }
   const headers: Record<string, string> = {};
   const token = getToken();
   if (token) headers["Authorization"] = `Bearer ${token}`;

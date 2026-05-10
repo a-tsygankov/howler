@@ -17,6 +17,7 @@ import init0012 from "../migrations/0012_update_counter.sql?raw";
 import init0013 from "../migrations/0013_firmware_releases.sql?raw";
 import init0014 from "../migrations/0014_user_admin.sql?raw";
 import init0015 from "../migrations/0015_label_avatars.sql?raw";
+import init0016 from "../migrations/0016_avatar_1bit.sql?raw";
 
 import { applyMigrationSql } from "./helpers/migrations.ts";
 
@@ -29,7 +30,7 @@ const applyMigrations = async () => {
   await applyMigrationSql(env.DB, [
     init0000, init0001, init0002, init0003, init0004, init0005,
     init0006, init0007, init0008, init0009, init0010, init0012,
-    init0013, init0014, init0015,
+    init0013, init0014, init0015, init0016,
   ]);
 };
 
@@ -2290,6 +2291,90 @@ describe("avatars (R2-backed photo uploads)", () => {
       .bind(userId)
       .first<{ avatar_id: string }>();
     expect(user?.avatar_id).toBe(avatarId);
+  });
+
+  // ── Phase 7: 1-bit variant for the device renderer ─────────────
+  //
+  // The browser's avatar editor (PR #45's Strategy C pipeline)
+  // produces a 24×24 Floyd-Steinberg-dithered 72-byte bitmap
+  // alongside the WebP. The server stores it on the row;
+  // /api/avatars/:id?format=1bit serves the bytes with an ETag
+  // headed for the device's IconCache.
+  it("POST with bitmap1bit stores the 72 bytes; ?format=1bit fetches them with ETag", async () => {
+    const { token } = await newHome();
+    const onebit = new Uint8Array(72);
+    for (let i = 0; i < 72; i++) onebit[i] = i & 0xff;  // recognisable
+
+    const fd = new FormData();
+    fd.append("file", new Blob([TINY_JPEG], { type: "image/jpeg" }), "a.jpg");
+    fd.append("bitmap1bit", new Blob([onebit], { type: "application/octet-stream" }));
+    const up = await SELF.fetch("https://t/api/avatars", {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}` },
+      body: fd,
+    });
+    expect(up.status).toBe(201);
+    const { id } = (await json(up)) as { id: string };
+
+    const fetched = await SELF.fetch(`https://t/api/avatars/${id}?format=1bit`);
+    expect(fetched.status).toBe(200);
+    expect(fetched.headers.get("content-type")).toBe("application/octet-stream");
+    expect(fetched.headers.get("content-length")).toBe("72");
+    expect(fetched.headers.get("x-icon-width")).toBe("24");
+    expect(fetched.headers.get("x-icon-height")).toBe("24");
+    expect(fetched.headers.get("x-icon-format-version")).toBe("1");
+    const etag = fetched.headers.get("etag");
+    expect(etag).toMatch(/^"[0-9a-f]{40}"$/);  // hex SHA-1
+    const got = new Uint8Array(await fetched.arrayBuffer());
+    expect(got).toEqual(onebit);
+
+    // Conditional fetch — same hash → 304.
+    const stamped = etag!.replace(/"/g, "");
+    const cached = await SELF.fetch(`https://t/api/avatars/${id}?format=1bit`, {
+      headers: { "if-none-match": `"${stamped}"` },
+    });
+    expect(cached.status).toBe(304);
+    await cached.text();
+  });
+
+  it("rejects bitmap1bit with wrong byte length (400)", async () => {
+    const { token } = await newHome();
+    const wrong = new Uint8Array(64);  // not 72
+
+    const fd = new FormData();
+    fd.append("file", new Blob([TINY_JPEG], { type: "image/jpeg" }), "a.jpg");
+    fd.append("bitmap1bit", new Blob([wrong], { type: "application/octet-stream" }));
+    const up = await SELF.fetch("https://t/api/avatars", {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}` },
+      body: fd,
+    });
+    expect(up.status).toBe(400);
+  });
+
+  it("?format=1bit on an avatar uploaded WITHOUT a bitmap1bit returns 404", async () => {
+    const { token } = await newHome();
+    // Upload without the 1-bit field — pre-PR #46 webapp builds
+    // would do this. The endpoint must opaquely 404 the format
+    // request rather than serve a default / placeholder.
+    const fd = new FormData();
+    fd.append("file", new Blob([TINY_JPEG], { type: "image/jpeg" }), "a.jpg");
+    const up = await SELF.fetch("https://t/api/avatars", {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}` },
+      body: fd,
+    });
+    const { id } = (await json(up)) as { id: string };
+
+    const r = await SELF.fetch(`https://t/api/avatars/${id}?format=1bit`);
+    expect(r.status).toBe(404);
+    await r.text();
+
+    // The default-format GET (the WebP/JPEG bytes) still works —
+    // adding the format param doesn't break the legacy path.
+    const ok = await SELF.fetch(`https://t/api/avatars/${id}`);
+    expect(ok.status).toBe(200);
+    await ok.arrayBuffer();
   });
 });
 

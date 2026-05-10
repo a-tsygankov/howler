@@ -242,11 +242,31 @@ howler::application::NetResult WifiNetwork::fetchIcon(
     using NetResult = howler::application::NetResult;
     if (!isOnline()) return NetResult::transient();
 
+    // Phase 7 routing: a 32-hex-character `name` is an avatar UUID,
+    // not an icon preset. The IconCache treats both the same; the
+    // adapter routes them to different endpoints. Avatar route
+    // serves the same 1-bit 24×24 layout from the avatars table's
+    // bitmap_1bit column (see backend migration 0016). Both paths
+    // emit X-Icon-Hash on success so the cache TTL machinery is
+    // identical.
+    auto isUuidShape = [](const std::string& s) -> bool {
+        if (s.size() != 32) return false;
+        for (char c : s) {
+            const bool ok =
+                (c >= '0' && c <= '9') ||
+                (c >= 'a' && c <= 'f');
+            if (!ok) return false;
+        }
+        return true;
+    };
+
     WiFiClientSecure client;
     client.setInsecure();
     HTTPClient http;
     http.setTimeout(kHttpTimeoutMs);
-    const String url = String(backendUrl_) + "/api/icons/" + name.c_str();
+    const String url = isUuidShape(name)
+        ? String(backendUrl_) + "/api/avatars/" + name.c_str() + "?format=1bit"
+        : String(backendUrl_) + "/api/icons/"   + name.c_str();
     if (!http.begin(client, url)) return NetResult::transient();
     http.addHeader("Authorization", String("Bearer ") + deviceToken_.c_str());
     // Tell HTTPClient to retain headers we care about so we can read

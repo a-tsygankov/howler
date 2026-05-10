@@ -83,9 +83,12 @@ export const AvatarUploadButton = ({
     setEditorFile(file);
   };
 
-  const handleSave = async (processedFile: File) => {
+  const handleSave = async (
+    processedFile: File,
+    bitmap1bit: Uint8Array,
+  ) => {
     try {
-      const { id: avatarId } = await uploadAvatar(processedFile);
+      const { id: avatarId } = await uploadAvatar(processedFile, bitmap1bit);
       onUploaded(avatarId);
       setEditorFile(null);
     } catch (err) {
