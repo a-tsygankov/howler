@@ -188,6 +188,10 @@ const MeResponse = z.object({
   userId: Hex32,
   userDisplayName: z.string(),
   userAvatarId: z.string().nullable().optional(),
+  // Phase 6 OTA admin gate (migration 0014). Defaults to false on
+  // older Worker deploys that don't yet return the field — webapp
+  // hides the firmware admin tile in that case.
+  isAdmin: z.boolean().optional().default(false),
 });
 export type Me = z.infer<typeof MeResponse>;
 
@@ -656,4 +660,101 @@ export const fetchHealth = async (): Promise<{ ok: boolean }> => {
   const res = await fetch("/api/health");
   if (!res.ok) throw new Error(`health: HTTP ${res.status}`);
   return res.json() as Promise<{ ok: boolean }>;
+};
+
+// ── Firmware admin (Phase 6 OTA) ──────────────────────────────────
+//
+// All four endpoints are admin-only on the server (requireAdmin
+// middleware checks users.is_admin). The webapp ALSO gates the UI
+// path on `Me.isAdmin` so non-admins don't even see the tile —
+// belt-and-braces. A non-admin who hand-types the URL will hit a
+// 403 from the server regardless.
+
+const RolloutRules = z
+  .object({
+    deviceIds: z.array(z.string()).optional(),
+    canaryPercent: z.number().int().min(0).max(100).optional(),
+  })
+  .nullable()
+  .optional();
+
+const FirmwareReleaseSchema = z.object({
+  version: z.string(),
+  sha256: z.string(),
+  r2Key: z.string(),
+  sizeBytes: z.number().int(),
+  rolloutRules: RolloutRules,
+  active: z.boolean(),
+  createdAt: z.number().int(),
+  promotedAt: z.number().int().nullable(),
+  yankedAt: z.number().int().nullable(),
+});
+export type FirmwareRelease = z.infer<typeof FirmwareReleaseSchema>;
+
+export const fetchFirmwareReleases = async (): Promise<FirmwareRelease[]> => {
+  const body = await callJson("GET", "/firmware");
+  const parsed = z
+    .object({ releases: z.array(FirmwareReleaseSchema) })
+    .parse(body);
+  return parsed.releases;
+};
+
+const FirmwareHealthRowSchema = z.object({
+  version: z.string(),
+  knownRelease: z.boolean(),
+  active: z.boolean(),
+  promotedAt: z.number().int().nullable(),
+  yankedAt: z.number().int().nullable(),
+  sha256: z.string().nullable(),
+  sizeBytes: z.number().int().nullable(),
+  deviceCount: z.number().int(),
+  aliveCount: z.number().int(),
+  recentCount: z.number().int(),
+  lastSeenAt: z.number().int().nullable(),
+});
+export type FirmwareHealthRow = z.infer<typeof FirmwareHealthRowSchema>;
+
+export interface FirmwareHealth {
+  generatedAt: number;
+  windowAliveSec: number;
+  windowRecentSec: number;
+  versions: FirmwareHealthRow[];
+}
+
+export const fetchFirmwareHealth = async (): Promise<FirmwareHealth> => {
+  const body = await callJson("GET", "/firmware/health");
+  return z
+    .object({
+      generatedAt: z.number().int(),
+      windowAliveSec: z.number().int(),
+      windowRecentSec: z.number().int(),
+      versions: z.array(FirmwareHealthRowSchema),
+    })
+    .parse(body);
+};
+
+export const patchFirmwareRelease = async (
+  version: string,
+  patch: { active?: boolean; rolloutRules?: { canaryPercent?: number; deviceIds?: string[] } | null },
+): Promise<void> => {
+  // The endpoint returns 204 No Content, which `callJson` (via
+  // `handle`) would try to parse as JSON and throw. Drop to fetch
+  // directly + use the same auth + error-message contract.
+  const res = await fetch(`/api/firmware/${encodeURIComponent(version)}`, {
+    method: "PATCH",
+    headers: baseHeaders(),
+    credentials: "include",
+    body: JSON.stringify(patch),
+  });
+  if (res.status === 204) return;
+  if (!res.ok) {
+    let msg = `HTTP ${res.status}`;
+    try {
+      const body = (await res.json()) as { error?: string };
+      if (body.error) msg = body.error;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(msg);
+  }
 };

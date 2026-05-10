@@ -1859,6 +1859,226 @@ describe("OTA — admin write path (Phase 6 slice F1)", () => {
     });
     expect(denied.status).toBe(403);
   });
+
+  // ── Slice F5 — fleet health endpoint ────────────────────────────
+  //
+  // GET /api/firmware/health joins firmware_releases ⨝ devices on
+  // fw_version. Tests cover:
+  //   1. requires admin (non-admin → 403)
+  //   2. returns the release manifest with per-version device counts
+  //      including alive/recent windows derived from last_seen_at
+  //   3. devices on a yanked OR never-promoted release still show up
+  //      with non-zero counts so ops can see drift
+  //   4. devices on a version that's NOT in firmware_releases (a
+  //      hand-flashed dev build, or a release that was hard-deleted
+  //      from the manifest) appear as `knownRelease: false` rows
+  it("GET /api/firmware/health requires admin", async () => {
+    const { token } = await nonAdminAuth();
+    const r = await SELF.fetch("https://t/api/firmware/health", {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(r.status).toBe(403);
+  });
+
+  it("returns per-version device counts with alive + recent windows", async () => {
+    const { token } = await mintAdminToken();
+    const nowSec = Math.floor(Date.now() / 1000);
+
+    // Seed two firmware releases — one promoted (active), one yanked.
+    await env.DB
+      .prepare(
+        `INSERT INTO firmware_releases
+           (version, sha256, r2_key, size_bytes, rollout_rules, active,
+            created_at, promoted_at, yanked_at)
+         VALUES
+           ('1.0.0', ?, 'firmware/1.0.0.bin', 1500000, NULL, 1, ?, ?, NULL),
+           ('1.1.0', ?, 'firmware/1.1.0.bin', 1500000, NULL, 0, ?, ?, ?)`,
+      )
+      .bind(
+        "1".repeat(64), nowSec - 7200, nowSec - 7000,        // 1.0.0
+        "2".repeat(64), nowSec - 3600, nowSec - 3500, nowSec - 600,  // 1.1.0 yanked 10 min ago
+      )
+      .run();
+
+    // Seed devices spread across the two versions:
+    //   - 3 devices on 1.0.0, 2 alive in last 24h, 1 within last hour
+    //   - 2 devices on 1.1.0 (the yanked version — drift!)
+    //   - 1 device on 1.2.0 — not in manifest at all (orphan)
+    //   - 1 device with NULL fw_version — never reported (excluded)
+    let serialSeq = 0;
+    const seedDevice = async (
+      id: string,
+      homeId: string,
+      fwVersion: string | null,
+      lastSeenAt: number | null,
+    ) => {
+      // Devices are home-scoped after migration 0002 — schema is
+      // (id, home_id, serial, fw_version, hw_model, tz, last_seen_at,
+      // created_at, updated_at, is_deleted). Serials must be unique
+      // across the table; bump a per-test counter so successive
+      // inserts don't collide.
+      const serial = `serial-${++serialSeq}`;
+      await env.DB
+        .prepare(
+          `INSERT INTO devices
+             (id, home_id, serial, fw_version, hw_model, last_seen_at,
+              created_at, updated_at, is_deleted)
+           VALUES (?, ?, ?, ?, 'crowpanel', ?, ?, ?, 0)`,
+        )
+        .bind(id, homeId, serial, fwVersion, lastSeenAt, nowSec, nowSec)
+        .run();
+    };
+
+    // Need a home for the FK — reuse the seeded admin home.
+    const homeId = "a".repeat(32);
+    await seedDevice("d1".padEnd(32, "0"), homeId, "1.0.0", nowSec - 30 * 60);   // recent
+    await seedDevice("d2".padEnd(32, "0"), homeId, "1.0.0", nowSec - 12 * 3600); // alive but not recent
+    await seedDevice("d3".padEnd(32, "0"), homeId, "1.0.0", nowSec - 48 * 3600); // stale (older than alive window)
+    await seedDevice("d4".padEnd(32, "0"), homeId, "1.1.0", nowSec - 30 * 60);
+    await seedDevice("d5".padEnd(32, "0"), homeId, "1.1.0", nowSec - 90 * 60);
+    await seedDevice("d6".padEnd(32, "0"), homeId, "1.2.0", nowSec - 5 * 60);    // orphan
+    await seedDevice("d7".padEnd(32, "0"), homeId, null,    nowSec - 5 * 60);    // never-reported, excluded
+
+    const r = await SELF.fetch("https://t/api/firmware/health", {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(r.status).toBe(200);
+    const body = (await json(r)) as {
+      generatedAt: number;
+      windowAliveSec: number;
+      windowRecentSec: number;
+      versions: Array<{
+        version: string;
+        knownRelease: boolean;
+        active: boolean;
+        promotedAt: number | null;
+        yankedAt: number | null;
+        deviceCount: number;
+        aliveCount: number;
+        recentCount: number;
+        lastSeenAt: number | null;
+        sha256: string | null;
+        sizeBytes: number | null;
+      }>;
+    };
+    expect(body.windowAliveSec).toBe(86400);
+    expect(body.windowRecentSec).toBe(3600);
+
+    const v110 = body.versions.find((v) => v.version === "1.1.0");
+    const v100 = body.versions.find((v) => v.version === "1.0.0");
+    const v120 = body.versions.find((v) => v.version === "1.2.0");
+
+    // 1.0.0 — promoted, 3 devices, 2 alive (d1+d2), 1 recent (d1).
+    expect(v100).toBeDefined();
+    expect(v100!.knownRelease).toBe(true);
+    expect(v100!.active).toBe(true);
+    expect(v100!.deviceCount).toBe(3);
+    expect(v100!.aliveCount).toBe(2);
+    expect(v100!.recentCount).toBe(1);
+    expect(v100!.sha256).toBe("1".repeat(64));
+
+    // 1.1.0 — yanked but still on 2 devices in the field. The drift
+    // case the endpoint primarily exists to surface.
+    expect(v110).toBeDefined();
+    expect(v110!.knownRelease).toBe(true);
+    expect(v110!.active).toBe(false);
+    expect(v110!.yankedAt).not.toBeNull();
+    expect(v110!.deviceCount).toBe(2);
+    expect(v110!.aliveCount).toBe(2);
+    expect(v110!.recentCount).toBe(1);  // d4 is recent, d5 is alive-only
+
+    // 1.2.0 — orphan (no manifest row). Surfaced as knownRelease=false.
+    expect(v120).toBeDefined();
+    expect(v120!.knownRelease).toBe(false);
+    expect(v120!.active).toBe(false);
+    expect(v120!.deviceCount).toBe(1);
+    expect(v120!.sha256).toBeNull();
+  });
+
+  it("includes promoted-but-unflashed releases with zero counts", async () => {
+    const { token } = await mintAdminToken();
+    const nowSec = Math.floor(Date.now() / 1000);
+
+    // A brand-new release, just promoted; no devices have picked it
+    // up yet. The dashboard should show it with 0 counts so admins
+    // can watch the rollout in real time.
+    await env.DB
+      .prepare(
+        `INSERT INTO firmware_releases
+           (version, sha256, r2_key, size_bytes, rollout_rules, active,
+            created_at, promoted_at, yanked_at)
+         VALUES (?, ?, ?, ?, NULL, 1, ?, ?, NULL)`,
+      )
+      .bind("2.0.0", "f".repeat(64), "firmware/2.0.0.bin", 1_400_000, nowSec, nowSec)
+      .run();
+
+    const r = await SELF.fetch("https://t/api/firmware/health", {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(r.status).toBe(200);
+    const body = (await json(r)) as {
+      versions: Array<{ version: string; deviceCount: number; active: boolean }>;
+    };
+    const v200 = body.versions.find((v) => v.version === "2.0.0");
+    expect(v200).toBeDefined();
+    expect(v200!.active).toBe(true);
+    expect(v200!.deviceCount).toBe(0);
+  });
+});
+
+// ── Auth /me — surface is_admin flag for webapp gating ─────────────
+describe("auth /me — admin flag for webapp UI gating", () => {
+  let nextIp = 700;
+  const ADMIN_HOME_ID_2 = "c".repeat(32);
+
+  it("isAdmin=false for plain quick-setup users", async () => {
+    const ip = `10.0.50.${nextIp++}`;
+    const setup = await SELF.fetch("https://t/api/auth/quick-setup", {
+      method: "POST",
+      headers: { "content-type": "application/json", "cf-connecting-ip": ip },
+      body: "{}",
+    });
+    const { token } = (await json(setup)) as { token: string };
+
+    const me = await SELF.fetch("https://t/api/auth/me", {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(me.status).toBe(200);
+    const body = (await json(me)) as { isAdmin: boolean };
+    expect(body.isAdmin).toBe(false);
+  });
+
+  it("isAdmin=true for users with users.is_admin=1", async () => {
+    const nowSec = Math.floor(Date.now() / 1000);
+    const userId = "d".repeat(32);
+    await env.DB
+      .prepare(
+        `INSERT OR IGNORE INTO homes (id, display_name, tz, created_at, updated_at, is_deleted)
+         VALUES (?, 'admin', 'UTC', ?, ?, 0)`,
+      )
+      .bind(ADMIN_HOME_ID_2, nowSec, nowSec)
+      .run();
+    await env.DB
+      .prepare(
+        `INSERT INTO users (id, home_id, display_name, created_at, updated_at, is_deleted, is_admin)
+         VALUES (?, ?, 'admin', ?, ?, 0, 1)`,
+      )
+      .bind(userId, ADMIN_HOME_ID_2, nowSec, nowSec)
+      .run();
+
+    const { issueUserToken } = await import("../src/auth.ts");
+    const secret = (env as unknown as { AUTH_SECRET: string }).AUTH_SECRET;
+    const token = await issueUserToken(ADMIN_HOME_ID_2, userId, secret);
+
+    const me = await SELF.fetch("https://t/api/auth/me", {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(me.status).toBe(200);
+    const body = (await json(me)) as { isAdmin: boolean };
+    expect(body.isAdmin).toBe(true);
+  });
 });
 
 // ── Avatars (R2-backed photo uploads) ─────────────────────────────

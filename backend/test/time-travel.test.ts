@@ -11,6 +11,10 @@ import init0006 from "../migrations/0006_label_icons.sql?raw";
 import init0007 from "../migrations/0007_task_avatar_backfill.sql?raw";
 import init0008 from "../migrations/0008_rule_modified_at.sql?raw";
 import init0009 from "../migrations/0009_user_bg_color.sql?raw";
+// 0014 adds users.is_admin which /api/auth/me now SELECTs. Without
+// it, /me requests fail with "no such column: is_admin". Pulled
+// in here so the time-travel suite's auth probes keep working.
+import init0014 from "../migrations/0014_user_admin.sql?raw";
 import { resetClock, setClock, TestClock } from "../src/clock.ts";
 
 // Demonstrates the injectable-clock pattern (plan §3 / `src/clock.ts`).
@@ -23,7 +27,7 @@ const T0_MS = 1_700_000_000_000; // arbitrary anchor (2023-11-14 UTC)
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 
 const applyMigrations = async () => {
-  for (const sql of [init0000, init0001, init0002, init0003, init0004, init0005, init0006, init0007, init0008, init0009]) {
+  for (const sql of [init0000, init0001, init0002, init0003, init0004, init0005, init0006, init0007, init0008, init0009, init0014]) {
     const stripped = sql
       .split("\n")
       .filter((line) => !line.trim().startsWith("--"))

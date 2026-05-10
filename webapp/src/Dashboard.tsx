@@ -408,6 +408,27 @@ export const Dashboard = ({ session, onLogout, view }: Props) => {
               onPaired={() => qc.invalidateQueries({ queryKey: ["devices"] })}
             />
           </Section>
+
+          {/* Phase 6 OTA admin surface — only the home's admin user
+              (users.is_admin = 1, set by migration 0014) sees this
+              tile. Server-side requireAdmin enforces the same gate
+              on every /api/firmware/* call, so a non-admin who
+              hand-types /settings/firmware sees an in-page denial
+              rather than the table. */}
+          {me.data?.isAdmin && (
+            <Section title="Firmware (admin)">
+              <p className="text-sm text-ink-2">
+                Promote / yank releases, watch the rollout across the
+                device fleet, and spot drift.
+              </p>
+              <Link
+                to="/settings/firmware"
+                className="mt-2 inline-flex items-center rounded-md border border-line-soft bg-paper-2 px-3 py-1.5 text-sm text-ink hover:border-line"
+              >
+                Open firmware admin →
+              </Link>
+            </Section>
+          )}
         </>
       )}
 

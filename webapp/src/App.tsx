@@ -9,6 +9,7 @@ import { getSession, type SessionInfo } from "./lib/session.ts";
 import { Login } from "./Login.tsx";
 import { Dashboard } from "./Dashboard.tsx";
 import { TaskDetail } from "./TaskDetail.tsx";
+import { FirmwareAdmin } from "./FirmwareAdmin.tsx";
 import { ResultTypesManager } from "./ResultTypesManager.tsx";
 import { Sidebar } from "./components/Sidebar.tsx";
 
@@ -53,6 +54,11 @@ export const App = () => {
             />
             <Route path="/tasks/:taskId" element={<TaskDetail />} />
             <Route path="/settings/result-types" element={<ResultTypesManager />} />
+            {/* Phase 6 OTA admin surface. Server-side gated by
+                requireAdmin (users.is_admin); the page also reads
+                /me's isAdmin flag and renders an in-page redirect
+                hint for non-admins who hand-type the URL. */}
+            <Route path="/settings/firmware" element={<FirmwareAdmin />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </div>
