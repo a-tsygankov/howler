@@ -1283,3 +1283,390 @@ describe("OTA — firmware release advisory (Phase 6 foundation)", () => {
     expect(res.status).toBe(403);
   });
 });
+
+describe("OTA — admin write path (Phase 6 slice F1)", () => {
+  let nextIp = 500;
+
+  // The admin allow-list is a static binding (vitest.config.ts
+  // sets ADMIN_HOMES = "a"*32). We mint an admin token by
+  // INSERTing a home with that exact id + a user under it, then
+  // hand-issuing a UserToken. Standard quick-setup picks a random
+  // home id which will never match, giving us the "non-admin"
+  // path for free.
+  const ADMIN_HOME_ID = "a".repeat(32);
+
+  const nonAdminAuth = async () => {
+    const ip = `10.0.5.${nextIp++}`;
+    const res = await SELF.fetch("https://t/api/auth/quick-setup", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "cf-connecting-ip": ip,
+      },
+      body: "{}",
+    });
+    const body = await json(res);
+    return {
+      token: body["token"] as string,
+      homeId: body["homeId"] as string,
+    };
+  };
+
+  const mintAdminToken = async (): Promise<{ token: string; homeId: string; userId: string }> => {
+    const userId = "b".repeat(32);
+    const nowSec = Math.floor(Date.now() / 1000);
+    // INSERT OR IGNORE so re-runs in the same test file don't
+    // collide on the unique home id.
+    await env.DB
+      .prepare(
+        `INSERT OR IGNORE INTO homes (id, display_name, tz, created_at, updated_at, is_deleted)
+         VALUES (?, 'admin-test', 'UTC', ?, ?, 0)`,
+      )
+      .bind(ADMIN_HOME_ID, nowSec, nowSec)
+      .run();
+    await env.DB
+      .prepare(
+        `INSERT OR IGNORE INTO users (id, home_id, display_name, created_at, updated_at, is_deleted)
+         VALUES (?, ?, 'admin', ?, ?, 0)`,
+      )
+      .bind(userId, ADMIN_HOME_ID, nowSec, nowSec)
+      .run();
+    const { issueUserToken } = await import("../src/auth.ts");
+    const secret = (env as unknown as { AUTH_SECRET: string }).AUTH_SECRET;
+    const token = await issueUserToken(ADMIN_HOME_ID, userId, secret);
+    return { token, homeId: ADMIN_HOME_ID, userId };
+  };
+
+  it("POST /api/firmware admits an admin home; the row lands inactive (active=0, no promoted_at)", async () => {
+    const { token } = await mintAdminToken();
+
+    const res = await SELF.fetch("https://t/api/firmware", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        version: "1.4.2",
+        sha256: "f".repeat(64),
+        r2Key: "firmware/firmware-1.4.2.bin",
+        sizeBytes: 1_400_000,
+      }),
+    });
+    expect(res.status).toBe(201);
+    const body = (await json(res)) as { active: boolean; version: string };
+    expect(body.version).toBe("1.4.2");
+    expect(body.active).toBe(false);
+
+    // DB confirms the row landed inactive (no accidental promotions).
+    const row = await env.DB
+      .prepare(
+        "SELECT active, promoted_at FROM firmware_releases WHERE version = ?",
+      )
+      .bind("1.4.2")
+      .first<{ active: number; promoted_at: number | null }>();
+    expect(row?.active).toBe(0);
+    expect(row?.promoted_at).toBeNull();
+
+    // /check returns updateAvailable=false until the release is
+    // promoted — proving the inactive row doesn't ship to devices
+    // by accident.
+    const check = await SELF.fetch(
+      "https://t/api/firmware/check?fwVersion=1.0.0",
+      { headers: { authorization: `Bearer ${token}` } },
+    );
+    expect((await json(check))["updateAvailable"]).toBe(false);
+  });
+
+  it("POST /api/firmware rejects non-admin user tokens with 403", async () => {
+    // Default quick-setup home id won't match ADMIN_HOMES.
+    const { token } = await nonAdminAuth();
+
+    const res = await SELF.fetch("https://t/api/firmware", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        version: "1.0.0",
+        sha256: "0".repeat(64),
+        r2Key: "firmware/firmware-1.0.0.bin",
+        sizeBytes: 1_000_000,
+      }),
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it("POST /api/firmware rejects a malformed version (regex closes off SQL-injection-ish input)", async () => {
+    const { token } = await mintAdminToken();
+
+    for (const bad of [
+      "1.4.2; DROP TABLE firmware_releases",
+      "../1.4.2",
+      "1",
+      "1.4.2-with spaces",
+      "",
+    ]) {
+      const res = await SELF.fetch("https://t/api/firmware", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          version: bad,
+          sha256: "0".repeat(64),
+          r2Key: "firmware/x.bin",
+          sizeBytes: 1,
+        }),
+      });
+      expect(
+        res.status,
+        `version "${bad}" must be rejected with 400`,
+      ).toBe(400);
+    }
+  });
+
+  it("POST /api/firmware is idempotent on duplicate version (409)", async () => {
+    const { token } = await mintAdminToken();
+
+    const body = JSON.stringify({
+      version: "2.0.0",
+      sha256: "1".repeat(64),
+      r2Key: "firmware/firmware-2.0.0.bin",
+      sizeBytes: 2_000_000,
+    });
+    const headers = {
+      authorization: `Bearer ${token}`,
+      "content-type": "application/json",
+    } as const;
+
+    const r1 = await SELF.fetch("https://t/api/firmware", { method: "POST", headers, body });
+    expect(r1.status).toBe(201);
+
+    const r2 = await SELF.fetch("https://t/api/firmware", { method: "POST", headers, body });
+    expect(r2.status).toBe(409);
+  });
+
+  it("PATCH /api/firmware/:version full lifecycle: register → promote → /check sees it → yank → /check stops returning it", async () => {
+    const { token } = await mintAdminToken();
+
+    const post = await SELF.fetch("https://t/api/firmware", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        version: "3.0.0",
+        sha256: "2".repeat(64),
+        r2Key: "firmware/firmware-3.0.0.bin",
+        sizeBytes: 1_500_000,
+      }),
+    });
+    expect(post.status).toBe(201);
+
+    // /check ignores inactive rows.
+    const before = await SELF.fetch(
+      "https://t/api/firmware/check?fwVersion=2.0.0",
+      { headers: { authorization: `Bearer ${token}` } },
+    );
+    expect((await json(before))["updateAvailable"]).toBe(false);
+
+    // Promote.
+    const promote = await SELF.fetch("https://t/api/firmware/3.0.0", {
+      method: "PATCH",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ active: true }),
+    });
+    expect(promote.status).toBe(204);
+
+    const promotedRow = await env.DB
+      .prepare(
+        "SELECT active, promoted_at, yanked_at FROM firmware_releases WHERE version = ?",
+      )
+      .bind("3.0.0")
+      .first<{
+        active: number;
+        promoted_at: number | null;
+        yanked_at: number | null;
+      }>();
+    expect(promotedRow?.active).toBe(1);
+    expect(promotedRow?.promoted_at).not.toBeNull();
+    expect(promotedRow?.yanked_at).toBeNull();
+
+    // /check now serves it.
+    const after = await SELF.fetch(
+      "https://t/api/firmware/check?fwVersion=2.0.0",
+      { headers: { authorization: `Bearer ${token}` } },
+    );
+    const afterBody = (await json(after)) as { version?: string };
+    expect(afterBody.version).toBe("3.0.0");
+
+    // Yank.
+    const yank = await SELF.fetch("https://t/api/firmware/3.0.0", {
+      method: "PATCH",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ active: false }),
+    });
+    expect(yank.status).toBe(204);
+
+    const yankedRow = await env.DB
+      .prepare(
+        "SELECT active, promoted_at, yanked_at FROM firmware_releases WHERE version = ?",
+      )
+      .bind("3.0.0")
+      .first<{
+        active: number;
+        promoted_at: number | null;
+        yanked_at: number | null;
+      }>();
+    expect(yankedRow?.active).toBe(0);
+    // promoted_at preserved across yank — audit trail.
+    expect(yankedRow?.promoted_at).toBe(promotedRow?.promoted_at);
+    expect(yankedRow?.yanked_at).not.toBeNull();
+
+    // /check stops returning it.
+    const final = await SELF.fetch(
+      "https://t/api/firmware/check?fwVersion=2.0.0",
+      { headers: { authorization: `Bearer ${token}` } },
+    );
+    expect((await json(final))["updateAvailable"]).toBe(false);
+  });
+
+  it("PATCH /api/firmware/:version updates rolloutRules in place (replaces JSON, /check honours immediately)", async () => {
+    const { token } = await mintAdminToken();
+
+    await SELF.fetch("https://t/api/firmware", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        version: "4.0.0",
+        sha256: "3".repeat(64),
+        r2Key: "firmware/firmware-4.0.0.bin",
+        sizeBytes: 1_500_000,
+      }),
+    });
+
+    // Promote + scope to a 1% canary in one PATCH.
+    const r = await SELF.fetch("https://t/api/firmware/4.0.0", {
+      method: "PATCH",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        active: true,
+        rolloutRules: { canaryPercent: 1 },
+      }),
+    });
+    expect(r.status).toBe(204);
+
+    const row = await env.DB
+      .prepare("SELECT rollout_rules FROM firmware_releases WHERE version = ?")
+      .bind("4.0.0")
+      .first<{ rollout_rules: string | null }>();
+    expect(row?.rollout_rules).toBe('{"canaryPercent":1}');
+
+    // Clear it (null = ship to everyone).
+    const r2 = await SELF.fetch("https://t/api/firmware/4.0.0", {
+      method: "PATCH",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ rolloutRules: null }),
+    });
+    expect(r2.status).toBe(204);
+    const row2 = await env.DB
+      .prepare("SELECT rollout_rules FROM firmware_releases WHERE version = ?")
+      .bind("4.0.0")
+      .first<{ rollout_rules: string | null }>();
+    expect(row2?.rollout_rules).toBeNull();
+  });
+
+  it("PATCH /api/firmware/:version 404s on unknown version + 400 on malformed version param", async () => {
+    const { token } = await mintAdminToken();
+
+    const notFound = await SELF.fetch("https://t/api/firmware/9.9.9", {
+      method: "PATCH",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ active: true }),
+    });
+    expect(notFound.status).toBe(404);
+
+    const badParam = await SELF.fetch(
+      "https://t/api/firmware/not-a-version",
+      {
+        method: "PATCH",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ active: true }),
+      },
+    );
+    expect(badParam.status).toBe(400);
+  });
+
+  it("GET /api/firmware lists all releases for the ops UI (admin-only)", async () => {
+    const { token } = await mintAdminToken();
+
+    // Seed two builds, promote one.
+    for (const v of ["5.0.0", "5.1.0"]) {
+      await SELF.fetch("https://t/api/firmware", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          version: v,
+          sha256: "4".repeat(64),
+          r2Key: `firmware/firmware-${v}.bin`,
+          sizeBytes: 1_500_000,
+        }),
+      });
+    }
+    await SELF.fetch("https://t/api/firmware/5.1.0", {
+      method: "PATCH",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ active: true }),
+    });
+
+    const list = await SELF.fetch("https://t/api/firmware", {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(list.status).toBe(200);
+    const body = (await json(list)) as {
+      releases: Array<{ version: string; active: boolean }>;
+    };
+    const v500 = body.releases.find((r) => r.version === "5.0.0");
+    const v510 = body.releases.find((r) => r.version === "5.1.0");
+    expect(v500?.active).toBe(false);
+    expect(v510?.active).toBe(true);
+
+    // Non-admin sees 403.
+    const { token: otherToken } = await nonAdminAuth();
+    const denied = await SELF.fetch("https://t/api/firmware", {
+      headers: { authorization: `Bearer ${otherToken}` },
+    });
+    expect(denied.status).toBe(403);
+  });
+});

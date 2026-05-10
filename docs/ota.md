@@ -11,23 +11,33 @@ backend read path; everything below it is still to do.
 
 ---
 
-## Status — slice F0 (foundation, this PR)
+## Status — slices F0 + F1 (foundation + admin write path)
 
 | | |
 | --- | --- |
-| Migration `0013_firmware_releases.sql` | ✅ |
-| Drizzle schema (`firmwareReleases`) | ✅ |
-| `GET /api/firmware/check?fwVersion=X` | ✅ — picks highest active release > current, applies rollout rules |
-| `POST /api/devices/heartbeat {fwVersion}` | ✅ — updates `devices.fw_version` + advises `updateAvailable` in one round-trip (was silently 404'ing) |
-| Semver-aware version compare | ✅ — `backend/src/services/version.ts` (handles `1.10.0 > 1.2.0` SQL would mis-rank) |
-| Rollout rules: explicit `deviceIds` whitelist | ✅ |
-| Rollout rules: `canaryPercent` (deterministic per-device slice) | ✅ |
-| Integration tests | ✅ — 6 cases under "OTA — firmware release advisory" |
+| Migration `0013_firmware_releases.sql` | ✅ F0 |
+| Drizzle schema (`firmwareReleases`) | ✅ F0 |
+| `GET /api/firmware/check?fwVersion=X` | ✅ F0 |
+| `POST /api/devices/heartbeat {fwVersion}` | ✅ F0 |
+| Semver-aware version compare | ✅ F0 |
+| Rollout rules (`deviceIds` + `canaryPercent`) | ✅ F0 |
+| `requireAdmin()` middleware + `ADMIN_HOMES` env | ✅ F1 |
+| `POST /api/firmware` (admin upload-manifest) | ✅ F1 — zod-validated, version regex, idempotent on duplicate (409), lands `active=0` |
+| `PATCH /api/firmware/:version` | ✅ F1 — promote (sets `promoted_at`), yank (sets `yanked_at`), update `rolloutRules` |
+| `GET /api/firmware` (admin listing) | ✅ F1 |
+| Integration tests | ✅ — 14 cases ("OTA — firmware release advisory" + "OTA — admin write path") |
 
 The shape is intentionally additive — old clients ignore the new
 endpoints; `firmware_releases` is empty until something INSERTs a
-release row, so deploying this PR has zero behavioural change for
-production until F2 ships.
+release row, so deploying these slices has zero behavioural change
+for production until a build is uploaded + promoted.
+
+**Operational gate.** The admin allow-list is the comma-separated
+`ADMIN_HOMES` env var. Empty string = nobody is admin (the safe
+default). Set in production via `wrangler secret put ADMIN_HOMES`
+with the home id of whoever runs the OTA console — there's no
+first-class admin role yet, so this is the F1 placeholder per the
+"slice gates" pattern from earlier in this doc.
 
 ---
 
@@ -81,17 +91,21 @@ sequenceDiagram
 Each slice is a separate PR. They can land in order; later slices
 gate on earlier ones being live in production.
 
-### F1 — admin POST `/api/firmware` (small, ~1 day)
+### F1 — admin POST `/api/firmware` ✅ (landed in dev-33-ota-f1-admin)
 
-- Authenticated upload-manifest endpoint. Caller MUST be a user-token
-  with a future `is_admin` flag (no admin concept yet — for now,
-  gate to a hardcoded list of home-ids in `wrangler.toml`).
-- Body: `{ version, sha256, r2Key, sizeBytes, rolloutRules? }`.
-- INSERTs `firmware_releases` row with `active = 0`.
-- Companion: `PATCH /api/firmware/:version` to flip `active` 0↔1
-  (sets `promoted_at` / `yanked_at`).
-- Tests: zod-validated body, rejects user-token without the admin
-  flag, version-format validation rejects `"1.4.0; DROP TABLE…"`.
+Implemented per the original plan; see the status table above.
+Three handlers under one router:
+
+- `POST /api/firmware` — zod-validated body, version regex
+  rejects `"1.4.0; DROP TABLE …"`, idempotent on duplicate
+  version (409), lands `active=0`.
+- `PATCH /api/firmware/:version` — promote (sets `promoted_at`
+  on first promotion, preserves it across re-promotes), yank
+  (sets `yanked_at`), or update `rolloutRules` in place.
+- `GET /api/firmware` — admin-only listing for the ops UI.
+
+`requireAdmin()` consults `ADMIN_HOMES` (comma-separated home
+IDs, env var). Empty list = nobody is admin (fail-closed).
 
 ### F2 — CI signed-build pipeline (medium, ~3 days)
 
