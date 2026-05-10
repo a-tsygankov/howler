@@ -54,6 +54,7 @@ import {
   subscribePush,
   unsubscribePush,
 } from "./lib/push.ts";
+import { AvatarEditor } from "./components/AvatarEditor.tsx";
 import { AvatarUploadButton } from "./components/AvatarUploadButton.tsx";
 import { HowlerAvatar } from "./components/HowlerAvatar.tsx";
 import { InstallAppBlock } from "./components/InstallAppBlock.tsx";
@@ -614,19 +615,32 @@ const HomeAvatarTile = ({
   seed: string;
 }) => {
   const [busy, setBusy] = useState(false);
-  const onPick = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  // Mirror AvatarUploadButton's flow: file pick opens the editor;
+  // editor's onSave runs the upload + home-PATCH chain.
+  const [editorFile, setEditorFile] = useState<File | null>(null);
+
+  const onPick = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
+    e.target.value = "";  // re-pick same file fires onChange again
     if (!file) return;
+    setEditorFile(file);
+  };
+
+  const onEditorSave = async (processedFile: File) => {
     setBusy(true);
     try {
-      const { id } = await uploadAvatar(file);
+      const { id } = await uploadAvatar(processedFile);
       await updateHome({ avatarId: id });
       onChanged();
+      setEditorFile(null);
     } catch (err) {
       console.warn(err);
+      // Editor stays open so user can retry without re-running
+      // the pipeline. The error surfaces via the editor's own
+      // catch-and-display path inside its onSave callback.
+      throw err;
     } finally {
       setBusy(false);
-      e.target.value = "";
     }
   };
   // Reset the home avatar back to seed-derived initials. The clear
@@ -681,6 +695,13 @@ const HomeAvatarTile = ({
         >
           ×
         </button>
+      )}
+      {editorFile && (
+        <AvatarEditor
+          file={editorFile}
+          onSave={onEditorSave}
+          onCancel={() => setEditorFile(null)}
+        />
       )}
     </div>
   );
