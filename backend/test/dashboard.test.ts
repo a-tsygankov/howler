@@ -22,20 +22,13 @@ const T0_MS = Date.UTC(2026, 4, 6, 0, 0, 0); // 2026-05-06 00:00 UTC
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
 
+import { applyMigrationSql } from "./helpers/migrations.ts";
+
 const applyMigrations = async () => {
-  for (const sql of [init0000, init0001, init0002, init0003, init0004, init0005, init0006, init0007, init0008, init0009]) {
-    const stripped = sql
-      .split("\n")
-      .filter((line) => !line.trim().startsWith("--"))
-      .join("\n");
-    const statements = stripped
-      .split(";")
-      .map((s) => s.trim())
-      .filter((s) => s.length > 0);
-    for (const s of statements) {
-      await env.DB.exec(s.replace(/\s+/g, " "));
-    }
-  }
+  await applyMigrationSql(env.DB, [
+    init0000, init0001, init0002, init0003, init0004, init0005,
+    init0006, init0007, init0008, init0009,
+  ]);
 };
 
 const reset = async () => {

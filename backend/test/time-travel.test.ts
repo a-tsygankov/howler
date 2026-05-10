@@ -26,20 +26,13 @@ import { resetClock, setClock, TestClock } from "../src/clock.ts";
 const T0_MS = 1_700_000_000_000; // arbitrary anchor (2023-11-14 UTC)
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 
+import { applyMigrationSql } from "./helpers/migrations.ts";
+
 const applyMigrations = async () => {
-  for (const sql of [init0000, init0001, init0002, init0003, init0004, init0005, init0006, init0007, init0008, init0009, init0014]) {
-    const stripped = sql
-      .split("\n")
-      .filter((line) => !line.trim().startsWith("--"))
-      .join("\n");
-    const statements = stripped
-      .split(";")
-      .map((s) => s.trim())
-      .filter((s) => s.length > 0);
-    for (const s of statements) {
-      await env.DB.exec(s.replace(/\s+/g, " "));
-    }
-  }
+  await applyMigrationSql(env.DB, [
+    init0000, init0001, init0002, init0003, init0004, init0005,
+    init0006, init0007, init0008, init0009, init0014,
+  ]);
 };
 
 const reset = async () => {

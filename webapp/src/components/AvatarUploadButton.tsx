@@ -18,6 +18,22 @@
 import { type ReactNode, useId, useState } from "react";
 import { uploadAvatar } from "../lib/api";
 
+// Mirrors backend/src/routes/avatars.ts: 2 MB cap, JPEG / PNG / WebP
+// only. Validating client-side avoids a 2-MB upload + 413 round-trip
+// when the user picks a phone-camera-sized image.
+const MAX_AVATAR_BYTES = 2 * 1024 * 1024;
+const ALLOWED_AVATAR_MIME = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+]);
+
+const fmtBytes = (bytes: number): string => {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+};
+
 export interface AvatarUploadButtonProps {
   onUploaded: (avatarId: string) => void;
   /** Inline visual style. "outline" = the default Settings tile look,
@@ -42,6 +58,22 @@ export const AvatarUploadButton = ({
   const onPick = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    // Pre-upload validation — fail fast instead of round-tripping the
+    // bytes only to be told 413 / 415 by the server. The error
+    // strings match what the backend would return, just delivered
+    // before the bandwidth hit.
+    if (!ALLOWED_AVATAR_MIME.has(file.type)) {
+      setError("only jpeg/png/webp");
+      e.target.value = "";
+      return;
+    }
+    if (file.size > MAX_AVATAR_BYTES) {
+      setError(
+        `max ${fmtBytes(MAX_AVATAR_BYTES)} (got ${fmtBytes(file.size)})`,
+      );
+      e.target.value = "";
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
