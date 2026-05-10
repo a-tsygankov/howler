@@ -2,7 +2,20 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <!-- Browser favicons. The .ico is 16/32/48 multi-resolution so
+         legacy IE / older browsers find it at the root, while modern
+         browsers prefer the crisp PNGs via the <link> tags below. -->
+    <link rel="icon" href="/favicon.ico" sizes="any" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png" />
+    <!-- iOS Add-to-Home-Screen icon. iOS doesn't read the manifest's
+         `icons` array — it requires this explicit <link> at 180x180. -->
+    <link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon.png" />
+    <!-- iOS PWA polish: hide the Safari chrome and make the status
+         bar transparent when launched from the home screen. -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="Howler" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#F5EFE3" />
     <title>Howler</title>

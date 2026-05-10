@@ -54,6 +54,7 @@ import {
   unsubscribePush,
 } from "./lib/push.ts";
 import { HowlerAvatar } from "./components/HowlerAvatar.tsx";
+import { InstallAppBlock } from "./components/InstallAppBlock.tsx";
 import { Icon, type IconName } from "./components/Icon.tsx";
 import { Btn } from "./components/Buttons.tsx";
 import { Sheet } from "./components/Sheet.tsx";
@@ -384,6 +385,10 @@ export const Dashboard = ({ session, onLogout, view }: Props) => {
 
           <Section title="Theme">
             <ThemeBlock />
+          </Section>
+
+          <Section title="Install on your phone">
+            <InstallAppBlock />
           </Section>
 
           <Section title="Sync activity">
