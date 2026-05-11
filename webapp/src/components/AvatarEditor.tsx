@@ -21,6 +21,7 @@ import {
   blobToAvatarFile,
   decodeImage,
   generate1bitBitmap,
+  preview1bitBitmap,
   removeBackground,
   resizeAndEncode,
 } from "../lib/imageProcessing";
@@ -63,6 +64,13 @@ export const AvatarEditor = ({ file, onSave, onCancel }: AvatarEditorProps) => {
   // Phase 7 device variant: 24×24 Floyd-Steinberg dither produced
   // alongside the WebP. Cached so Save doesn't re-run the pipeline.
   const [bitmap1bit, setBitmap1bit] = useState<Uint8Array | null>(null);
+  // Rendered 24×24 PNG of the 1-bit bitmap, scaled up in the UI as
+  // a "this is what the dial will see" preview. Recomputed on every
+  // bitmap1bit change so the user sees the dither shift live when
+  // they toggle bg-removal.
+  const [devicePreviewUrl, setDevicePreviewUrl] = useState<string | null>(
+    null,
+  );
 
   // UI state.
   const [busy, setBusy] = useState(false);
@@ -172,6 +180,20 @@ export const AvatarEditor = ({ file, onSave, onCancel }: AvatarEditorProps) => {
         const onebit = generate1bitBitmap(workingBitmap);
         setProcessedBlob(blob);
         setBitmap1bit(onebit);
+        // Render the 1-bit bytes as a tiny PNG so the editor can
+        // show "this is what the dial will see." Wrapped in a
+        // try-catch so a render failure (shouldn't happen — pure
+        // canvas) doesn't kill the main preview path.
+        try {
+          const devBlob = await preview1bitBitmap(onebit);
+          if (cancelled) return;
+          setDevicePreviewUrl((old) => {
+            if (old) URL.revokeObjectURL(old);
+            return URL.createObjectURL(devBlob);
+          });
+        } catch {
+          /* swallow — the WebP preview still renders */
+        }
         // Replace the previous preview URL on each pass; revoke the
         // old one so the browser can free the underlying Blob.
         setPreviewUrl((old) => {
@@ -193,10 +215,13 @@ export const AvatarEditor = ({ file, onSave, onCancel }: AvatarEditorProps) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [original, removeBg]);
 
-  // Revoke the live preview URL on unmount.
+  // Revoke the live preview URLs on unmount. Both the WebP preview
+  // and the device-preview PNG were created via createObjectURL and
+  // would leak their underlying Blobs otherwise.
   useEffect(() => {
     return () => {
       if (previewUrl) URL.revokeObjectURL(previewUrl);
+      if (devicePreviewUrl) URL.revokeObjectURL(devicePreviewUrl);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -226,28 +251,57 @@ export const AvatarEditor = ({ file, onSave, onCancel }: AvatarEditorProps) => {
         </p>
       )}
 
-      {/* Preview surface. Square 192×192 box; the avatar always
-          renders inside a circular CSS frame across the rest of the
-          app, but the editor preview shows the full square so the
-          user sees the actual upload bytes (centred crop included). */}
-      <div className="mt-4 flex justify-center">
-        <div className="relative h-48 w-48 overflow-hidden rounded-2xl bg-paper-3 ring-1 ring-line-soft">
-          {previewUrl ? (
-            <img
-              src={previewUrl}
-              alt="Avatar preview"
-              className="h-full w-full object-cover"
-            />
-          ) : (
-            <div className="flex h-full w-full items-center justify-center text-xs text-ink-3">
-              {original ? "Processing…" : "Loading…"}
-            </div>
-          )}
-          {busy && previewUrl && (
-            <div className="absolute inset-0 flex items-center justify-center bg-paper/60 text-xs text-ink-2">
-              {statusLabel ?? "Working…"}
-            </div>
-          )}
+      {/* Preview surfaces. The big 192×192 tile is the WebP
+          (what users see in the webapp + on `<img>` everywhere);
+          the small tile below it is the 24×24 1-bit dithered
+          variant — what the dial actually paints. Two side-by-
+          side previews close the loop on "what's going where" so
+          a surprised user doesn't upload then wonder why the dial
+          looks blocky. */}
+      <div className="mt-4 flex items-end justify-center gap-4">
+        <div>
+          <div className="cap mb-1 text-center">Phone / web</div>
+          <div className="relative h-40 w-40 overflow-hidden rounded-2xl bg-paper-3 ring-1 ring-line-soft">
+            {previewUrl ? (
+              <img
+                src={previewUrl}
+                alt="Avatar preview"
+                className="h-full w-full object-cover"
+              />
+            ) : (
+              <div className="flex h-full w-full items-center justify-center text-xs text-ink-3">
+                {original ? "Processing…" : "Loading…"}
+              </div>
+            )}
+            {busy && previewUrl && (
+              <div className="absolute inset-0 flex items-center justify-center bg-paper/60 text-xs text-ink-2">
+                {statusLabel ?? "Working…"}
+              </div>
+            )}
+          </div>
+        </div>
+        <div>
+          <div className="cap mb-1 text-center">Dial</div>
+          {/* 24×24 source rendered at 96×96. `imageRendering:
+              pixelated` keeps the dither pattern crisp instead of
+              bilinear-blurring it into mush. The disc framing
+              mirrors the on-device avatar rendering (RoundMenu /
+              TaskCard / Settings → About all use a circular
+              clip). */}
+          <div className="relative h-24 w-24 overflow-hidden rounded-full bg-paper-3 ring-1 ring-line-soft">
+            {devicePreviewUrl ? (
+              <img
+                src={devicePreviewUrl}
+                alt="Device avatar preview"
+                className="h-full w-full"
+                style={{ imageRendering: "pixelated" }}
+              />
+            ) : (
+              <div className="flex h-full w-full items-center justify-center text-[10px] text-ink-3">
+                —
+              </div>
+            )}
+          </div>
         </div>
       </div>
 

@@ -195,6 +195,8 @@ export const generate1bitBitmap = (source: ImageBitmap): Uint8Array => {
   }
 
   // Pack the 576 1-bit pixels into 72 bytes, MSB-first per byte.
+  // (See preview1bitBitmap below for the inverse — it unpacks the
+  // same 72 bytes for rendering inside the editor.)
   // Same layout the icons table uses; the device unpacks 1bpp → A8
   // exactly the same way regardless of source. The `??= 0` guard
   // makes TS's noUncheckedIndexedAccess happy without a runtime
@@ -210,4 +212,53 @@ export const generate1bitBitmap = (source: ImageBitmap): Uint8Array => {
     }
   }
   return packed;
+};
+
+/// Turn the 72-byte 1-bit packed bitmap (output of
+/// `generate1bitBitmap`) back into a Blob suitable for an `<img>`
+/// preview inside the editor. Renders set bits as ink (#2A2620 —
+/// matches the device's `Palette::ink()`) on a paper-toned
+/// background so the user sees the avatar approximately as the
+/// dial will paint it.
+///
+/// The output is a 24×24 PNG; the editor scales it up via CSS
+/// (`image-rendering: pixelated`) so the dither pattern reads
+/// crisply at preview size instead of bilinear-blurring.
+export const preview1bitBitmap = async (
+  packed: Uint8Array,
+): Promise<Blob> => {
+  if (packed.byteLength !== 72) {
+    throw new Error(`expected 72 bytes, got ${packed.byteLength}`);
+  }
+  const W = 24;
+  const H = 24;
+  const canvas = new OffscreenCanvas(W, H);
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("OffscreenCanvas 2D context not available");
+
+  // Mirror the device's palette: #F5EFE3 paper background, #2A2620
+  // ink for set pixels. The on-device avatar disc is paper3
+  // (#E4D9C0) under the ring, but for a flat preview the brighter
+  // paper reads better at small render sizes.
+  const img = ctx.createImageData(W, H);
+  const data = img.data;
+  for (let i = 0; i < W * H; i++) {
+    const byteIdx = i >> 3;
+    const bitIdx = 7 - (i & 7);
+    const set = ((packed[byteIdx] ?? 0) >> bitIdx) & 1;
+    const off = i * 4;
+    if (set) {
+      data[off + 0] = 0x2a;
+      data[off + 1] = 0x26;
+      data[off + 2] = 0x20;
+      data[off + 3] = 0xff;
+    } else {
+      data[off + 0] = 0xf5;
+      data[off + 1] = 0xef;
+      data[off + 2] = 0xe3;
+      data[off + 3] = 0xff;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  return canvas.convertToBlob({ type: "image/png" });
 };
