@@ -32,6 +32,21 @@ struct Settings {
     /// Visible name set by the user during pairing (or default
     /// "Howler-<last4>" using the device id).
     std::string deviceName;
+
+    /// Idle timeout: after this many seconds without user input, the
+    /// device dims the backlight + mutes the LED ring (a "screen
+    /// sleep" — not full deep-sleep, the radio stays up so the device
+    /// can still receive push events). 0 = disabled (screen always
+    /// on). Default 300 s (5 min) — picks a middle ground between
+    /// the user's "5-10 min" request; configurable via the
+    /// Settings → Sleep picker.
+    ///
+    /// True deep-sleep is a follow-up: it requires careful peripheral
+    /// teardown (Wi-Fi, LVGL, the rotary ISR) and an `ext0` wake
+    /// pin map, which the captive-portal flow also needs. For now
+    /// the screen-sleep covers ~70% of the power saving (the LED ring
+    /// + backlight dominate the steady-state draw).
+    uint16_t idleTimeoutSec = 300;
 };
 
 }  // namespace howler::domain

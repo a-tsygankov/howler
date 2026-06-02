@@ -13,7 +13,64 @@ int64_t maxUpdatedAt(const std::vector<T>& xs) {
     return m;
 }
 
+// NVS key for the cached home update_counter. Versioned via the leading
+// byte in the blob so a future format change (e.g. add lastFullSyncSec
+// alongside the counter to skip "stale" peeks-against-old-state) can
+// reject older blobs cleanly.
+constexpr const char* kCounterKey  = "howler.synccnt";
+constexpr uint8_t     kCounterVer  = 1;
+
+// Encode `value` (int64, little-endian) into 8 bytes preceded by the
+// format-version byte.
+std::string encodeCounter(int64_t value) {
+    std::string out;
+    out.reserve(9);
+    out.push_back(static_cast<char>(kCounterVer));
+    uint64_t bits = static_cast<uint64_t>(value);
+    for (int i = 0; i < 8; ++i) {
+        out.push_back(static_cast<char>((bits >> (i * 8)) & 0xFF));
+    }
+    return out;
+}
+
+// Inverse of encodeCounter. Returns false on version mismatch or
+// truncation so the caller falls back to "never peeked" semantics.
+bool decodeCounter(const std::string& bytes, int64_t& out) {
+    if (bytes.size() < 9) return false;
+    if (static_cast<uint8_t>(bytes[0]) != kCounterVer) return false;
+    uint64_t bits = 0;
+    for (int i = 0; i < 8; ++i) {
+        bits |= static_cast<uint64_t>(
+            static_cast<uint8_t>(bytes[1 + i])) << (i * 8);
+    }
+    out = static_cast<int64_t>(bits);
+    return true;
+}
+
 }  // namespace
+
+void SyncService::restoreFromStorage() {
+    std::string bytes;
+    if (!storage_.readBlob(kCounterKey, bytes)) return;
+    int64_t value = 0;
+    if (!decodeCounter(bytes, value) || value < 0) return;
+    lastCounter_ = value;
+    // Also anchor `lastFullRoundMs_` to "now" — without this the
+    // `overdueFullRefresh` gate (defaulting to INT64_MIN/2) would
+    // ALWAYS fire on the first post-boot tick, forcing a redundant
+    // full round even when the counter is unchanged. Anchoring here
+    // means: "we trust the persisted counter for `fullRefreshMs_`
+    // worth of wall-clock; after that we'll naturally trigger one
+    // defensive full round for the cron-fanout edge cases that
+    // intentionally don't bump the trigger (see migration 0012,
+    // lines 173-178)."
+    //
+    // This is precisely the wake-skip behaviour the user asked for:
+    // boot/wake, peek the counter, if unchanged skip the four
+    // fetches entirely. The dashboard data already on disk from the
+    // previous boot is correct (it's the same counter → same state).
+    lastFullRoundMs_ = clock_.nowEpochMillis();
+}
 
 void SyncService::tick() {
     if (!net_.isOnline()) {
@@ -51,7 +108,13 @@ bool SyncService::runRoundIfNeeded() {
             // next peek would always mismatch (cached < server)
             // and trigger a redundant full round.
             int64_t c = 0;
-            if (net_.peekHomeCounter(c).isOk()) lastCounter_ = c;
+            if (net_.peekHomeCounter(c).isOk()) {
+                lastCounter_ = c;
+                // Persist immediately so a power-cycle (or screen-
+                // sleep where the radio later drops) doesn't lose
+                // the anchor and force another full round on wake.
+                storage_.writeBlob(kCounterKey, encodeCounter(c));
+            }
         }
         return true;
     }
@@ -87,6 +150,9 @@ bool SyncService::runRoundIfNeeded() {
     if (lastSyncOk_) {
         lastCounter_     = serverCounter;
         lastFullRoundMs_ = now;
+        // Persist the post-round counter so a reboot doesn't lose
+        // the anchor. See note on the analogous write above.
+        storage_.writeBlob(kCounterKey, encodeCounter(serverCounter));
     }
     return true;
 }

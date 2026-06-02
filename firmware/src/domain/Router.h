@@ -27,6 +27,12 @@ enum class ScreenId : uint8_t {
     /// state machine's progress, and lets the user kick off the
     /// download + flash with a single tap when an advisory lands.
     SettingsUpdates,
+    /// Sub-screen of Settings — picker for the idle-timeout window.
+    /// Pills are "Off / 5 min / 10 min / 15 min / 30 min". Tap picks +
+    /// pops back to Settings. ScreenManager reads
+    /// `settings().idleTimeoutSec` every frame, so a picked value
+    /// takes effect on the next tick (without a screen rebuild).
+    SettingsIdle,
     Wifi,
     WifiConnect,
     LoginQr,

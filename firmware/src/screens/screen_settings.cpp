@@ -59,6 +59,22 @@ void ScreenManager::buildSettings() {
     // 'Switch view' dropped — main-screen switching is now a
     // first-class swipe gesture, no menu detour needed.
     const bool isDark = app_.settings().theme == domain::Theme::Dark;
+
+    // Render the current idle-timeout setting as the Sleep item's
+    // subtitle so the user sees the active window at a glance. 0 =
+    // off; otherwise minutes (the picker only exposes 60-sec-aligned
+    // values, so an integer-minute label is always accurate).
+    char idleSubtitle[16];
+    {
+        const uint16_t secs = app_.settings().idleTimeoutSec;
+        if (secs == 0) {
+            snprintf(idleSubtitle, sizeof(idleSubtitle), "now: off");
+        } else {
+            snprintf(idleSubtitle, sizeof(idleSubtitle),
+                     "now: %u min", static_cast<unsigned>(secs / 60));
+        }
+    }
+
     menuModel_.replace({
         mk("sync",      "Sync now",    "fetch latest"),
         // The "tap to flip" subtitle from the dev-22 carousel was a
@@ -72,6 +88,7 @@ void ScreenManager::buildSettings() {
         mk("wifi",      "Wi-Fi",       "scan + connect"),
         mk("login-qr",  "Login by QR", "phone link"),
         mk("brightness","Brightness",  "screen level"),
+        mk("sleep",     "Sleep",       idleSubtitle),
         // Phase 6 OTA F4 — Check for updates. Surfaces fwVersion
         // as the subtitle so the user can confirm at a glance which
         // build is running before tapping in.
@@ -106,6 +123,7 @@ void ScreenManager::buildSettings() {
         else if (id == "wifi")       app.router().push(domain::ScreenId::Wifi);
         else if (id == "login-qr")   app.router().push(domain::ScreenId::LoginQr);
         else if (id == "brightness") app.router().push(domain::ScreenId::SettingsBrightness);
+        else if (id == "sleep")      app.router().push(domain::ScreenId::SettingsIdle);
         else if (id == "updates") {
             // Reset the OtaService so a re-entry after a previous
             // "UpToDate" or "Failed" doesn't show the stale banner;
@@ -734,6 +752,113 @@ void ScreenManager::buildSettingsUpdates() {
     lv_obj_set_style_text_color(hint, Palette::ink3(), 0);
     lv_obj_set_style_text_font(hint, &lv_font_montserrat_10, 0);
     lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -8);
+}
+
+void ScreenManager::buildSettingsIdle() {
+    root_ = buildRoundBackground();
+
+    {
+        auto* h = lv_label_create(root_);
+        lv_label_set_text(h, "Sleep");
+        lv_obj_set_style_text_color(h, Palette::ink2(), 0);
+        lv_obj_set_style_text_font(h, &lv_font_montserrat_14, 0);
+        lv_obj_align(h, LV_ALIGN_TOP_MID, 0, 14);
+    }
+
+    {
+        auto* sub = lv_label_create(root_);
+        lv_label_set_text(sub, "screen off after");
+        lv_obj_set_style_text_color(sub, Palette::ink3(), 0);
+        lv_obj_set_style_text_font(sub, &lv_font_montserrat_10, 0);
+        lv_obj_align(sub, LV_ALIGN_TOP_MID, 0, 34);
+    }
+
+    // Five options on a single horizontal row. "Off" disables idle
+    // entirely; the four positive values cover the range the user
+    // asked about (5-10 min) plus 15 / 30 min for the
+    // counter-display use case (kitchen / hallway clock that should
+    // stay lit longer between glances).
+    //
+    // Layout: 5 pills × 38 px wide + 4 gaps × 8 px = 222 px (fits the
+    // 240 px disc with 9 px on either side). Centred at y=0.
+    struct PillSpec {
+        const char* label;
+        uint16_t    secs;   // 0 = off
+    };
+    constexpr PillSpec specs[] = {
+        {"off",  0},
+        {"5",    5  * 60},
+        {"10",   10 * 60},
+        {"15",   15 * 60},
+        {"30",   30 * 60},
+    };
+    constexpr int kPillCount  = sizeof(specs) / sizeof(specs[0]);
+    constexpr int kPillW      = 38;
+    constexpr int kPillH      = 44;
+    constexpr int kPillGap    = 8;
+    constexpr int kRowW       = kPillCount * kPillW
+                              + (kPillCount - 1) * kPillGap;
+    constexpr int kStartX     = -kRowW / 2 + kPillW / 2;
+
+    const uint16_t currentSecs = app_.settings().idleTimeoutSec;
+
+    for (int i = 0; i < kPillCount; ++i) {
+        const bool active = specs[i].secs == currentSecs;
+        auto* btn = lv_btn_create(root_);
+        lv_obj_set_size(btn, kPillW, kPillH);
+        lv_obj_align(btn, LV_ALIGN_CENTER,
+                     kStartX + i * (kPillW + kPillGap), 6);
+        lv_obj_set_style_radius(btn, 14, 0);
+        lv_obj_set_style_shadow_width(btn, 0, 0);
+        lv_obj_set_style_border_width(btn, active ? 3 : 1, 0);
+        lv_obj_set_style_border_color(btn,
+            active ? Palette::accent() : Palette::lineSoft(), 0);
+        lv_obj_set_style_bg_color(btn,
+            active ? Palette::paper3() : Palette::paper2(), 0);
+
+        auto* l = lv_label_create(btn);
+        lv_label_set_text(l, specs[i].label);
+        lv_obj_set_style_text_color(l, Palette::ink(), 0);
+        lv_obj_set_style_text_font(l, &lv_font_montserrat_14, 0);
+        lv_obj_center(l);
+
+        // Stash the seconds value on user_data so the click handler
+        // can persist directly. Add 1 first so we can tell "0 = off"
+        // (the legit option) from a null user_data; subtract on read.
+        lv_obj_set_user_data(btn, (void*)(uintptr_t)
+            (static_cast<uintptr_t>(specs[i].secs) + 1));
+        lv_obj_add_event_cb(btn, [](lv_event_t* e) {
+            if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
+            auto* mgr = static_cast<ScreenManager*>(lv_event_get_user_data(e));
+            auto* btn = lv_event_get_target_obj(e);
+            const uintptr_t raw = (uintptr_t)lv_obj_get_user_data(btn);
+            const uint16_t  secs = static_cast<uint16_t>(raw - 1);
+            mgr->app().setIdleTimeoutSec(secs);
+            mgr->app().router().pop();
+        }, LV_EVENT_CLICKED, this);
+
+        if (group_) {
+            lv_group_add_obj(group_, btn);
+            if (active) lv_group_focus_obj(btn);
+        }
+    }
+
+    auto* hint = lv_label_create(root_);
+    lv_label_set_text(hint, "tap pick | 2x back");
+    lv_obj_set_style_text_color(hint, Palette::ink3(), 0);
+    lv_obj_set_style_text_font(hint, &lv_font_montserrat_10, 0);
+    lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -8);
+
+    // Tiny footnote describing the trade-off — the user asked us
+    // verify idle behaviour, so a short text-line explaining what
+    // happens at sleep saves a trip to the docs.
+    auto* note = lv_label_create(root_);
+    lv_label_set_text(note,
+                      "dims screen + LEDs;\nwakes on touch / knob");
+    lv_obj_set_style_text_color(note, Palette::ink3(), 0);
+    lv_obj_set_style_text_font(note, &lv_font_montserrat_10, 0);
+    lv_obj_set_style_text_align(note, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align(note, LV_ALIGN_BOTTOM_MID, 0, -28);
 }
 
 }  // namespace howler::screens

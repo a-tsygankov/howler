@@ -17,6 +17,7 @@ using howler::domain::SyncWatermark;
 using howler::domain::User;
 using howler::testing::StubClock;
 using howler::testing::StubNetwork;
+using howler::testing::StubStorage;
 
 void test_sync_populates_home_identity_on_full_round() {
     // Avatar sweep: every full sync round refreshes the cached
@@ -34,6 +35,7 @@ void test_sync_populates_home_identity_on_full_round() {
     std::vector<User> users;
     std::vector<ResultType> types;
     SyncWatermark wm;
+    StubStorage storage;
 
     // Seed the stub network's "next identity" — the round's
     // fetchHomeIdentity() will copy this into the reference.
@@ -46,7 +48,7 @@ void test_sync_populates_home_identity_on_full_round() {
     net.resultTypeResults_ = { howler::application::NetResult::ok() };
     net.pendingResults_    = { howler::application::NetResult::ok() };
 
-    SyncService s(net, clock, occ, dash, allTasks, users, types, wm, hi);
+    SyncService s(net, clock, storage, occ, dash, allTasks, users, types, wm, hi);
     s.requestSync();
     s.tick();
 
@@ -77,6 +79,7 @@ void test_sync_keeps_cached_identity_on_fetch_failure() {
     std::vector<User> users;
     std::vector<ResultType> types;
     SyncWatermark wm;
+    StubStorage storage;
 
     net.dashboardResults_     = { howler::application::NetResult::ok() };
     net.userResults_          = { howler::application::NetResult::ok() };
@@ -84,7 +87,7 @@ void test_sync_keeps_cached_identity_on_fetch_failure() {
     net.pendingResults_       = { howler::application::NetResult::ok() };
     net.homeIdentityResults_  = { howler::application::NetResult::transient(503) };
 
-    SyncService s(net, clock, occ, dash, allTasks, users, types, wm, hi);
+    SyncService s(net, clock, storage, occ, dash, allTasks, users, types, wm, hi);
     s.requestSync();
     s.tick();
 
@@ -106,7 +109,8 @@ void test_sync_no_op_when_offline() {
     SyncWatermark wm;
     DashboardModel allTasks;
     HomeIdentity hi;
-    SyncService s(net, clock, occ, dash, allTasks, users, types, wm, hi);
+    StubStorage storage;
+    SyncService s(net, clock, storage, occ, dash, allTasks, users, types, wm, hi);
     s.tick();
     TEST_ASSERT_EQUAL_size_t(0, dash.size());
     TEST_ASSERT_FALSE(s.lastSyncOk());
@@ -154,7 +158,8 @@ void test_sync_replaces_dashboard_users_result_types() {
     SyncWatermark wm;
     DashboardModel allTasks;
     HomeIdentity hi;
-    SyncService s(net, clock, occ, dash, allTasks, users, types, wm, hi);
+    StubStorage storage;
+    SyncService s(net, clock, storage, occ, dash, allTasks, users, types, wm, hi);
     s.requestSync();
     s.tick();
 
@@ -183,7 +188,8 @@ void test_sync_respects_interval() {
     SyncWatermark wm;
     DashboardModel allTasks;
     HomeIdentity hi;
-    SyncService s(net, clock, occ, dash, allTasks, users, types, wm, hi);
+    StubStorage storage;
+    SyncService s(net, clock, storage, occ, dash, allTasks, users, types, wm, hi);
     s.setIntervalMs(1000);
     s.requestSync();  // unblocks the first tick
     s.tick();
@@ -213,8 +219,9 @@ struct SyncFixture {
     SyncWatermark wm;
     DashboardModel allTasks;
     HomeIdentity hi;
+    StubStorage storage;
     SyncService s = SyncService(
-        net, clock, occ, dash, allTasks, users, types, wm, hi);
+        net, clock, storage, occ, dash, allTasks, users, types, wm, hi);
 
     void queueFullRound() {
         net.dashboardResults_.push_back(
@@ -334,5 +341,50 @@ void test_sync_falls_through_to_full_round_when_peek_fails() {
         howler::application::NetResult::transient(0));
     fx.s.tick();
     TEST_ASSERT_TRUE(fx.s.lastSyncOk());
+    TEST_ASSERT_EQUAL_size_t(0, fx.net.dashboardResults_.size());
+}
+
+void test_sync_persists_and_restores_counter() {
+    // The wake-skip behaviour the user asked for: on reboot/wake,
+    // peek the counter, and if it matches the NVS-cached value from
+    // the previous session, skip the four fetches entirely. Without
+    // NVS persistence the first post-boot tick paid a redundant full
+    // round on every reboot.
+    SyncFixture fx;
+    fx.net.setOnline(true);
+    fx.clock.setMs(1'000'000);
+    fx.s.setIntervalMs(1);
+
+    // Session 1: one full round anchors counter=99 in NVS.
+    fx.queueFullRound();
+    fx.net.nextCounter_ = 99;
+    fx.s.tick();
+    TEST_ASSERT_EQUAL_INT64(99, fx.s.lastCounter());
+    // NVS now has a 9-byte blob at "howler.synccnt".
+    TEST_ASSERT_TRUE(fx.storage.writes() >= 1);
+
+    // Session 2 — simulate reboot/wake: fresh SyncService, same
+    // storage. restoreFromStorage brings lastCounter_ to 99 AND
+    // anchors lastFullRoundMs_ to "now" so the overdueFullRefresh
+    // gate doesn't fire on first tick.
+    SyncService s2(fx.net, fx.clock, fx.storage, fx.occ, fx.dash,
+                   fx.allTasks, fx.users, fx.types, fx.wm, fx.hi);
+    s2.setIntervalMs(1);
+    s2.restoreFromStorage();
+    TEST_ASSERT_EQUAL_INT64(99, s2.lastCounter());
+
+    // First tick on the rebooted service: peek returns 99 (same as
+    // restored), so the four fetches are SKIPPED entirely. The
+    // queueFullRound is NOT called below — if SyncService
+    // incorrectly fetched anyway, the dashboard queue would be
+    // empty and lastSyncOk would flip false.
+    fx.clock.setMs(1'010'000);
+    const size_t peekCallsBefore = fx.net.peekCalls_;
+    s2.tick();
+    TEST_ASSERT_TRUE(s2.lastSyncOk());
+    TEST_ASSERT_EQUAL_INT64(99, s2.lastCounter());
+    // Exactly one peek consumed for the gate check, no full-round
+    // post-anchor peek (would have been a second call).
+    TEST_ASSERT_EQUAL_size_t(peekCallsBefore + 1, fx.net.peekCalls_);
     TEST_ASSERT_EQUAL_size_t(0, fx.net.dashboardResults_.size());
 }

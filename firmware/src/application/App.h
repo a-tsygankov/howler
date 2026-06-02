@@ -123,6 +123,27 @@ public:
     /// Force-set the theme; persists to NVS. Same caveat as
     /// toggleTheme — caller refreshes the screen.
     void setTheme(howler::domain::Theme t);
+    /// Update the idle timeout (in seconds). 0 disables the screen-
+    /// sleep entirely; non-zero values are clamped to [60, 3600].
+    /// Persists immediately to NVS so the new setting survives a
+    /// reboot. The ScreenManager reads `settings().idleTimeoutSec`
+    /// each frame, so the change takes effect on the next tick.
+    void setIdleTimeoutSec(uint16_t secs);
+
+    /// Mark the UI as idle (true) or active (false). Idle mode:
+    ///   - LED ring is muted (setAmbient(0)) on every tick regardless
+    ///     of dashboard urgency colour
+    ///   - SyncService is paused — we don't peek or fetch while the
+    ///     screen is off (saves Wi-Fi traffic and D1 reads when the
+    ///     device is sitting on a counter overnight). On wake, the
+    ///     ScreenManager calls `sync().requestPeekNow()` so the
+    ///     dashboard refreshes promptly if anything actually
+    ///     happened on the home in the meantime.
+    /// ScreenManager owns the inactivity detection + backlight
+    /// control; this hook lets it tell the application layer about
+    /// the state transition without leaking screen-side knowledge.
+    void setUiIdle(bool idle) { uiIdle_ = idle; }
+    bool isUiIdle() const { return uiIdle_; }
     const std::string& deviceId() const { return deviceId_; }
     IStorage& storage() { return storage_; }
     IWifi& wifi() { return wifi_; }
@@ -210,6 +231,11 @@ private:
     MarkDoneService markDoneSvc_;
     PairCoordinator pairCoord_;
     OtaService otaSvc_;
+
+    /// ScreenManager flips this true after `idleTimeoutSec` seconds
+    /// without input, false on any touch / knob event. Read by
+    /// `App::tick()` to mute the LED ring + pause sync rounds.
+    bool uiIdle_ = false;
 
     howler::domain::ResultEditModel resultEdit_;
 

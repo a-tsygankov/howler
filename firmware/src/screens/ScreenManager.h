@@ -88,7 +88,17 @@ public:
     /// "task confirmed" beat before the row drops out. The screen
     /// stays interactive but the checkmark sits above on the top
     /// layer; it fades on its own after `durationMs`.
-    void playDoneAnimation(uint32_t durationMs = 900);
+    ///
+    /// 500 ms was 900 ms in earlier dev cycles — the longer dwell
+    /// felt sluggish when crossing off several tasks in a row, so
+    /// the default is now the same range used by mobile "saved" /
+    /// "added" toasts. The stamp + fade animation timings inside
+    /// `playDoneAnimation` already adapt to short windows: stamp
+    /// runs 0–220 ms, fade starts at `durationMs - 300` (clamped to
+    /// 0 below ~300 ms), so 500 ms gives a 220 ms stamp + 250 ms
+    /// fade with a small overlap — looks like a single graceful
+    /// beat rather than "stamp, hold, then fade".
+    void playDoneAnimation(uint32_t durationMs = 500);
 
     /// Helper for screens that show a tab strip — returns the index
     /// of the current main screen in `kMainScreens`, or kMainScreens
@@ -267,6 +277,21 @@ private:
     /// stale entries.
     bool                     iconCachePrewarmed_ = false;
 
+    /// Screen-sleep state. `lastInputAtMs_` is the wall-clock millis
+    /// of the most-recent user-input event (touch or knob). `isIdle_`
+    /// flips true once we've crossed the configured idle window —
+    /// backlight goes off, LEDs mute via App::setUiIdle(true), sync
+    /// pauses. The first input event after that exit-idles instead of
+    /// acting on the input (so the wake tap doesn't accidentally
+    /// trigger a mark-done on whatever was under the user's finger
+    /// — common UX pattern for screen-off displays).
+    ///
+    /// `idleTimeoutSec` from settings == 0 disables idle entirely;
+    /// the comparison is gated on a non-zero window so a 0-sec
+    /// timeout doesn't fire continuously.
+    int64_t lastInputAtMs_ = 0;
+    bool    isIdle_        = false;
+
     /// LRU cache of icon bitmaps fetched from /api/icons/:name. Lives
     /// here (not on App) so the LVGL types it owns (lv_image_dsc_t)
     /// don't bleed into the application layer. Wired into the task
@@ -316,6 +341,19 @@ private:
     ///   UpdateAvailable          → start download
     ///   Downloading / Flashed    → no-op (let it finish)
     void buildSettingsUpdates();
+    /// Idle-timeout picker — pills for Off / 5 / 10 / 15 / 30 min.
+    /// Tap picks + pops back to Settings.
+    void buildSettingsIdle();
+    /// Enter screen-sleep: backlight off, LED ring muted (via
+    /// App::setUiIdle), keep LVGL ticking so the wake event flips
+    /// state back instantly. Idempotent — second call is a no-op.
+    void enterIdle();
+    /// Exit screen-sleep on user input: restore backlight + LEDs,
+    /// schedule an immediate peek so the dashboard catches up with
+    /// any changes that happened on the home during the sleep
+    /// window. The triggering input event is swallowed (returns
+    /// true) so the wake tap doesn't double as a screen tap.
+    void exitIdle();
     void buildWifi();
     void buildWifiConnect();
     void buildLoginQr();
