@@ -53,7 +53,7 @@ App::App(INetwork& net,
     : net_(net), pairApi_(pairApi), clock_(clock), rng_(rng),
       storage_(storage), input_(input), wifi_(wifi), led_(led),
       ota_(ota),
-      sync_(net_, clock_, occList_, dashboard_, allTasks_,
+      sync_(net_, clock_, storage_, occList_, dashboard_, allTasks_,
             users_, resultTypes_, watermark_, homeIdentity_),
       markDoneSvc_(net_, clock_, rng_, storage_, queue_),
       pairCoord_(pairApi_, storage_, clock_),
@@ -63,6 +63,7 @@ App::App(INetwork& net,
 void App::begin() {
     restoreSettings();
     markDoneSvc_.restoreFromStorage();
+    sync_.restoreFromStorage();
     if (PairCoordinator::isPaired(storage_)) {
         router_.replaceRoot(howler::domain::ScreenId::Dashboard);
     } else {
@@ -129,7 +130,16 @@ App::NetworkHealth App::networkHealth() const {
 }
 
 void App::tick(uint32_t /*millisNow*/) {
-    sync_.tick();
+    // While the UI is idle (screen-sleep), pause the sync round-trip.
+    // Skipping `sync_.tick()` keeps the radio quieter and avoids
+    // racking up D1 reads while the user is away — the ScreenManager
+    // calls `sync_.requestPeekNow()` on wake so the next user-visible
+    // frame already has fresh data (or skips the round if nothing
+    // changed on the home). The other service ticks (markDone, pair,
+    // ota) keep running because they have their own internal
+    // cool-downs and the user might never wake the device (e.g. a
+    // queued mark-done draining overnight should still go out).
+    if (!uiIdle_) sync_.tick();
     markDoneSvc_.tick();
     pairCoord_.tick();
     otaSvc_.tick();
@@ -147,10 +157,13 @@ void App::tick(uint32_t /*millisNow*/) {
     }
 
     // Mirror the dashboard's worst tier on the LED ring (overridden
-    // to a cool tone when we're offline). The adapter drops needless
-    // re-renders when the colour hasn't changed so calling on every
-    // tick is cheap.
-    led_.setAmbient(pickLedAmbient(networkHealth(), dashboard_));
+    // to a cool tone when we're offline, or muted entirely when the
+    // UI is idle). The adapter drops needless re-renders when the
+    // colour hasn't changed so calling on every tick is cheap.
+    const uint32_t ambient = uiIdle_
+        ? 0u
+        : pickLedAmbient(networkHealth(), dashboard_);
+    led_.setAmbient(ambient);
     led_.tick();
 
     // If pairing just confirmed, slide into the dashboard. The screen
@@ -192,6 +205,21 @@ void App::toggleTheme() {
 void App::setTheme(howler::domain::Theme t) {
     if (settings_.theme == t) return;
     settings_.theme = t;
+    persistSettings();
+}
+
+void App::setIdleTimeoutSec(uint16_t secs) {
+    // 0 = disabled. Non-zero values are clamped to [60, 3600] so the
+    // picker can't accidentally choose a sub-minute window (which
+    // would make the device unusable — a 10 s sleep fires before the
+    // user has finished tapping a task) or a longer-than-an-hour
+    // window (which defeats the power-saving point of the feature).
+    if (secs != 0) {
+        if (secs < 60)   secs = 60;
+        if (secs > 3600) secs = 3600;
+    }
+    if (settings_.idleTimeoutSec == secs) return;
+    settings_.idleTimeoutSec = secs;
     persistSettings();
 }
 
@@ -257,7 +285,7 @@ void App::restoreSettings() {
     size_t off = 0;
     uint8_t version = 0;
     if (!readU8(bytes, off, version)) return;
-    if (version < 1 || version > 2) return;
+    if (version < 1 || version > 3) return;
     uint8_t brightness = 0;
     uint16_t syncSec = 0;
     std::string tz, name;
@@ -280,16 +308,28 @@ void App::restoreSettings() {
                 : howler::domain::Theme::Light;
         }
     }
+    // idleTimeoutSec landed in v3. v1/v2 rows leave the default (5 min)
+    // in place, so devices upgrading from a previous build inherit the
+    // sleep behaviour without any user action — and persistSettings()
+    // immediately rewrites the row in v3 format so a downgrade still
+    // sees a parseable blob.
+    if (version >= 3) {
+        uint16_t idleSecs = 0;
+        if (readU16(bytes, off, idleSecs)) {
+            settings_.idleTimeoutSec = idleSecs;
+        }
+    }
 }
 
 void App::persistSettings() {
     std::string bytes;
-    putU8(bytes, 2);  // version 2: appended theme byte
+    putU8(bytes, 3);  // version 3: appended idleTimeoutSec
     putU8(bytes, settings_.brightness);
     putU16(bytes, settings_.foregroundSyncSec);
     putStr(bytes, settings_.homeTz);
     putStr(bytes, settings_.deviceName);
     putU8(bytes, settings_.theme == howler::domain::Theme::Dark ? 1 : 0);
+    putU16(bytes, settings_.idleTimeoutSec);
     storage_.writeBlob(kSettingsKey, bytes);
 }
 

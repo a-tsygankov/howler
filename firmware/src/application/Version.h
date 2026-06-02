@@ -10,6 +10,6 @@
 
 namespace howler::application {
 
-constexpr const char* kFirmwareVersion = "0.3.0";
+constexpr const char* kFirmwareVersion = "0.3.1";
 
 }  // namespace howler::application

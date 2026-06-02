@@ -28,6 +28,7 @@ class SyncService {
 public:
     SyncService(INetwork& net,
                 IClock& clock,
+                IStorage& storage,
                 howler::domain::OccurrenceList& occList,
                 howler::domain::DashboardModel& dashboard,
                 howler::domain::DashboardModel& allTasks,
@@ -35,10 +36,18 @@ public:
                 std::vector<howler::domain::ResultType>& resultTypes,
                 howler::domain::SyncWatermark& watermark,
                 howler::domain::HomeIdentity& homeIdentity)
-        : net_(net), clock_(clock),
+        : net_(net), clock_(clock), storage_(storage),
           occList_(occList), dashboard_(dashboard), allTasks_(allTasks),
           users_(users), resultTypes_(resultTypes),
           watermark_(watermark), homeIdentity_(homeIdentity) {}
+
+    /// Restore `lastCounter_` from NVS. Call once at boot from
+    /// App::begin so the very first sync round can short-circuit
+    /// when the home hasn't changed since the last shutdown / sleep.
+    /// Without this every cold boot pays one full four-fetch round
+    /// — fine for the dev path but wasteful in production where the
+    /// device might reboot daily for OTA / brownout recovery.
+    void restoreFromStorage();
 
     /// Call from the main loop. No-op when offline or when the
     /// `intervalMs_` cool-down hasn't elapsed.
@@ -54,6 +63,20 @@ public:
         lastPollMs_ = INT64_MIN / 2;
         forceNextRound_ = true;
     }
+
+    /// Reset the poll cool-down so the next tick runs runRoundIfNeeded
+    /// immediately — but WITHOUT forcing a full four-fetch round.
+    /// Used by the wake path: when the user touches the screen after
+    /// idle, we want a fresh peek now to discover whether anything
+    /// changed during sleep. If the home counter is unchanged the
+    /// peek returns quickly and the device avoids the round entirely;
+    /// if it advanced, the round runs.
+    ///
+    /// Compare to `requestSync()` which also bypasses the peek-skip
+    /// (useful after a mark-done, where we know server state moved
+    /// and want fresh data even if the counter peek would technically
+    /// skip).
+    void requestPeekNow() { lastPollMs_ = INT64_MIN / 2; }
 
     void setIntervalMs(uint32_t ms) { intervalMs_ = ms; }
     /// Force a full refresh after this much wall-clock time even
@@ -77,6 +100,7 @@ public:
 private:
     INetwork& net_;
     IClock& clock_;
+    IStorage& storage_;
     howler::domain::OccurrenceList& occList_;
     howler::domain::DashboardModel& dashboard_;
     howler::domain::DashboardModel& allTasks_;

@@ -105,6 +105,27 @@ void ScreenManager::begin(TFT_eSPI& tft) {
 void ScreenManager::tick(uint32_t millisNow) {
     pollAndDispatch(millisNow);
 
+    // Screen-sleep on inactivity. The pollAndDispatch above stamps
+    // `lastInputAtMs_` on every real input event and short-circuits
+    // out of idle if we were sleeping. This check fires the opposite
+    // transition: when we've been awake long enough without input,
+    // mute the screen + LEDs to drop steady-state power draw.
+    //
+    // settings().idleTimeoutSec == 0 disables idle entirely (user
+    // wants "always-on", e.g. a kitchen counter clock). Non-zero
+    // values are clamped to [60, 3600] by setIdleTimeoutSec, so the
+    // arithmetic below never underflows or wraps.
+    if (!isIdle_) {
+        const uint16_t idleSec = app_.settings().idleTimeoutSec;
+        if (idleSec > 0) {
+            const int64_t elapsed = static_cast<int64_t>(millisNow)
+                                   - lastInputAtMs_;
+            if (elapsed >= static_cast<int64_t>(idleSec) * 1000) {
+                enterIdle();
+            }
+        }
+    }
+
     // Update the long-press arc once per frame from the current
     // hold state. Independent of screen rebuilds — even if the user
     // starts holding mid-rebuild the arc model carries the start
@@ -387,7 +408,7 @@ void ScreenManager::showToast(const char* text, uint32_t durationMs) {
     toastUntilMs_ = millis() + durationMs;
 }
 
-void ScreenManager::pollAndDispatch(uint32_t /*millisNow*/) {
+void ScreenManager::pollAndDispatch(uint32_t millisNow) {
     int delta = 0;
     int vert = 0;
     int horz = 0;
@@ -414,6 +435,27 @@ void ScreenManager::pollAndDispatch(uint32_t /*millisNow*/) {
     }
     if (delta == 0 && vert == 0 && horz == 0 &&
         !tap && !doubleTap && !longPress) return;
+
+    // Real input — refresh the activity timestamp regardless of
+    // whether we're idle (used by the tick-side timeout check).
+    lastInputAtMs_ = static_cast<int64_t>(millisNow);
+
+    // Wake-from-idle: the FIRST input arriving after entering idle
+    // is intentionally swallowed (no onEvent dispatch, no encoder
+    // latch). Two reasons:
+    //   1. Common touch-screen UX (phones, TVs): the user expects the
+    //      tap that wakes the screen to NOT also activate whatever
+    //      was on screen behind the dark backlight.
+    //   2. The user can't tell what they're "tapping" because they
+    //      can't see it yet — so any action picked would be blind.
+    // exitIdle() restores the backlight + nudges sync; the second
+    // event (real one the user makes after the screen lights up)
+    // dispatches normally on the next pollAndDispatch.
+    if (isIdle_) {
+        exitIdle();
+        return;
+    }
+
     g_enc.pendingDelta += delta;
     // Set the press latch and let `encoder_read_cb` consume it on
     // the next LVGL read — that produces the PRESSED → RELEASED
@@ -421,6 +463,46 @@ void ScreenManager::pollAndDispatch(uint32_t /*millisNow*/) {
     // lv_timer_handler and swallow the press silently.
     if (tap || longPress) g_enc.pendingPress = true;
     onEvent(delta, tap, doubleTap, longPress, vert, horz);
+}
+
+void ScreenManager::enterIdle() {
+    if (isIdle_) return;
+    isIdle_ = true;
+    // Backlight off via the GPIO that platformio.ini wired up
+    // (TFT_BL=46, TFT_BACKLIGHT_ON=HIGH). LVGL keeps drawing into
+    // RAM, but the panel goes dark — saves ~30 mA on the typical
+    // CrowPanel. We deliberately don't issue the GC9A01 sleep-in
+    // (0x10) cmd: re-init from sleep takes ~80 ms which would feel
+    // sluggish on wake. The radio + Wi-Fi association stay up so
+    // queued mark-dones keep draining.
+    pinMode(TFT_BL, OUTPUT);
+    digitalWrite(TFT_BL, TFT_BACKLIGHT_ON == HIGH ? LOW : HIGH);
+    // Hand off to App so the LED ring mutes + sync pauses. Doing it
+    // via the application layer (rather than poking the LedRing
+    // adapter from here) keeps screen-side knowledge localised to
+    // visible-pixel concerns.
+    app_.setUiIdle(true);
+    // Optional Serial breadcrumb — helps reproduce the bug report
+    // ("device doesn't sleep") in the field by tailing the USB log.
+    Serial.printf("[idle] entered after %d s of inactivity\n",
+                  static_cast<int>(app_.settings().idleTimeoutSec));
+}
+
+void ScreenManager::exitIdle() {
+    if (!isIdle_) return;
+    isIdle_ = false;
+    pinMode(TFT_BL, OUTPUT);
+    digitalWrite(TFT_BL, TFT_BACKLIGHT_ON);
+    app_.setUiIdle(false);
+    // Schedule an immediate peek-then-skip. The HTTP roundtrip runs
+    // on the next App::tick() (cooperative, ~50–200 ms). True
+    // parallel execution via xTaskCreate would shave that latency
+    // but adds synchronisation surface area for a barely-perceptible
+    // gain — the screen lights up immediately, the peek lands in
+    // the background, and if the counter is unchanged (the common
+    // case overnight) the dashboard already shows correct data.
+    app_.sync().requestPeekNow();
+    Serial.println("[idle] exited on user input, peeking sync");
 }
 
 void ScreenManager::requestWifiConnect(const howler::domain::WifiConfig& cfg) {
@@ -529,6 +611,7 @@ void ScreenManager::rebuildScreen() {
         case ScreenId::SettingsAbout:      buildSettingsAbout();     break;
         case ScreenId::SettingsTheme:      buildSettingsTheme();     break;
         case ScreenId::SettingsUpdates:    buildSettingsUpdates();   break;
+        case ScreenId::SettingsIdle:       buildSettingsIdle();      break;
         case ScreenId::Wifi:               buildWifi();              break;
         case ScreenId::WifiConnect:        buildWifiConnect();       break;
         case ScreenId::LoginQr:            buildLoginQr();           break;
