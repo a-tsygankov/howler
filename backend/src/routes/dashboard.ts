@@ -4,6 +4,7 @@ import { clock } from "../clock.ts";
 import { computeUrgency, type UrgencyResult } from "../services/urgency.ts";
 import { markDeviceAlive, requireAuth, type AuthVars } from "../middleware/auth.ts";
 import type { ScheduleRule } from "../shared/schemas.ts";
+import { resolvePrincipal, visibleTasksPredicate } from "../services/visibility.ts";
 
 // Unified dashboard endpoint. Every client (web, dial, future
 // native) hits this and renders urgent/non-urgent groups directly
@@ -86,15 +87,21 @@ export const dashboardRouter = new Hono<{
     // is unchanged so the webapp's home page stays a focused list.
     const includeHidden = c.req.query("include") === "hidden";
 
+    // Visibility: a user sees shared + their-own (assignee/creator) +
+    // (if admin) everything; a device sees only shared tasks. Built as
+    // a SQL predicate so the filter happens in the read, not in JS.
+    const principal = await resolvePrincipal(c.env.DB, c.get("auth"));
+    const pred = visibleTasksPredicate(principal, "tasks");
+
     const { results: tasks } = await c.env.DB
       .prepare(
         `SELECT id, home_id, creator_user_id, title, description, priority,
            kind, deadline_hint, avatar_id, label_id, result_type_id,
            is_private, active, created_at, updated_at
          FROM tasks
-         WHERE home_id = ? AND is_deleted = 0 AND active = 1`,
+         WHERE home_id = ? AND is_deleted = 0 AND active = 1 AND ${pred.sql}`,
       )
-      .bind(homeId)
+      .bind(homeId, ...pred.binds)
       .all<TaskRow>();
 
     if (tasks.length === 0) return c.json({ now: nowSec, tasks: [] });
@@ -113,6 +120,8 @@ export const dashboardRouter = new Hono<{
       { results: scheduleRows },
       { results: executionRows },
       labelIconRows,
+      { results: userAsgRows },
+      { results: deviceAsgRows },
     ] = await Promise.all([
       c.env.DB
         .prepare(
@@ -140,10 +149,36 @@ export const dashboardRouter = new Hono<{
             )
             .bind(...labelIds)
             .all<{ id: string; icon: string | null }>(),
+      c.env.DB
+        .prepare(
+          `SELECT task_id, user_id FROM task_assignments
+           WHERE task_id IN (${placeholders})`,
+        )
+        .bind(...taskIds)
+        .all<{ task_id: string; user_id: string }>(),
+      c.env.DB
+        .prepare(
+          `SELECT task_id, device_id FROM task_device_assignments
+           WHERE task_id IN (${placeholders})`,
+        )
+        .bind(...taskIds)
+        .all<{ task_id: string; device_id: string }>(),
     ]);
     const labelIconById = new Map<string, string>();
     for (const l of labelIconRows.results) {
       if (l.icon) labelIconById.set(l.id, l.icon);
+    }
+
+    // Assignment maps for the per-row `assignedUserIds` /
+    // `assignedDeviceIds` (webapp display) + `assignedToThisDevice`
+    // (the dial routes these to its Today screen).
+    const userIdsByTask = new Map<string, string[]>();
+    for (const r of userAsgRows) {
+      (userIdsByTask.get(r.task_id) ?? userIdsByTask.set(r.task_id, []).get(r.task_id)!).push(r.user_id);
+    }
+    const deviceIdsByTask = new Map<string, string[]>();
+    for (const r of deviceAsgRows) {
+      (deviceIdsByTask.get(r.task_id) ?? deviceIdsByTask.set(r.task_id, []).get(r.task_id)!).push(r.device_id);
     }
 
     const scheduleByTask = new Map<
@@ -233,6 +268,7 @@ export const dashboardRouter = new Hono<{
         // first pass.
         const oneshotDeadline =
           it.rule?.kind === "ONESHOT" ? it.task.deadlineHint : null;
+        const assignedDeviceIds = deviceIdsByTask.get(it.task.id) ?? [];
         return {
           task: it.task,
           rule: it.rule,
@@ -246,6 +282,15 @@ export const dashboardRouter = new Hono<{
           scheduleModifiedAt: sched?.modifiedAt ?? null,
           oneshotDeadline,
           lastExecutionAt: lastExecutionByTask.get(it.task.id) ?? null,
+          // Assignment (migration 0017). The dial reads
+          // `assignedToThisDevice` to route the row to its Today
+          // screen; the webapp reads the id arrays for display.
+          assignedUserIds: userIdsByTask.get(it.task.id) ?? [],
+          assignedDeviceIds,
+          assignedToThisDevice:
+            principal.type === "device"
+              ? assignedDeviceIds.includes(principal.deviceId)
+              : false,
         };
       }),
     });

@@ -10,6 +10,11 @@ import {
 import { asDeviceId, asHomeId } from "../domain/ids.ts";
 import { markDeviceAlive, requireAuth, type AuthVars } from "../middleware/auth.ts";
 import { AckOccurrenceSchema } from "../shared/schemas.ts";
+import {
+  isTaskAccessible,
+  resolvePrincipal,
+  visibleTaskIdSubset,
+} from "../services/visibility.ts";
 
 export const occurrencesRouter = new Hono<{
   Bindings: Bindings;
@@ -21,13 +26,34 @@ export const occurrencesRouter = new Hono<{
     const info = c.get("auth");
     const uow = new D1UnitOfWork(c.env.DB);
     const items = await listPendingForHome(uow, asHomeId(info.homeId));
-    return c.json({ occurrences: items });
+    // Drop occurrences whose task the caller can't see (a private
+    // task is invisible to non-assignees and to every device).
+    const principal = await resolvePrincipal(c.env.DB, info);
+    const visible = await visibleTaskIdSubset(
+      c.env.DB,
+      items.map((i) => i.taskId),
+      principal,
+    );
+    return c.json({ occurrences: items.filter((i) => visible.has(i.taskId)) });
   })
 
   .post("/:id/ack", zValidator("json", AckOccurrenceSchema), async (c) => {
     const info = c.get("auth");
     const occId = c.req.param("id");
     const { resultValue, notes } = c.req.valid("json");
+    // Gate the ack on task visibility — a hidden task's occurrence is
+    // not ackable. 404 keeps it unprobeable; a missing occurrence
+    // falls through to the service's own not-found.
+    const occRow = await c.env.DB
+      .prepare("SELECT task_id FROM occurrences WHERE id = ?")
+      .bind(occId)
+      .first<{ task_id: string }>();
+    if (occRow) {
+      const principal = await resolvePrincipal(c.env.DB, info);
+      if (!(await isTaskAccessible(c.env.DB, occRow.task_id, principal))) {
+        return c.json({ error: "not-found" }, 404);
+      }
+    }
     const ackedByDevice =
       info.type === "device" ? asDeviceId(info.deviceId) : null;
     const callerUserId = info.type === "user" ? info.userId : null;
