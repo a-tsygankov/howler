@@ -2,6 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import {
+  fetchDevices,
   fetchLabels,
   fetchTask,
   fetchTaskExecutions,
@@ -49,6 +50,7 @@ export const TaskDetail = () => {
     queryFn: fetchTaskResults,
   });
   const usersQ = useQuery({ queryKey: ["users"], queryFn: fetchUsers });
+  const devicesQ = useQuery({ queryKey: ["devices"], queryFn: fetchDevices });
 
   if (taskQ.isLoading) {
     return <div className="px-5 py-10 text-center text-ink-3">Loading…</div>;
@@ -68,6 +70,24 @@ export const TaskDetail = () => {
   const label = labelsQ.data?.find((l) => l.id === task.labelId);
   const result = taskResultsQ.data?.find((r) => r.id === task.resultTypeId);
   const heroTint = label?.color ?? "#6E6557";
+
+  const creatorName = task.creatorUserId
+    ? usersQ.data?.find((u) => u.id === task.creatorUserId)?.displayName
+    : undefined;
+  // Read-only assignment summary. Editing lives in the All-tasks
+  // TaskRow editor; here we just surface who/what the task targets.
+  const nameOf = (id: string) =>
+    usersQ.data?.find((u) => u.id === id)?.displayName ?? "someone";
+  const deviceNameOf = (id: string) => {
+    const d = devicesQ.data?.find((x) => x.id === id);
+    return d?.name || d?.hwModel || "a device";
+  };
+  const assignmentSummary =
+    task.assignees.length > 0
+      ? `private to ${task.assignees.map(nameOf).join(", ")}`
+      : task.assignedDevices.length > 0
+        ? `on ${task.assignedDevices.map(deviceNameOf).join(", ")}`
+        : null;
 
   // Inline mark-done. The dashboard's CompleteTaskSheet is the
   // richer flow (slider + user picker); from history we go for a
@@ -121,7 +141,8 @@ export const TaskDetail = () => {
                   : "one-time"}
               {label && ` · ${label.displayName}`}
               {result && ` · ${result.displayName}`}
-              {task.isPrivate && " · private"}
+              {creatorName && ` · by ${creatorName}`}
+              {assignmentSummary && ` · ${assignmentSummary}`}
             </p>
           </div>
           <CompleteFromHistory
