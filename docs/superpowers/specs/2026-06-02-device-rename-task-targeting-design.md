@@ -27,10 +27,15 @@ Four user-facing capabilities:
 - **Exclusive-group assignment.** A task targets either a set of users
   *or* a set of devices, never both. `is_private` is replaced by "has
   user targets."
-- **Privacy = assignee + admin.** A user-assigned task is visible /
-  completable / editable only by its assignee(s) and any
-  `users.is_admin = 1` user. The standalone "Private" checkbox is
-  removed.
+- **Privacy = creator + assignee + admin.** A user-assigned task is
+  visible / completable / editable only by its **creator**, its
+  assignee(s), and any `users.is_admin = 1` user. The standalone
+  "Private" checkbox is removed. (Amends the original brainstorming
+  choice of "assignee + admin" to also include the creator.)
+- **CreatedBy already exists.** `tasks.creator_user_id` has been on the
+  schema since migration `0002_home`, is populated on create, and is
+  already returned in the task DTOs. No new storage — this change only
+  adds it to the visibility predicate and surfaces it in the webapp.
 - **"admin"** means `users.is_admin` (the only admin concept in the
   codebase, migration 0014).
 
@@ -42,7 +47,7 @@ A task is in exactly one of three assignment modes:
 |---|---|---|---|---|---|
 | **Everyone** | no assignment rows | all users in home | all users | no device | yes |
 | **Devices** (1+) | `task_device_assignments` rows | all users (shared) | all users | only the targeted device(s) | yes |
-| **Users** (1+) | `task_assignments` rows (exists today) | those users + `is_admin` | those users + `is_admin` | never | only for those users (+ admin) |
+| **Users** (1+) | `task_assignments` rows (exists today) | those users + creator + `is_admin` | those users + creator + `is_admin` | never | only for those users, creator, admin |
 
 Notes:
 
@@ -66,7 +71,9 @@ principal:
 
 - **User principal** `(userId, isAdmin)` — a task is visible iff:
   `isAdmin` **OR** it has no rows in `task_assignments` **OR** `userId`
-  is among its `task_assignments`.
+  is among its `task_assignments` **OR** `userId = tasks.creator_user_id`
+  (the creator always sees/edits their own task, even after assigning it
+  to someone else).
 - **Device principal** `(deviceId)` — a task is visible iff it has no
   rows in `task_assignments` (i.e., it is shared). The device's **Today**
   subset is the further restriction `EXISTS task_device_assignments
@@ -151,6 +158,9 @@ probed.
   replacing the single assignee `<select>` and the "Private" checkbox,
   in `CreateTaskForm`, the `TaskRow` inline editor, and `TaskDetail`.
   *Users* and *Devices* are multi-select chips.
+- **Created-by display** — show "created by &lt;name&gt;" (resolved from
+  `task.creatorUserId` + the users list) in `TaskDetail` and, where it
+  fits, the task row. Read-only; the field is set server-side on create.
 - **`api.ts`:** `Device.name`; `renameDevice(id, name)`;
   `assignedDevices` on `CreateTaskInput` / `UpdateTaskInput`;
   `assignedDevices` on `fetchTask`; `assignedUserIds` /
@@ -160,8 +170,9 @@ probed.
 ## Tests
 
 - **Backend integration:** visibility matrix (user A cannot see user
-  B's task; admin sees all; device sees only shared tasks and tags its
-  own); rename bumps counter; (un)assignment bumps counter; XOR
+  B's task; the **creator** still sees/edits a task they assigned to
+  someone else; admin sees all; device sees only shared tasks and tags
+  its own); rename bumps counter; (un)assignment bumps counter; XOR
   rejection (`400`); complete/edit permission enforced (`404` for
   not-visible); `GET /api/devices/me`.
 - **Firmware native:** dashboard Today/All split by
