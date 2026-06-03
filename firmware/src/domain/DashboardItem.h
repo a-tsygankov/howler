@@ -42,6 +42,12 @@ struct DashboardItem {
     int64_t     dueAt;         // epoch seconds; <0 means "no fixed time"
     bool        isMissed;      // server snapshot — slice B fallback only
     int64_t     updatedAt;     // epoch seconds — sync watermark
+    /// True iff this task is assigned to THIS device (the dashboard
+    /// endpoint computes it from the device token). The device's
+    /// Today screen shows only assigned tasks; the All screen shows
+    /// every shared task. Defaults false so older Worker payloads
+    /// (no field) keep tasks off Today until the server is updated.
+    bool        assignedToThisDevice = false;
 
     // ── Slice B local-urgency inputs ─────────────────────────────
     /// True iff the wire response carried a parseable `rule` object

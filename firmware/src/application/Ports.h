@@ -6,6 +6,7 @@
 // test/test_*).
 
 #include "../domain/DashboardItem.h"
+#include "../domain/DeviceIdentity.h"
 #include "../domain/HomeIdentity.h"
 #include "../domain/MarkDoneDraft.h"
 #include "../domain/Occurrence.h"
@@ -138,6 +139,17 @@ public:
     /// text (matches the pre-avatar look on legacy Worker deploys).
     virtual NetResult fetchHomeIdentity(
         howler::domain::HomeIdentity& /*outIdentity*/) {
+        return NetResult::transient(0);
+    }
+
+    /// Fetch THIS device's identity (id + user-set name + serial +
+    /// hw model). Surfaced on the Settings → About card so the dial
+    /// shows its name instead of just a hex id-tail. Backed by
+    /// GET /api/devices/me. Default transient so host stubs that don't
+    /// override see "no identity" and the screen renders the id-tail
+    /// fallback.
+    virtual NetResult fetchDeviceIdentity(
+        howler::domain::DeviceIdentity& /*outIdentity*/) {
         return NetResult::transient(0);
     }
 };

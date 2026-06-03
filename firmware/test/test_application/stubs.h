@@ -160,6 +160,19 @@ public:
         return NetResult::ok();
     }
 
+    NetResult fetchDeviceIdentity(
+        domain::DeviceIdentity& outIdentity) override {
+        ++deviceIdentityCalls_;
+        if (!deviceIdentityResults_.empty()) {
+            const auto r = deviceIdentityResults_.front();
+            deviceIdentityResults_.erase(deviceIdentityResults_.begin());
+            if (r.isOk()) outIdentity = nextDeviceIdentity_;
+            return r;
+        }
+        outIdentity = nextDeviceIdentity_;
+        return NetResult::ok();
+    }
+
     // Test fixtures.
     bool online_ = true;
     std::vector<domain::DashboardItem> nextDashboard_;
@@ -190,6 +203,10 @@ public:
     domain::HomeIdentity   nextHomeIdentity_;
     std::vector<NetResult> homeIdentityResults_;
     int                    homeIdentityCalls_ = 0;
+    // Device identity state — mirrors home identity above.
+    domain::DeviceIdentity nextDeviceIdentity_;
+    std::vector<NetResult> deviceIdentityResults_;
+    int                    deviceIdentityCalls_ = 0;
 };
 
 class StubOtaPort : public application::IOtaPort {

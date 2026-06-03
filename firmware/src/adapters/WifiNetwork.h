@@ -49,6 +49,8 @@ public:
         howler::domain::UpdateAdvisory& outAdvisory) override;
     NetResult fetchHomeIdentity(
         howler::domain::HomeIdentity& outIdentity) override;
+    NetResult fetchDeviceIdentity(
+        howler::domain::DeviceIdentity& outIdentity) override;
 
 private:
     const char* backendUrl_;

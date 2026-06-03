@@ -10,6 +10,7 @@
 #include "Ports.h"
 #include "SyncService.h"
 #include "../domain/DashboardModel.h"
+#include "../domain/DeviceIdentity.h"
 #include "../domain/HomeIdentity.h"
 #include "../domain/MarkDoneQueue.h"
 #include "../domain/OccurrenceList.h"
@@ -66,6 +67,10 @@ public:
     /// render the Settings → About header card with the household
     /// name + avatar instead of just a hex device-id tail.
     const howler::domain::HomeIdentity& homeIdentity() const { return homeIdentity_; }
+    /// This device's identity (user-set name + serial + hw model).
+    /// Refreshed on every successful sync round; the About card shows
+    /// the name (falling back to the hex device-id tail when unset).
+    const howler::domain::DeviceIdentity& deviceIdentity() const { return deviceIdentity_; }
     howler::domain::Settings& settings() { return settings_; }
     howler::domain::MarkDoneQueue& queue() { return queue_; }
     SyncService& sync() { return sync_; }
@@ -223,6 +228,7 @@ private:
     howler::domain::Settings settings_;
     howler::domain::SyncWatermark watermark_;
     howler::domain::HomeIdentity homeIdentity_;
+    howler::domain::DeviceIdentity deviceIdentity_;
     std::vector<howler::domain::User> users_;
     std::vector<howler::domain::ResultType> resultTypes_;
     PendingDone pendingDone_;

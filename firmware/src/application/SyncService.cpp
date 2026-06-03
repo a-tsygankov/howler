@@ -163,8 +163,12 @@ void SyncService::runRound() {
     // 1. Dashboard — primary source for the home screen + the All
     //    tasks screen. The network call always passes
     //    ?include=hidden so we get every active task with its tier;
-    //    we split client-side: the focused dashboard hides HIDDEN,
-    //    the all-tasks model keeps everything.
+    //    we split client-side. The focused Today dashboard shows only
+    //    tasks assigned to THIS device (and hides HIDDEN-tier ones);
+    //    the all-tasks model keeps every (shared) task the server
+    //    returned. The server already excludes other users' private
+    //    tasks from a device-token payload, so `items` is the shared
+    //    set; `assignedToThisDevice` carves Today out of it.
     {
         std::vector<howler::domain::DashboardItem> items;
         int64_t serverNow = 0;
@@ -172,14 +176,15 @@ void SyncService::runRound() {
         if (r.isOk()) {
             watermark_.dashboard = maxUpdatedAt(items);
             if (serverNow > 0) watermark_.serverNowSec = serverNow;
-            std::vector<howler::domain::DashboardItem> visible;
-            visible.reserve(items.size());
+            std::vector<howler::domain::DashboardItem> today;
+            today.reserve(items.size());
             for (const auto& it : items) {
-                if (it.urgency != howler::domain::Urgency::Hidden) {
-                    visible.push_back(it);
+                if (it.assignedToThisDevice &&
+                    it.urgency != howler::domain::Urgency::Hidden) {
+                    today.push_back(it);
                 }
             }
-            dashboard_.replace(std::move(visible));
+            dashboard_.replace(std::move(today));
             allTasks_.replace(std::move(items));
             anyOk = true;
         }
@@ -231,6 +236,19 @@ void SyncService::runRound() {
         const auto r = net_.fetchHomeIdentity(next);
         if (r.isOk()) {
             homeIdentity_ = std::move(next);
+            anyOk = true;
+        }
+    }
+
+    // 6. Device identity (this dial's user-set name + serial + model).
+    //    Same rationale as home identity: a rename from the webapp
+    //    bumps the counter, so a full round refreshes the name within
+    //    one cycle. Non-fatal on failure — keep the cached value.
+    {
+        howler::domain::DeviceIdentity next;
+        const auto r = net_.fetchDeviceIdentity(next);
+        if (r.isOk()) {
+            deviceIdentity_ = std::move(next);
             anyOk = true;
         }
     }
