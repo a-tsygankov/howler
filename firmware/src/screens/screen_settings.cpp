@@ -404,6 +404,10 @@ void formatAboutBody(char* buf, size_t cap, application::App& app) {
     const auto& did = app.deviceId();
     const std::string didTail = did.size() >= 8
         ? did.substr(did.size() - 8) : did;
+    // Prefer the user-set device name (PATCH /api/devices/:id, synced
+    // via GET /api/devices/me) over the raw hex id-tail.
+    const std::string& devName = app.deviceIdentity().name;
+    const std::string devLabel = !devName.empty() ? devName : didTail;
 
     // IP is shown as a separate row when associated so the user can
     // verify "yes, DHCP completed" — most "wifi connected but sync
@@ -435,7 +439,7 @@ void formatAboutBody(char* buf, size_t cap, application::App& app) {
              static_cast<unsigned>(heapKB),
              upBuf,
              static_cast<unsigned>(app.queue().size()),
-             didTail.c_str());
+             devLabel.c_str());
 }
 
 }  // namespace

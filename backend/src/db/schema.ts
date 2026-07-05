@@ -140,6 +140,24 @@ export const taskAssignments = sqliteTable(
   }),
 );
 
+// Task → device assignment (migration 0017). Mirrors
+// task_assignments. A task with rows here is device-targeted:
+// shared with every user in the home, shown on the targeted
+// device(s)' Today screen. Mutually exclusive with
+// task_assignments (user targets) — enforced in the task service.
+export const taskDeviceAssignments = sqliteTable(
+  "task_device_assignments",
+  {
+    taskId: text("task_id").notNull().references(() => tasks.id),
+    deviceId: text("device_id").notNull().references(() => devices.id),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.taskId, t.deviceId] }),
+    byDevice: index("task_device_assignments_device_idx").on(t.deviceId),
+  }),
+);
+
 export const schedules = sqliteTable(
   "schedules",
   {
@@ -234,6 +252,9 @@ export const devices = sqliteTable(
     serial: text("serial").notNull(),
     fwVersion: text("fw_version"),
     hwModel: text("hw_model").notNull(),
+    // User-editable display name for the dial (migration 0017).
+    // NULL falls back to hw_model / serial in the UI.
+    name: text("name"),
     tz: text("tz"),
     lastSeenAt: integer("last_seen_at"),
     createdAt: integer("created_at").notNull(),

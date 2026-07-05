@@ -2,6 +2,7 @@
 
 #include "Ports.h"
 #include "../domain/DashboardModel.h"
+#include "../domain/DeviceIdentity.h"
 #include "../domain/HomeIdentity.h"
 #include "../domain/OccurrenceList.h"
 #include "../domain/ResultType.h"
@@ -35,11 +36,13 @@ public:
                 std::vector<howler::domain::User>& users,
                 std::vector<howler::domain::ResultType>& resultTypes,
                 howler::domain::SyncWatermark& watermark,
-                howler::domain::HomeIdentity& homeIdentity)
+                howler::domain::HomeIdentity& homeIdentity,
+                howler::domain::DeviceIdentity& deviceIdentity)
         : net_(net), clock_(clock), storage_(storage),
           occList_(occList), dashboard_(dashboard), allTasks_(allTasks),
           users_(users), resultTypes_(resultTypes),
-          watermark_(watermark), homeIdentity_(homeIdentity) {}
+          watermark_(watermark), homeIdentity_(homeIdentity),
+          deviceIdentity_(deviceIdentity) {}
 
     /// Restore `lastCounter_` from NVS. Call once at boot from
     /// App::begin so the very first sync round can short-circuit
@@ -108,6 +111,7 @@ private:
     std::vector<howler::domain::ResultType>& resultTypes_;
     howler::domain::SyncWatermark& watermark_;
     howler::domain::HomeIdentity& homeIdentity_;
+    howler::domain::DeviceIdentity& deviceIdentity_;
 
     int64_t lastPollMs_ = INT64_MIN / 2;
     /// Wall-clock millis of the last full (four-fetch) round, used

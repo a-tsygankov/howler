@@ -18,6 +18,7 @@ import init0013 from "../migrations/0013_firmware_releases.sql?raw";
 import init0014 from "../migrations/0014_user_admin.sql?raw";
 import init0015 from "../migrations/0015_label_avatars.sql?raw";
 import init0016 from "../migrations/0016_avatar_1bit.sql?raw";
+import init0017 from "../migrations/0017_device_name_and_assignment.sql?raw";
 
 import { applyMigrationSql } from "./helpers/migrations.ts";
 
@@ -30,7 +31,7 @@ const applyMigrations = async () => {
   await applyMigrationSql(env.DB, [
     init0000, init0001, init0002, init0003, init0004, init0005,
     init0006, init0007, init0008, init0009, init0010, init0012,
-    init0013, init0014, init0015, init0016,
+    init0013, init0014, init0015, init0016, init0017,
   ]);
 };
 
@@ -41,6 +42,7 @@ const reset = async () => {
     "occurrences",
     "schedules",
     "task_assignments",
+    "task_device_assignments",
     "tasks",
     "schedule_templates",
     "task_results",
@@ -2785,5 +2787,425 @@ describe("GET /api/homes/me — device-readable home identity", () => {
   it("requires authentication", async () => {
     const r = await SELF.fetch("https://t/api/homes/me");
     expect(r.status).toBe(401);
+  });
+});
+
+// ── Device rename + self-identity (migration 0017) ─────────────────
+describe("device rename + GET /api/devices/me", () => {
+  let nextIp = 400;
+  const auth = async () => {
+    const ip = `10.0.4.${nextIp++}`;
+    const res = await SELF.fetch("https://t/api/auth/quick-setup", {
+      method: "POST",
+      headers: { "content-type": "application/json", "cf-connecting-ip": ip },
+      body: "{}",
+    });
+    const body = await json(res);
+    return { token: body["token"] as string, homeId: body["homeId"] as string };
+  };
+
+  const mintDeviceToken = async (homeId: string, deviceId: string): Promise<string> => {
+    const { issueDeviceToken } = await import("../src/auth.ts");
+    const secret = (env as unknown as { AUTH_SECRET: string }).AUTH_SECRET;
+    return issueDeviceToken(homeId, deviceId, secret);
+  };
+
+  const seedDevice = async (
+    homeId: string,
+    deviceId: string,
+    opts: { serial?: string; hwModel?: string; name?: string | null } = {},
+  ) => {
+    const nowSec = Math.floor(Date.now() / 1000);
+    await env.DB
+      .prepare(
+        `INSERT INTO devices (id, home_id, serial, fw_version, hw_model, name,
+           tz, last_seen_at, created_at, updated_at, is_deleted)
+         VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, 0)`,
+      )
+      .bind(
+        deviceId, homeId, opts.serial ?? "SER123", "0.3.1",
+        opts.hwModel ?? "DIAL", opts.name ?? null, nowSec, nowSec,
+      )
+      .run();
+  };
+
+  const peekCounter = async (token: string): Promise<number> => {
+    const res = await SELF.fetch("https://t/api/homes/peek", {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    const body = (await json(res)) as { counter: number };
+    return body.counter;
+  };
+
+  it("PATCH /api/devices/:id renames the device, persists, and bumps the home counter", async () => {
+    const { token, homeId } = await auth();
+    const deviceId = "aa".repeat(16);
+    await seedDevice(homeId, deviceId);
+
+    const before = await peekCounter(token);
+
+    const res = await SELF.fetch(`https://t/api/devices/${deviceId}`, {
+      method: "PATCH",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ name: "Kitchen Dial" }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await json(res)) as { id: string; name: string };
+    expect(body.name).toBe("Kitchen Dial");
+
+    const list = await SELF.fetch("https://t/api/devices", {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    const listBody = (await json(list)) as { devices: Array<{ id: string; name: string | null }> };
+    expect(listBody.devices.find((d) => d.id === deviceId)?.name).toBe("Kitchen Dial");
+
+    const after = await peekCounter(token);
+    expect(after).toBeGreaterThan(before);
+  });
+
+  it("PATCH /api/devices/:id for a device in another home is 404", async () => {
+    const a = await auth();
+    const b = await auth();
+    const deviceId = "bb".repeat(16);
+    await seedDevice(b.homeId, deviceId);
+
+    const res = await SELF.fetch(`https://t/api/devices/${deviceId}`, {
+      method: "PATCH",
+      headers: { authorization: `Bearer ${a.token}`, "content-type": "application/json" },
+      body: JSON.stringify({ name: "stolen" }),
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it("GET /api/devices/me returns the device's own identity (device token)", async () => {
+    const { homeId } = await auth();
+    const deviceId = "cc".repeat(16);
+    await seedDevice(homeId, deviceId, { name: "Hallway", serial: "ZZ9", hwModel: "DIAL" });
+    const deviceToken = await mintDeviceToken(homeId, deviceId);
+
+    const res = await SELF.fetch("https://t/api/devices/me", {
+      headers: { authorization: `Bearer ${deviceToken}` },
+    });
+    expect(res.status).toBe(200);
+    const body = (await json(res)) as {
+      id: string; name: string | null; serial: string; hwModel: string; fwVersion: string | null;
+    };
+    expect(body.id).toBe(deviceId);
+    expect(body.name).toBe("Hallway");
+    expect(body.serial).toBe("ZZ9");
+    expect(body.hwModel).toBe("DIAL");
+  });
+
+  it("GET /api/devices/me requires a device token (user token is 403)", async () => {
+    const { token } = await auth();
+    const res = await SELF.fetch("https://t/api/devices/me", {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(res.status).toBe(403);
+  });
+});
+
+// ── Task assignment: users XOR devices (migration 0017) ────────────
+describe("task assignment — users XOR devices", () => {
+  let nextIp = 500;
+  const auth = async () => {
+    const ip = `10.0.5.${nextIp++}`;
+    const res = await SELF.fetch("https://t/api/auth/quick-setup", {
+      method: "POST",
+      headers: { "content-type": "application/json", "cf-connecting-ip": ip },
+      body: "{}",
+    });
+    const body = await json(res);
+    return { token: body["token"] as string, homeId: body["homeId"] as string, userId: body["userId"] as string };
+  };
+
+  const headers = (token: string) => ({
+    authorization: `Bearer ${token}`,
+    "content-type": "application/json",
+  });
+
+  const seedDevice = async (homeId: string, deviceId: string) => {
+    const nowSec = Math.floor(Date.now() / 1000);
+    await env.DB
+      .prepare(
+        `INSERT INTO devices (id, home_id, serial, fw_version, hw_model, name,
+           tz, last_seen_at, created_at, updated_at, is_deleted)
+         VALUES (?, ?, 'S', '0.3.1', 'DIAL', NULL, NULL, NULL, ?, ?, 0)`,
+      )
+      .bind(deviceId, homeId, nowSec, nowSec)
+      .run();
+  };
+
+  const createUser = async (token: string, name: string): Promise<string> => {
+    const r = await SELF.fetch("https://t/api/users", {
+      method: "POST",
+      headers: headers(token),
+      body: JSON.stringify({ displayName: name }),
+    });
+    const body = (await json(r)) as { id: string };
+    return body.id;
+  };
+
+  const createTask = async (token: string, body: Record<string, unknown>) => {
+    const r = await SELF.fetch("https://t/api/tasks", {
+      method: "POST",
+      headers: headers(token),
+      body: JSON.stringify({ kind: "ONESHOT", ...body }),
+    });
+    return r;
+  };
+
+  const getTask = async (token: string, id: string) => {
+    const r = await SELF.fetch(`https://t/api/tasks/${id}`, { headers: headers(token) });
+    return (await json(r)) as {
+      assignees: string[];
+      assignedDevices: string[];
+      isPrivate: boolean;
+      creatorUserId: string | null;
+    };
+  };
+
+  const peekCounter = async (token: string): Promise<number> => {
+    const res = await SELF.fetch("https://t/api/homes/peek", { headers: headers(token) });
+    return ((await json(res)) as { counter: number }).counter;
+  };
+
+  it("device-assigned task: join rows stored, GET /:id echoes assignedDevices, stays shared", async () => {
+    const { token, homeId } = await auth();
+    const d1 = "11".repeat(16);
+    const d2 = "22".repeat(16);
+    await seedDevice(homeId, d1);
+    await seedDevice(homeId, d2);
+
+    const create = await createTask(token, { title: "sweep", assignedDevices: [d1, d2] });
+    expect(create.status).toBe(201);
+    const id = ((await json(create)) as { id: string }).id;
+
+    const t = await getTask(token, id);
+    expect([...t.assignedDevices].sort()).toEqual([d1, d2].sort());
+    expect(t.assignees).toEqual([]);
+    expect(t.isPrivate).toBe(false);
+  });
+
+  it("user-assigned task: is private, GET /:id echoes assignees", async () => {
+    const { token } = await auth();
+    const bob = await createUser(token, "Bob");
+
+    const create = await createTask(token, { title: "bob-only", assignees: [bob] });
+    expect(create.status).toBe(201);
+    const id = ((await json(create)) as { id: string }).id;
+
+    const t = await getTask(token, id);
+    expect(t.assignees).toEqual([bob]);
+    expect(t.assignedDevices).toEqual([]);
+    expect(t.isPrivate).toBe(true);
+  });
+
+  it("providing both users and devices is 400", async () => {
+    const { token, homeId } = await auth();
+    const d1 = "33".repeat(16);
+    await seedDevice(homeId, d1);
+    const bob = await createUser(token, "Bob");
+
+    const create = await createTask(token, { title: "ambiguous", assignees: [bob], assignedDevices: [d1] });
+    expect(create.status).toBe(400);
+  });
+
+  it("PATCH switching to devices clears users, bumps the counter", async () => {
+    const { token, homeId } = await auth();
+    const d1 = "44".repeat(16);
+    await seedDevice(homeId, d1);
+    const bob = await createUser(token, "Bob");
+
+    const create = await createTask(token, { title: "switch", assignees: [bob] });
+    const id = ((await json(create)) as { id: string }).id;
+
+    const before = await peekCounter(token);
+    const patch = await SELF.fetch(`https://t/api/tasks/${id}`, {
+      method: "PATCH",
+      headers: headers(token),
+      body: JSON.stringify({ assignees: [], assignedDevices: [d1] }),
+    });
+    expect(patch.status).toBe(200);
+
+    const t = await getTask(token, id);
+    expect(t.assignees).toEqual([]);
+    expect(t.assignedDevices).toEqual([d1]);
+    expect(t.isPrivate).toBe(false);
+
+    const after = await peekCounter(token);
+    expect(after).toBeGreaterThan(before);
+  });
+
+  it("assigning a device from another home is 400", async () => {
+    const a = await auth();
+    const b = await auth();
+    const deviceB = "55".repeat(16);
+    await seedDevice(b.homeId, deviceB);
+
+    const create = await createTask(a.token, { title: "cross-home", assignedDevices: [deviceB] });
+    expect(create.status).toBe(400);
+  });
+});
+
+// ── Task visibility: creator + assignee + admin (migration 0017) ───
+describe("task visibility — creator + assignee + admin", () => {
+  let nextIp = 600;
+  const secret = () => (env as unknown as { AUTH_SECRET: string }).AUTH_SECRET;
+
+  const auth = async () => {
+    const ip = `10.0.6.${nextIp++}`;
+    const res = await SELF.fetch("https://t/api/auth/quick-setup", {
+      method: "POST",
+      headers: { "content-type": "application/json", "cf-connecting-ip": ip },
+      body: "{}",
+    });
+    const body = await json(res);
+    return { token: body["token"] as string, homeId: body["homeId"] as string, userId: body["userId"] as string };
+  };
+  const H = (token: string) => ({ authorization: `Bearer ${token}`, "content-type": "application/json" });
+
+  const seedDevice = async (homeId: string, deviceId: string) => {
+    const nowSec = Math.floor(Date.now() / 1000);
+    await env.DB
+      .prepare(
+        `INSERT INTO devices (id, home_id, serial, fw_version, hw_model, name,
+           tz, last_seen_at, created_at, updated_at, is_deleted)
+         VALUES (?, ?, 'S', '0.3.1', 'DIAL', NULL, NULL, NULL, ?, ?, 0)`,
+      )
+      .bind(deviceId, homeId, nowSec, nowSec)
+      .run();
+  };
+
+  const createUser = async (token: string, name: string): Promise<string> => {
+    const r = await SELF.fetch("https://t/api/users", { method: "POST", headers: H(token), body: JSON.stringify({ displayName: name }) });
+    return ((await json(r)) as { id: string }).id;
+  };
+  const userToken = async (homeId: string, userId: string) => {
+    const { issueUserToken } = await import("../src/auth.ts");
+    return issueUserToken(homeId, userId, secret());
+  };
+  const deviceToken = async (homeId: string, deviceId: string) => {
+    const { issueDeviceToken } = await import("../src/auth.ts");
+    return issueDeviceToken(homeId, deviceId, secret());
+  };
+  const setAdmin = async (userId: string) => {
+    await env.DB.prepare("UPDATE users SET is_admin = 1 WHERE id = ?").bind(userId).run();
+  };
+
+  const createTask = async (token: string, body: Record<string, unknown>): Promise<string> => {
+    const r = await SELF.fetch("https://t/api/tasks", { method: "POST", headers: H(token), body: JSON.stringify({ kind: "DAILY", times: ["09:00"], ...body }) });
+    expect(r.status, JSON.stringify(await r.clone().json())).toBe(201);
+    return ((await json(r)) as { id: string }).id;
+  };
+  const listTaskIds = async (token: string): Promise<Set<string>> => {
+    const r = await SELF.fetch("https://t/api/tasks", { headers: H(token) });
+    expect(r.status).toBe(200);
+    const body = (await json(r)) as { tasks: Array<{ id: string }> };
+    return new Set(body.tasks.map((t) => t.id));
+  };
+  const dashboard = async (token: string) => {
+    const r = await SELF.fetch("https://t/api/dashboard?include=hidden", { headers: H(token) });
+    expect(r.status).toBe(200);
+    return (await json(r)) as {
+      tasks: Array<{
+        task: { id: string };
+        assignedToThisDevice?: boolean;
+        assignedUserIds?: string[];
+        assignedDeviceIds?: string[];
+      }>;
+    };
+  };
+
+  it("a user-assigned task is visible only to its assignee, creator, and admin", async () => {
+    const a = await auth();
+    const bId = await createUser(a.token, "Bob");
+    const cId = await createUser(a.token, "Cara");
+    const adminId = await createUser(a.token, "Root");
+    await setAdmin(adminId);
+    const bTok = await userToken(a.homeId, bId);
+    const cTok = await userToken(a.homeId, cId);
+    const adminTok = await userToken(a.homeId, adminId);
+
+    // Created by A, assigned to B.
+    const tUserB = await createTask(a.token, { title: "bob-only", assignees: [bId] });
+
+    expect(await listTaskIds(a.token)).toContain(tUserB);   // creator
+    expect(await listTaskIds(bTok)).toContain(tUserB);       // assignee
+    expect(await listTaskIds(adminTok)).toContain(tUserB);   // admin
+    expect(await listTaskIds(cTok)).not.toContain(tUserB);   // outsider
+  });
+
+  it("shared and device-assigned tasks are visible to every user", async () => {
+    const a = await auth();
+    const cId = await createUser(a.token, "Cara");
+    const cTok = await userToken(a.homeId, cId);
+    const dId = "66".repeat(16);
+    await seedDevice(a.homeId, dId);
+
+    const tShared = await createTask(a.token, { title: "shared" });
+    const tDev = await createTask(a.token, { title: "on-dial", assignedDevices: [dId] });
+
+    const cVisible = await listTaskIds(cTok);
+    expect(cVisible).toContain(tShared);
+    expect(cVisible).toContain(tDev);
+  });
+
+  it("a device token sees shared tasks only and tags its own assignments", async () => {
+    const a = await auth();
+    const bId = await createUser(a.token, "Bob");
+    const dId = "77".repeat(16);
+    await seedDevice(a.homeId, dId);
+    const dTok = await deviceToken(a.homeId, dId);
+
+    const tShared = await createTask(a.token, { title: "shared" });
+    const tDev = await createTask(a.token, { title: "on-dial", assignedDevices: [dId] });
+    const tUserB = await createTask(a.token, { title: "bob-only", assignees: [bId] });
+
+    const dash = await dashboard(dTok);
+    const ids = new Set(dash.tasks.map((t) => t.task.id));
+    expect(ids).toContain(tShared);
+    expect(ids).toContain(tDev);
+    expect(ids).not.toContain(tUserB);   // private to Bob — never on a shared dial
+
+    const devRow = dash.tasks.find((t) => t.task.id === tDev);
+    const sharedRow = dash.tasks.find((t) => t.task.id === tShared);
+    expect(devRow?.assignedToThisDevice).toBe(true);
+    expect(sharedRow?.assignedToThisDevice).toBe(false);
+  });
+
+  it("a non-creator non-assignee cannot edit or complete a private task", async () => {
+    const a = await auth();
+    const bId = await createUser(a.token, "Bob");
+    const cId = await createUser(a.token, "Cara");
+    const cTok = await userToken(a.homeId, cId);
+
+    const tUserB = await createTask(a.token, { title: "bob-only", assignees: [bId] });
+
+    const patchByC = await SELF.fetch(`https://t/api/tasks/${tUserB}`, { method: "PATCH", headers: H(cTok), body: JSON.stringify({ title: "hijack" }) });
+    expect(patchByC.status).toBe(404);
+
+    const completeByC = await SELF.fetch(`https://t/api/tasks/${tUserB}/complete`, { method: "POST", headers: H(cTok), body: JSON.stringify({ id: "ab".repeat(16) }) });
+    expect(completeByC.status).toBe(404);
+
+    // The creator (A) can still edit it.
+    const patchByA = await SELF.fetch(`https://t/api/tasks/${tUserB}`, { method: "PATCH", headers: H(a.token), body: JSON.stringify({ title: "renamed" }) });
+    expect(patchByA.status).toBe(200);
+  });
+
+  it("webapp dashboard rows carry assignedUserIds / assignedDeviceIds", async () => {
+    const a = await auth();
+    const bId = await createUser(a.token, "Bob");
+    const dId = "88".repeat(16);
+    await seedDevice(a.homeId, dId);
+
+    const tUserB = await createTask(a.token, { title: "bob-only", assignees: [bId] });
+    const tDev = await createTask(a.token, { title: "on-dial", assignedDevices: [dId] });
+
+    const dash = await dashboard(a.token);
+    const rowB = dash.tasks.find((t) => t.task.id === tUserB);
+    const rowD = dash.tasks.find((t) => t.task.id === tDev);
+    expect(rowB?.assignedUserIds).toContain(bId);
+    expect(rowD?.assignedDeviceIds).toContain(dId);
   });
 });

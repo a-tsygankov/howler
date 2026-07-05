@@ -11,6 +11,12 @@ import init0006 from "../migrations/0006_label_icons.sql?raw";
 import init0007 from "../migrations/0007_task_avatar_backfill.sql?raw";
 import init0008 from "../migrations/0008_rule_modified_at.sql?raw";
 import init0009 from "../migrations/0009_user_bg_color.sql?raw";
+// Required by the visibility predicate the ack/pending paths now run.
+// 0017's triggers reference homes.update_counter (0012), so order it
+// after.
+import init0012 from "../migrations/0012_update_counter.sql?raw";
+import init0014 from "../migrations/0014_user_admin.sql?raw";
+import init0017 from "../migrations/0017_device_name_and_assignment.sql?raw";
 import { clock, resetClock, setClock, TestClock } from "../src/clock.ts";
 import { consumeFireQueue } from "../src/services/fanout.ts";
 import type { Bindings, OccurrenceFireMessage } from "../src/env.ts";
@@ -49,7 +55,7 @@ import { applyMigrationSql } from "./helpers/migrations.ts";
 const applyMigrations = async () => {
   await applyMigrationSql(env.DB, [
     init0000, init0001, init0002, init0003, init0004, init0005,
-    init0006, init0007, init0008, init0009,
+    init0006, init0007, init0008, init0009, init0012, init0014, init0017,
   ]);
 };
 
@@ -59,6 +65,7 @@ const reset = async () => {
     "occurrences",
     "schedules",
     "task_assignments",
+    "task_device_assignments",
     "tasks",
     "schedule_templates",
     "task_results",

@@ -226,7 +226,11 @@ export interface CreateTaskInput {
   // Omit to let the server fall back to the selected label's icon.
   avatarId?: string | null;
   isPrivate?: boolean;
+  // A task targets EITHER users OR devices (mutually exclusive). The
+  // server rejects both non-empty with 400. Empty/omitted = shared
+  // with everyone.
   assignees?: string[];
+  assignedDevices?: string[];
 }
 
 export interface UpdateTaskInput {
@@ -239,6 +243,7 @@ export interface UpdateTaskInput {
   avatarId?: string | null;
   isPrivate?: boolean;
   assignees?: string[];
+  assignedDevices?: string[];
   // Schedule rule edits — server expects UTC times; the SPA must
   // localToUTC() before passing them in. Only the field matching
   // the task's kind has effect; the others are ignored.
@@ -273,6 +278,12 @@ const DashboardItemSchema = z.object({
   periodSec: z.number().int().nullable(),
   isMissed: z.boolean(),
   secondsUntilNext: z.number().int().nullable(),
+  // Assignment (migration 0017). Optional/defaulted so older Worker
+  // deploys still parse. `assignedToThisDevice` is meaningful only for
+  // device tokens (always false for the webapp).
+  assignedUserIds: z.array(z.string()).optional().default([]),
+  assignedDeviceIds: z.array(z.string()).optional().default([]),
+  assignedToThisDevice: z.boolean().optional().default(false),
 });
 export type DashboardItem = z.infer<typeof DashboardItemSchema>;
 
@@ -475,10 +486,14 @@ export type TaskSchedule = z.infer<typeof TaskScheduleSchema>;
 export const fetchTaskSchedule = async (taskId: string): Promise<TaskSchedule> =>
   TaskScheduleSchema.parse(await callJson("GET", `/tasks/${taskId}/schedule`));
 
-export const fetchTask = async (id: string): Promise<Task & { assignees: string[] }> => {
+export const fetchTask = async (
+  id: string,
+): Promise<Task & { assignees: string[]; assignedDevices: string[] }> => {
   const data = (await callJson("GET", `/tasks/${id}`)) as unknown;
-  return TaskSchema.extend({ assignees: z.array(Hex32) })
-    .parse(data) as Task & { assignees: string[] };
+  return TaskSchema.extend({
+    assignees: z.array(Hex32),
+    assignedDevices: z.array(Hex32).optional().default([]),
+  }).parse(data) as Task & { assignees: string[]; assignedDevices: string[] };
 };
 
 // ── Users (within the caller's home) ────────────────────────────────
@@ -541,6 +556,10 @@ const DeviceSchema = z.object({
   serial: z.string(),
   fwVersion: z.string().nullable(),
   hwModel: z.string(),
+  // User-set display name (migration 0017). null falls back to
+  // hwModel / serial in the UI. Optional + default null so older
+  // Worker deploys that don't return it still parse.
+  name: z.string().nullable().optional().default(null),
   tz: z.string().nullable(),
   lastSeenAt: z.number().int().nullable(),
   createdAt: z.number().int(),
@@ -553,6 +572,16 @@ export const fetchDevices = async (): Promise<Device[]> =>
     .object({ devices: z.array(DeviceSchema) })
     .parse(await callJson("GET", "/devices"))
     .devices;
+
+/// Rename a device. `name` 1..40 chars, or null to clear back to the
+/// hwModel / serial fallback. Bumps the home update_counter so every
+/// dial in the home re-syncs and the renamed one shows its new name.
+export const renameDevice = async (
+  id: string,
+  name: string | null,
+): Promise<void> => {
+  await callJson("PATCH", `/devices/${id}`, { name });
+};
 
 export const revokeDevice = async (id: string): Promise<void> => {
   await callJson("DELETE", `/devices/${id}`);

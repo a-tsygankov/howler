@@ -86,8 +86,16 @@ export const UpdateTaskSchema = z.object({
   // Avatar can be either an icon-set choice ("icon:paw") or an R2
   // UUID for an uploaded image. Backend stays opaque to the format.
   avatarId: z.string().max(80).nullable().optional(),
+  // isPrivate is derived from `assignees` now (a task with user
+  // assignees is private). Kept optional for back-compat; the server
+  // ignores it and recomputes is_private from the assignment set.
   isPrivate: z.boolean().optional(),
+  // A task targets EITHER users (private to them + creator + admin) OR
+  // devices (shared, shown on those devices' Today). Sending both
+  // non-empty is rejected with 400. Either array replaces the
+  // corresponding target set; an empty array clears it.
   assignees: z.array(Hex32).optional(),
+  assignedDevices: z.array(Hex32).optional(),
   // Schedule rule fields — only meaningful for the matching kind.
   // Times are UTC "HH:MM" (the SPA converts from local before sending).
   times: z.array(z.string().regex(/^\d{2}:\d{2}$/)).optional(),
@@ -111,8 +119,12 @@ export const CreateTaskSchema = z.object({
   // Avatar — see UpdateTaskSchema.avatarId. When omitted, the
   // service falls back to the selected label's icon.
   avatarId: z.string().max(80).nullish(),
+  // Derived from `assignees` (see UpdateTaskSchema). Accepted for
+  // back-compat but recomputed server-side.
   isPrivate: z.boolean().optional(),
+  // EITHER users OR devices — see UpdateTaskSchema.assignedDevices.
   assignees: z.array(Hex32).optional(),
+  assignedDevices: z.array(Hex32).optional(),
 });
 export type CreateTaskInput = z.infer<typeof CreateTaskSchema>;
 

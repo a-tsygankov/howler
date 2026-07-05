@@ -10,6 +10,7 @@
 using howler::application::SyncService;
 using howler::domain::DashboardItem;
 using howler::domain::DashboardModel;
+using howler::domain::DeviceIdentity;
 using howler::domain::HomeIdentity;
 using howler::domain::OccurrenceList;
 using howler::domain::ResultType;
@@ -29,6 +30,7 @@ void test_sync_populates_home_identity_on_full_round() {
     net.setOnline(true);
 
     HomeIdentity hi;          // reference passed into SyncService
+    DeviceIdentity di;
     DashboardModel dash;
     DashboardModel allTasks;
     OccurrenceList occ;
@@ -48,7 +50,7 @@ void test_sync_populates_home_identity_on_full_round() {
     net.resultTypeResults_ = { howler::application::NetResult::ok() };
     net.pendingResults_    = { howler::application::NetResult::ok() };
 
-    SyncService s(net, clock, storage, occ, dash, allTasks, users, types, wm, hi);
+    SyncService s(net, clock, storage, occ, dash, allTasks, users, types, wm, hi, di);
     s.requestSync();
     s.tick();
 
@@ -56,6 +58,43 @@ void test_sync_populates_home_identity_on_full_round() {
     TEST_ASSERT_EQUAL_STRING("The Smiths", hi.displayName.c_str());
     TEST_ASSERT_EQUAL_STRING("icon:home",  hi.avatarId.c_str());
     TEST_ASSERT_EQUAL_STRING("America/Los_Angeles", hi.tz.c_str());
+}
+
+void test_sync_populates_device_identity_on_full_round() {
+    // A full round also refreshes THIS device's identity (its
+    // user-set name) so a webapp rename shows on the About card
+    // within one sync cycle.
+    StubClock clock;
+    clock.setMs(1'000'000);
+    StubNetwork net;
+    net.setOnline(true);
+
+    HomeIdentity hi;
+    DeviceIdentity di;
+    DashboardModel dash;
+    DashboardModel allTasks;
+    OccurrenceList occ;
+    std::vector<User> users;
+    std::vector<ResultType> types;
+    SyncWatermark wm;
+    StubStorage storage;
+
+    net.nextDeviceIdentity_.id = "device-32-hex-id";
+    net.nextDeviceIdentity_.name = "Kitchen Dial";
+    net.nextDeviceIdentity_.serial = "SER123";
+    net.nextDeviceIdentity_.hwModel = "DIAL";
+    net.dashboardResults_  = { howler::application::NetResult::ok() };
+    net.userResults_       = { howler::application::NetResult::ok() };
+    net.resultTypeResults_ = { howler::application::NetResult::ok() };
+    net.pendingResults_    = { howler::application::NetResult::ok() };
+
+    SyncService s(net, clock, storage, occ, dash, allTasks, users, types, wm, hi, di);
+    s.requestSync();
+    s.tick();
+
+    TEST_ASSERT_EQUAL(1, net.deviceIdentityCalls_);
+    TEST_ASSERT_EQUAL_STRING("Kitchen Dial", di.name.c_str());
+    TEST_ASSERT_EQUAL_STRING("DIAL", di.hwModel.c_str());
 }
 
 void test_sync_keeps_cached_identity_on_fetch_failure() {
@@ -70,6 +109,7 @@ void test_sync_keeps_cached_identity_on_fetch_failure() {
     net.setOnline(true);
 
     HomeIdentity hi;
+    DeviceIdentity di;
     hi.displayName = "The Smiths";    // pre-populated cache
     hi.avatarId    = "icon:home";
 
@@ -87,7 +127,7 @@ void test_sync_keeps_cached_identity_on_fetch_failure() {
     net.pendingResults_       = { howler::application::NetResult::ok() };
     net.homeIdentityResults_  = { howler::application::NetResult::transient(503) };
 
-    SyncService s(net, clock, storage, occ, dash, allTasks, users, types, wm, hi);
+    SyncService s(net, clock, storage, occ, dash, allTasks, users, types, wm, hi, di);
     s.requestSync();
     s.tick();
 
@@ -109,8 +149,9 @@ void test_sync_no_op_when_offline() {
     SyncWatermark wm;
     DashboardModel allTasks;
     HomeIdentity hi;
+    DeviceIdentity di;
     StubStorage storage;
-    SyncService s(net, clock, storage, occ, dash, allTasks, users, types, wm, hi);
+    SyncService s(net, clock, storage, occ, dash, allTasks, users, types, wm, hi, di);
     s.tick();
     TEST_ASSERT_EQUAL_size_t(0, dash.size());
     TEST_ASSERT_FALSE(s.lastSyncOk());
@@ -130,6 +171,7 @@ void test_sync_replaces_dashboard_users_result_types() {
     d.priority = 1;
     d.isMissed = false;
     d.updatedAt = 5000;
+    d.assignedToThisDevice = true;  // lands on the Today dashboard
     net.nextDashboard_ = { d };
     net.dashboardResults_ = { howler::application::NetResult::ok() };
 
@@ -158,8 +200,9 @@ void test_sync_replaces_dashboard_users_result_types() {
     SyncWatermark wm;
     DashboardModel allTasks;
     HomeIdentity hi;
+    DeviceIdentity di;
     StubStorage storage;
-    SyncService s(net, clock, storage, occ, dash, allTasks, users, types, wm, hi);
+    SyncService s(net, clock, storage, occ, dash, allTasks, users, types, wm, hi, di);
     s.requestSync();
     s.tick();
 
@@ -171,6 +214,53 @@ void test_sync_replaces_dashboard_users_result_types() {
     TEST_ASSERT_EQUAL_INT64(3000, wm.resultTypes);
     TEST_ASSERT_TRUE(s.lastSyncOk());
     TEST_ASSERT_EQUAL_INT64(1000, wm.lastFullSync);
+}
+
+// The dial's Today screen shows ONLY tasks assigned to this device;
+// the All screen keeps every shared task the server returned. A
+// device-token /dashboard payload tags each row with
+// `assignedToThisDevice`; SyncService routes on that flag.
+void test_sync_today_filters_to_device_assigned_all_keeps_shared() {
+    StubClock clock;
+    clock.setMs(2'000'000);
+    StubNetwork net;
+    net.setOnline(true);
+
+    DashboardItem assigned;
+    assigned.id = "assigned";
+    assigned.title = "sweep";
+    assigned.urgency = howler::domain::Urgency::Urgent;
+    assigned.dueAt = 100;
+    assigned.assignedToThisDevice = true;
+
+    DashboardItem shared;
+    shared.id = "shared";
+    shared.title = "water";
+    shared.urgency = howler::domain::Urgency::Urgent;
+    shared.dueAt = 200;
+    shared.assignedToThisDevice = false;
+
+    net.nextDashboard_ = { assigned, shared };
+    net.dashboardResults_ = { howler::application::NetResult::ok() };
+
+    DashboardModel dash;
+    DashboardModel allTasks;
+    OccurrenceList occ;
+    std::vector<User> users;
+    std::vector<ResultType> types;
+    SyncWatermark wm;
+    HomeIdentity hi;
+    DeviceIdentity di;
+    StubStorage storage;
+    SyncService s(net, clock, storage, occ, dash, allTasks, users, types, wm, hi, di);
+    s.requestSync();
+    s.tick();
+
+    // Today: only the device-assigned task.
+    TEST_ASSERT_EQUAL_size_t(1, dash.size());
+    TEST_ASSERT_EQUAL_STRING("assigned", dash.items()[0].id.c_str());
+    // All: every shared task the server returned.
+    TEST_ASSERT_EQUAL_size_t(2, allTasks.size());
 }
 
 void test_sync_respects_interval() {
@@ -188,8 +278,9 @@ void test_sync_respects_interval() {
     SyncWatermark wm;
     DashboardModel allTasks;
     HomeIdentity hi;
+    DeviceIdentity di;
     StubStorage storage;
-    SyncService s(net, clock, storage, occ, dash, allTasks, users, types, wm, hi);
+    SyncService s(net, clock, storage, occ, dash, allTasks, users, types, wm, hi, di);
     s.setIntervalMs(1000);
     s.requestSync();  // unblocks the first tick
     s.tick();
@@ -219,9 +310,10 @@ struct SyncFixture {
     SyncWatermark wm;
     DashboardModel allTasks;
     HomeIdentity hi;
+    DeviceIdentity di;
     StubStorage storage;
     SyncService s = SyncService(
-        net, clock, storage, occ, dash, allTasks, users, types, wm, hi);
+        net, clock, storage, occ, dash, allTasks, users, types, wm, hi, di);
 
     void queueFullRound() {
         net.dashboardResults_.push_back(
@@ -368,7 +460,7 @@ void test_sync_persists_and_restores_counter() {
     // anchors lastFullRoundMs_ to "now" so the overdueFullRefresh
     // gate doesn't fire on first tick.
     SyncService s2(fx.net, fx.clock, fx.storage, fx.occ, fx.dash,
-                   fx.allTasks, fx.users, fx.types, fx.wm, fx.hi);
+                   fx.allTasks, fx.users, fx.types, fx.wm, fx.hi, fx.di);
     s2.setIntervalMs(1);
     s2.restoreFromStorage();
     TEST_ASSERT_EQUAL_INT64(99, s2.lastCounter());

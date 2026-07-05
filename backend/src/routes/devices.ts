@@ -12,6 +12,7 @@ interface DeviceRow {
   serial: string;
   fw_version: string | null;
   hw_model: string;
+  name: string | null;
   tz: string | null;
   last_seen_at: number | null;
   created_at: number;
@@ -24,10 +25,19 @@ const toDto = (r: DeviceRow) => ({
   serial: r.serial,
   fwVersion: r.fw_version,
   hwModel: r.hw_model,
+  name: r.name,
   tz: r.tz,
   lastSeenAt: r.last_seen_at,
   createdAt: r.created_at,
   updatedAt: r.updated_at,
+});
+
+// Rename payload — `name` 1..40 chars, or null to clear back to the
+// hw_model / serial fallback. A column-scoped trigger (migration
+// 0017) bumps the home update_counter so the dial picks the new name
+// up on its next peek.
+const RenameSchema = z.object({
+  name: z.string().trim().min(1).max(40).nullable(),
 });
 
 // Heartbeat payload — accepts what the firmware already sends today
@@ -50,7 +60,7 @@ export const devicesRouter = new Hono<{
     const u = c.get("user");
     const { results } = await c.env.DB
       .prepare(
-        `SELECT id, home_id, serial, fw_version, hw_model, tz, last_seen_at,
+        `SELECT id, home_id, serial, fw_version, hw_model, name, tz, last_seen_at,
            created_at, updated_at
          FROM devices WHERE home_id = ? AND is_deleted = 0
          ORDER BY created_at DESC`,
@@ -58,6 +68,58 @@ export const devicesRouter = new Hono<{
       .bind(u.homeId)
       .all<DeviceRow>();
     return c.json({ devices: results.map(toDto) });
+  })
+
+  // GET /api/devices/me — device-only self-identity. The dial reads
+  // its own display name (set by a user via PATCH /:id) for the
+  // Settings → About card. Registered before the `/:id` handlers so
+  // the literal `/me` path wins. requireDevice() rejects user tokens
+  // with 403.
+  .get("/me", requireDevice(), async (c) => {
+    const d = c.get("device");
+    const row = await c.env.DB
+      .prepare(
+        `SELECT id, home_id, serial, fw_version, hw_model, name, tz, last_seen_at,
+           created_at, updated_at
+         FROM devices WHERE id = ? AND is_deleted = 0`,
+      )
+      .bind(d.deviceId)
+      .first<DeviceRow>();
+    if (!row || row.home_id !== d.homeId) {
+      return c.json({ error: "not-found" }, 404);
+    }
+    return c.json(toDto(row));
+  })
+
+  // PATCH /api/devices/:id — rename a device (user-only). Same-home
+  // check; the column-scoped 0017 trigger bumps the home counter so
+  // every dial in the home re-syncs and the renamed one shows its new
+  // name on the About card.
+  .patch("/:id", requireUser(), zValidator("json", RenameSchema), async (c) => {
+    const u = c.get("user");
+    const id = c.req.param("id");
+    const { name } = c.req.valid("json");
+    const row = await c.env.DB
+      .prepare("SELECT home_id FROM devices WHERE id = ? AND is_deleted = 0")
+      .bind(id)
+      .first<{ home_id: string }>();
+    if (!row || row.home_id !== u.homeId) {
+      return c.json({ error: "not-found" }, 404);
+    }
+    const nowSec = clock().nowSec();
+    await c.env.DB
+      .prepare("UPDATE devices SET name = ?, updated_at = ? WHERE id = ?")
+      .bind(name, nowSec, id)
+      .run();
+    const updated = await c.env.DB
+      .prepare(
+        `SELECT id, home_id, serial, fw_version, hw_model, name, tz, last_seen_at,
+           created_at, updated_at
+         FROM devices WHERE id = ?`,
+      )
+      .bind(id)
+      .first<DeviceRow>();
+    return c.json(toDto(updated!));
   })
 
   // POST /api/devices/heartbeat — device-only.

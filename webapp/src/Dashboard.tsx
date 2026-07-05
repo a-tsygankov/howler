@@ -74,7 +74,7 @@ import {
   localToUTC,
   utcToLocal,
 } from "./components/daily-time-picker";
-import { fetchTaskSchedule } from "./lib/api.ts";
+import { fetchTask, fetchTaskSchedule, renameDevice } from "./lib/api.ts";
 
 const fmtDayCaps = (d: Date): string =>
   d
@@ -299,6 +299,7 @@ export const Dashboard = ({ session, onLogout, view }: Props) => {
                   taskResults={taskResults.data ?? []}
                   templates={templates.data ?? []}
                   users={users.data ?? []}
+                  devices={devices.data ?? []}
                   onCreated={() => {
                     void qc.invalidateQueries({ queryKey: ["tasks"] });
                     void qc.invalidateQueries({ queryKey: ["dashboard"] });
@@ -329,6 +330,8 @@ export const Dashboard = ({ session, onLogout, view }: Props) => {
                 task={t}
                 labels={labels.data ?? []}
                 taskResults={taskResults.data ?? []}
+                users={users.data ?? []}
+                devices={devices.data ?? []}
                 onDelete={() => {
                   if (confirm(`Delete "${t.title}"?`)) del.mutate(t.id);
                 }}
@@ -1066,17 +1069,159 @@ const KIND_LABEL: Record<TaskKind, string> = {
   ONESHOT: "one-time",
 };
 
+// ── Assignment picker (Everyone / Users / Devices) ────────────────
+//
+// A task targets EITHER a set of users (private to them + creator +
+// admin) OR a set of devices (shared, shown on those dials' Today),
+// or nobody (shared with everyone). The three modes are mutually
+// exclusive — switching mode clears the other side's selection. The
+// parent converts the picked state into { assignees, assignedDevices }
+// for the API (the server enforces the XOR).
+
+export type AssignMode = "everyone" | "users" | "devices";
+
+export interface AssignmentState {
+  mode: AssignMode;
+  userIds: string[];
+  deviceIds: string[];
+}
+
+/// Derive the picker's initial state from a task's existing targets.
+export const assignmentFromTargets = (
+  userIds: string[],
+  deviceIds: string[],
+): AssignmentState => {
+  if (userIds.length > 0) return { mode: "users", userIds, deviceIds: [] };
+  if (deviceIds.length > 0) return { mode: "devices", userIds: [], deviceIds };
+  return { mode: "everyone", userIds: [], deviceIds: [] };
+};
+
+/// Convert picker state into the API's target arrays. The inactive
+/// side is always empty so the server's XOR check passes.
+export const assignmentToPayload = (
+  s: AssignmentState,
+): { assignees: string[]; assignedDevices: string[] } => ({
+  assignees: s.mode === "users" ? s.userIds : [],
+  assignedDevices: s.mode === "devices" ? s.deviceIds : [],
+});
+
+const deviceLabel = (d: Device): string =>
+  d.name || d.hwModel || `device ${d.id.slice(0, 6)}`;
+
+const AssignmentPicker = ({
+  users,
+  devices,
+  value,
+  onChange,
+}: {
+  users: User[];
+  devices: Device[];
+  value: AssignmentState;
+  onChange: (next: AssignmentState) => void;
+}) => {
+  const setMode = (mode: AssignMode) => onChange({ ...value, mode });
+  const toggle = (kind: "userIds" | "deviceIds", id: string) => {
+    const set = new Set(value[kind]);
+    if (set.has(id)) set.delete(id);
+    else set.add(id);
+    onChange({ ...value, [kind]: [...set] });
+  };
+  const modeBtn = (mode: AssignMode, label: string) => (
+    <button
+      key={mode}
+      type="button"
+      onClick={() => setMode(mode)}
+      aria-pressed={value.mode === mode}
+      className={`flex-1 rounded-md px-2 py-1.5 text-xs ${
+        value.mode === mode
+          ? "bg-ink text-paper"
+          : "border border-line bg-transparent text-ink-2 hover:text-ink"
+      }`}
+    >
+      {label}
+    </button>
+  );
+  const chip = (
+    active: boolean,
+    label: string,
+    onClick: () => void,
+    key: string,
+  ) => (
+    <button
+      key={key}
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      className={`rounded-full border px-2.5 py-1 text-xs transition-colors ${
+        active
+          ? "border-ink bg-paper-3 text-ink"
+          : "border-line-soft bg-paper-2 text-ink-2 hover:border-line"
+      }`}
+    >
+      {label}
+    </button>
+  );
+  return (
+    <div>
+      <div className="flex gap-1.5">
+        {modeBtn("everyone", "Everyone")}
+        {modeBtn("users", "Users")}
+        {modeBtn("devices", "Devices")}
+      </div>
+      {value.mode === "users" && (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {users.length === 0 && (
+            <span className="cap">No other users in this home.</span>
+          )}
+          {users.map((u) =>
+            chip(
+              value.userIds.includes(u.id),
+              u.displayName,
+              () => toggle("userIds", u.id),
+              u.id,
+            ),
+          )}
+        </div>
+      )}
+      {value.mode === "devices" && (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {devices.length === 0 && (
+            <span className="cap">No paired devices yet.</span>
+          )}
+          {devices.map((d) =>
+            chip(
+              value.deviceIds.includes(d.id),
+              deviceLabel(d),
+              () => toggle("deviceIds", d.id),
+              d.id,
+            ),
+          )}
+        </div>
+      )}
+      <p className="cap mt-1.5">
+        {value.mode === "everyone"
+          ? "Shared with everyone in the home."
+          : value.mode === "users"
+            ? "Private — only the selected users (and admins) can see it."
+            : "Shared, and shown on the selected devices' Today screen."}
+      </p>
+    </div>
+  );
+};
+
 const CreateTaskForm = ({
   labels,
   taskResults,
   templates,
   users,
+  devices,
   onCreated,
 }: {
   labels: Label[];
   taskResults: TaskResultDef[];
   templates: ScheduleTemplate[];
   users: User[];
+  devices: Device[];
   onCreated: () => void;
 }) => {
   const [title, setTitle] = useState("");
@@ -1095,8 +1240,12 @@ const CreateTaskForm = ({
   const [labelId, setLabelId] = useState("");
   const [resultTypeId, setResultTypeId] = useState("");
   const [templateId, setTemplateId] = useState("");
-  const [assigneeId, setAssigneeId] = useState("");
-  const [isPrivate, setIsPrivate] = useState(false);
+  // Assignment: Everyone / Users / Devices (mutually exclusive).
+  const [assignment, setAssignment] = useState<AssignmentState>({
+    mode: "everyone",
+    userIds: [],
+    deviceIds: [],
+  });
   const [error, setError] = useState<string | null>(null);
   // Task avatar — "icon:<name>" or null. When null we let the
   // server fall back to the selected label's icon. The user can
@@ -1126,9 +1275,8 @@ const CreateTaskForm = ({
       title: title.trim(),
       labelId: labelId || null,
       resultTypeId: resultTypeId || null,
-      isPrivate,
       ...(avatarOverride !== null ? { avatarId: avatarOverride } : {}),
-      ...(assigneeId ? { assignees: [assigneeId] } : {}),
+      ...assignmentToPayload(assignment),
     };
     if (templateId) {
       create.mutate({ ...common, kind, templateId });
@@ -1212,16 +1360,6 @@ const CreateTaskForm = ({
             ...templates.map((t) => ({ value: t.id, label: t.displayName })),
           ]}
         />
-        {users.length > 1 && (
-          <SelectInline
-            value={assigneeId}
-            onChange={setAssigneeId}
-            options={[
-              { value: "", label: "— anyone —" },
-              ...users.map((u) => ({ value: u.id, label: u.displayName })),
-            ]}
-          />
-        )}
       </div>
       <div className="mt-2">
         <span className="cap mb-1 block">
@@ -1284,14 +1422,15 @@ const CreateTaskForm = ({
           </label>
         </div>
       )}
-      <label className="mt-2 flex items-center gap-2 text-xs text-ink-2">
-        <input
-          type="checkbox"
-          checked={isPrivate}
-          onChange={(e) => setIsPrivate(e.target.checked)}
+      <div className="mt-3">
+        <span className="cap mb-1 block">Assign to</span>
+        <AssignmentPicker
+          users={users}
+          devices={devices}
+          value={assignment}
+          onChange={setAssignment}
         />
-        Private (only assignees + creator see)
-      </label>
+      </div>
       <Btn
         size="block"
         variant="primary"
@@ -1359,6 +1498,8 @@ const TaskRow = ({
   task,
   labels,
   taskResults,
+  users,
+  devices,
   onDelete,
   onMarkDone,
   deleting,
@@ -1367,6 +1508,8 @@ const TaskRow = ({
   task: Task;
   labels: Label[];
   taskResults: TaskResultDef[];
+  users: User[];
+  devices: Device[];
   onDelete: () => void;
   onMarkDone: () => void;
   deleting: boolean;
@@ -1381,6 +1524,9 @@ const TaskRow = ({
   // null until the schedule fetch resolves.
   const [localTimes, setLocalTimes] = useState<string[] | null>(null);
   const [intervalDays, setIntervalDays] = useState<number | null>(null);
+  // Assignment — null until the detail fetch (assignees +
+  // assignedDevices) resolves on entering edit mode.
+  const [assignment, setAssignment] = useState<AssignmentState | null>(null);
 
   const qc = useQueryClient();
   // Lazy-load the schedule when the user enters edit mode.
@@ -1389,6 +1535,17 @@ const TaskRow = ({
     queryFn: () => fetchTaskSchedule(task.id),
     enabled: editing,
   });
+  // Lazy-load the current assignment when entering edit mode.
+  const detailQ = useQuery({
+    queryKey: ["task", task.id],
+    queryFn: () => fetchTask(task.id),
+    enabled: editing,
+  });
+  if (detailQ.data && assignment === null) {
+    setAssignment(
+      assignmentFromTargets(detailQ.data.assignees, detailQ.data.assignedDevices),
+    );
+  }
   // Hydrate local state once the fetch resolves (only on first run
   // for this edit session).
   if (
@@ -1426,10 +1583,14 @@ const TaskRow = ({
       if (task.kind === "PERIODIC" && intervalDays !== null) {
         patch.intervalDays = intervalDays;
       }
+      if (assignment) {
+        Object.assign(patch, assignmentToPayload(assignment));
+      }
       return updateTask(task.id, patch);
     },
     onSuccess: () => {
       setEditing(false);
+      setAssignment(null);
       setLocalTimes(null);
       setIntervalDays(null);
       // The schedule's rule_json + cached single-task fetch are now
@@ -1442,6 +1603,9 @@ const TaskRow = ({
   });
   const labelName = labels.find((l) => l.id === task.labelId)?.displayName;
   const resultName = taskResults.find((r) => r.id === task.resultTypeId)?.displayName;
+  const creatorName = task.creatorUserId
+    ? users.find((u) => u.id === task.creatorUserId)?.displayName
+    : undefined;
   const scheduleSummary = describeSchedule(task);
 
   if (editing) {
@@ -1518,8 +1682,29 @@ const TaskRow = ({
           </label>
         )}
 
+        <div className="mt-3">
+          <span className="cap mb-1 block">Assign to</span>
+          {assignment === null ? (
+            <p className="cap py-2">Loading…</p>
+          ) : (
+            <AssignmentPicker
+              users={users}
+              devices={devices}
+              value={assignment}
+              onChange={setAssignment}
+            />
+          )}
+        </div>
+
         <div className="mt-2 flex justify-end gap-2">
-          <Btn variant="ghost" size="pillSm" onClick={() => setEditing(false)}>
+          <Btn
+            variant="ghost"
+            size="pillSm"
+            onClick={() => {
+              setEditing(false);
+              setAssignment(null);
+            }}
+          >
             Cancel
           </Btn>
           <Btn
@@ -1546,6 +1731,7 @@ const TaskRow = ({
           {scheduleSummary} · pri {task.priority}
           {labelName && ` · ${labelName}`}
           {resultName && ` · ${resultName}`}
+          {creatorName && ` · by ${creatorName}`}
           {!task.active && " · paused"}
         </div>
       </Link>
@@ -2608,7 +2794,7 @@ const SyncLogBlock = ({
                 />
                 <div className="min-w-0 flex-1">
                   <div className="text-sm">
-                    {d.hwModel || "Unnamed device"}
+                    {d.name || d.hwModel || "Unnamed device"}
                   </div>
                   <div className="cap mt-0.5">
                     last sync {fmtAgo(d.lastSeenAt)}
@@ -2642,6 +2828,14 @@ const SyncLogBlock = ({
   );
 };
 
+const fmtSeenAgo = (ts: number | null) => {
+  if (ts === null) return "never";
+  const dMin = Math.round((Date.now() / 1000 - ts) / 60);
+  if (dMin < 1) return "just now";
+  if (dMin < 60) return `${dMin} min ago`;
+  return `${Math.round(dMin / 60)} h ago`;
+};
+
 const DevicesBlock = ({
   devices,
   onChanged,
@@ -2649,43 +2843,106 @@ const DevicesBlock = ({
   devices: Device[];
   onChanged: () => void;
 }) => {
-  const m = useMutation({ mutationFn: revokeDevice, onSuccess: onChanged });
-  const fmtSeen = (ts: number | null) => {
-    if (ts === null) return "never";
-    const dMin = Math.round((Date.now() / 1000 - ts) / 60);
-    if (dMin < 1) return "just now";
-    if (dMin < 60) return `${dMin} min ago`;
-    return `${Math.round(dMin / 60)} h ago`;
-  };
   if (devices.length === 0)
     return <p className="cap py-2">No paired devices yet.</p>;
   return (
     <>
       {devices.map((d) => (
-        <div
-          key={d.id}
-          className="flex items-center justify-between border-t border-line-soft py-2"
-        >
-          <div className="min-w-0">
-            <div className="text-sm">{d.hwModel || "Unnamed device"}</div>
-            <div className="cap mt-0.5">
-              {d.id.slice(0, 8)}… · last seen {fmtSeen(d.lastSeenAt)}
-              {d.fwVersion && ` · fw ${d.fwVersion}`}
-            </div>
-          </div>
-          <Btn
-            variant="danger"
-            size="pillSm"
-            disabled={m.isPending && m.variables === d.id}
-            onClick={() => {
-              if (confirm("Revoke this device?")) m.mutate(d.id);
-            }}
-          >
-            Revoke
-          </Btn>
-        </div>
+        <DeviceRow key={d.id} device={d} onChanged={onChanged} />
       ))}
     </>
+  );
+};
+
+// One device row with inline click-to-rename (mirrors HomeNameField /
+// UserRow) plus Revoke. The rename bumps the home counter so the dial
+// re-syncs and picks up its new name.
+const DeviceRow = ({
+  device,
+  onChanged,
+}: {
+  device: Device;
+  onChanged: () => void;
+}) => {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(device.name ?? "");
+  const rename = useMutation({
+    mutationFn: (name: string | null) => renameDevice(device.id, name),
+    onSuccess: () => {
+      setEditing(false);
+      onChanged();
+    },
+  });
+  const revoke = useMutation({ mutationFn: revokeDevice, onSuccess: onChanged });
+
+  const commit = () => {
+    const next = draft.trim();
+    if (next === (device.name ?? "")) {
+      setEditing(false);
+      return;
+    }
+    rename.mutate(next.length === 0 ? null : next);
+  };
+
+  const display = device.name || device.hwModel || "Unnamed device";
+  return (
+    <div className="flex items-center justify-between gap-2 border-t border-line-soft py-2">
+      <div className="min-w-0 flex-1">
+        {editing ? (
+          <input
+            autoFocus
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onBlur={commit}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") commit();
+              if (e.key === "Escape") setEditing(false);
+            }}
+            disabled={rename.isPending}
+            maxLength={40}
+            placeholder={device.hwModel || "Device name"}
+            aria-label="Device name"
+            className="w-full rounded-md border border-line bg-paper px-2 py-1 text-sm focus:border-ink focus:outline-none"
+          />
+        ) : (
+          <button
+            type="button"
+            onClick={() => {
+              setDraft(device.name ?? "");
+              setEditing(true);
+            }}
+            title="Rename device"
+            className="text-left text-sm hover:opacity-80"
+          >
+            {display}
+          </button>
+        )}
+        <div className="cap mt-0.5">
+          {device.id.slice(0, 8)}… · last seen {fmtSeenAgo(device.lastSeenAt)}
+          {device.fwVersion && ` · fw ${device.fwVersion}`}
+        </div>
+      </div>
+      <div className="flex shrink-0 gap-1">
+        {!editing && (
+          <Btn variant="outline" size="pillSm" onClick={() => {
+            setDraft(device.name ?? "");
+            setEditing(true);
+          }}>
+            Rename
+          </Btn>
+        )}
+        <Btn
+          variant="danger"
+          size="pillSm"
+          disabled={revoke.isPending}
+          onClick={() => {
+            if (confirm("Revoke this device?")) revoke.mutate(device.id);
+          }}
+        >
+          Revoke
+        </Btn>
+      </div>
+    </div>
   );
 };
 

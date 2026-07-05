@@ -111,6 +111,12 @@ howler::application::NetResult WifiNetwork::fetchDashboard(
         d.dueAt = v["nextDeadline"] | static_cast<long long>(-1);
         d.isMissed = v["isMissed"] | false;
         d.updatedAt = v["task"]["updatedAt"] | 0;
+        // Assignment routing (migration 0017): the device-token
+        // dashboard tags each row with whether it's assigned to THIS
+        // device. SyncService routes assigned rows to the Today
+        // screen; everything else is All-only. Absent ⇒ false ⇒ stays
+        // off Today (older Worker deploys).
+        d.assignedToThisDevice = v["assignedToThisDevice"] | false;
 
         // Slice B: parse the rule + anchors so the device can
         // recompute urgency locally per frame. The fields are
@@ -374,6 +380,24 @@ howler::application::NetResult WifiNetwork::fetchHomeIdentity(
     outIdentity.displayName = doc["displayName"] | "";
     outIdentity.avatarId    = doc["avatarId"]    | "";
     outIdentity.tz          = doc["tz"]          | "";
+    return r;
+}
+
+howler::application::NetResult WifiNetwork::fetchDeviceIdentity(
+    howler::domain::DeviceIdentity& outIdentity) {
+    // Fail closed: a partial parse leaves an empty name and the About
+    // card falls back to the hex device-id tail.
+    outIdentity = {};
+    String body;
+    auto r = doGet("/api/devices/me", body);
+    if (!r.isOk()) return r;
+    JsonDocument doc;
+    if (deserializeJson(doc, body))
+        return howler::application::NetResult::transient();
+    outIdentity.id      = doc["id"]      | "";
+    outIdentity.name    = doc["name"]    | "";
+    outIdentity.serial  = doc["serial"]  | "";
+    outIdentity.hwModel = doc["hwModel"] | "";
     return r;
 }
 

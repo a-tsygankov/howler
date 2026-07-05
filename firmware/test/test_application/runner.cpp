@@ -3,12 +3,14 @@
 // test_sync_service.cpp
 void test_sync_no_op_when_offline();
 void test_sync_replaces_dashboard_users_result_types();
+void test_sync_today_filters_to_device_assigned_all_keeps_shared();
 void test_sync_respects_interval();
 void test_sync_skips_fetches_when_peek_counter_unchanged();
 void test_sync_full_round_when_peek_counter_advances();
 void test_sync_full_refresh_after_5min_even_when_counter_unchanged();
 void test_sync_falls_through_to_full_round_when_peek_fails();
 void test_sync_populates_home_identity_on_full_round();
+void test_sync_populates_device_identity_on_full_round();
 void test_sync_keeps_cached_identity_on_fetch_failure();
 void test_sync_persists_and_restores_counter();
 
@@ -55,12 +57,14 @@ int main(int, char**) {
 
     RUN_TEST(test_sync_no_op_when_offline);
     RUN_TEST(test_sync_replaces_dashboard_users_result_types);
+    RUN_TEST(test_sync_today_filters_to_device_assigned_all_keeps_shared);
     RUN_TEST(test_sync_respects_interval);
     RUN_TEST(test_sync_skips_fetches_when_peek_counter_unchanged);
     RUN_TEST(test_sync_full_round_when_peek_counter_advances);
     RUN_TEST(test_sync_full_refresh_after_5min_even_when_counter_unchanged);
     RUN_TEST(test_sync_falls_through_to_full_round_when_peek_fails);
     RUN_TEST(test_sync_populates_home_identity_on_full_round);
+    RUN_TEST(test_sync_populates_device_identity_on_full_round);
     RUN_TEST(test_sync_keeps_cached_identity_on_fetch_failure);
     RUN_TEST(test_sync_persists_and_restores_counter);
 
