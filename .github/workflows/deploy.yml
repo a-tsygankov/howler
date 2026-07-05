@@ -127,15 +127,15 @@ jobs:
   # On PRs only: deploy this PR's webapp to a per-branch Cloudflare
   # Pages preview so the E2E job below runs against the actual code
   # under review (the production alias only updates on push-to-main).
-  # Cloudflare Pages slugifies branch → <slug>.<project>.pages.dev;
-  # our branch names are already valid slugs.
+  # E2E targets the exact deployment URL wrangler returns, so branch
+  # names containing "/" (e.g. feat/foo) work without slug guessing.
   webapp-preview-deploy:
     name: Webapp preview deploy (PR)
     needs: [changes, webapp-build]
     if: github.event_name == 'pull_request' && needs.changes.outputs.webapp == 'true'
     runs-on: ubuntu-latest
     outputs:
-      preview_url: ${{ steps.branch_url.outputs.url }}
+      preview_url: ${{ steps.deploy.outputs.deployment-url }}
     defaults: { run: { working-directory: webapp } }
     steps:
       - uses: actions/checkout@v4
@@ -145,20 +145,14 @@ jobs:
       - run: pnpm install --frozen-lockfile
         working-directory: .
       - run: pnpm build
-      - id: branch_slug
-        run: echo "slug=${GITHUB_HEAD_REF}" >> "$GITHUB_OUTPUT"
-        shell: bash
-      - id: branch_url
-        run: |
-          echo "url=https://${{ steps.branch_slug.outputs.slug }}.howler-webapp.pages.dev" >> "$GITHUB_OUTPUT"
-        shell: bash
       - name: Deploy to Pages (branch preview)
+        id: deploy
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken:  ${{ secrets.CLOUDFLARE_API_KEY }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: webapp
-          command: pages deploy dist --project-name=howler-webapp --branch=${{ steps.branch_slug.outputs.slug }} --commit-dirty=true
+          command: pages deploy dist --project-name=howler-webapp --branch=${{ github.head_ref }} --commit-dirty=true
 
   webapp-e2e:
     name: Webapp E2E (Playwright)
